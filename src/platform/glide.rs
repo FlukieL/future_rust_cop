@@ -214,8 +214,9 @@ struct Glide {
     ssao: Option<super::ao::Ssao>,
     /// the sun's shadow (`shadows.rs`): this view's casters (batched vertices), the map
     casters: Vec<u32>,
-    /// the primitives that follow only cast (models' turned-away faces, `shadows::nclip`)
-    cast_only: bool,
+    /// the primitives that follow only cast (`shadows::cast_kind`): 0 no, 1 yes, 2 the ring's
+    /// (their corners zoomed out by `shadows::RING_ZOOM` about the view's centre)
+    cast_only: u8,
     shadow_map: Option<super::shadows::ShadowMap>,
     /// the dynamic lights of the view being drawn (`lights.rs`), and their pass
     lights: Vec<super::lights::Light>,
@@ -809,7 +810,7 @@ impl Glide {
                 gbuf: None,
                 ssao: None,
                 casters: Vec::new(),
-                cast_only: false,
+                cast_only: 0,
                 shadow_map: None,
                 lights: Vec::new(),
                 zbuf: Vec::new(),
@@ -1228,7 +1229,19 @@ impl Glide {
         }
         let st_box = b;
         let b = b.map(f32::to_bits);
-        let xy = |v: u32| (f32::from_bits(m.rd32(v)), f32::from_bits(m.rd32(v + 4)));
+        // the ring's corners back to their real place (2560x1920 units, centre 1280, 960 and
+        // the view's origin)
+        let ring = self.cast_only == 2;
+        let ox = self.gbuf.unwrap_or(0.0);
+        let xy = |v: u32| {
+            let (x, y) = (f32::from_bits(m.rd32(v)), f32::from_bits(m.rd32(v + 4)));
+            if ring {
+                let z = super::shadows::RING_ZOOM;
+                (ox + 1280.0 + (x - ox - 1280.0) / z, 960.0 + (y - 960.0) / z)
+            } else {
+                (x, y)
+            }
+        };
         // a line: a quad as wide as the game's line at its resolution
         let quad = if let [v0, v1] = *verts { Some(self.line_offsets(xy(v0), xy(v1))) } else { None };
         // the view-space depth of each vertex (3D picture, AO on), by its place in the units
@@ -1249,6 +1262,8 @@ impl Glide {
         // the display list record it comes from (`effects.rs`), in the 3D picture
         // (and whether it is a model's light)
         let (rec, model_light) = match (self.gbuf, verts.first()) {
+            // (the ring's records are not in the effects' list)
+            (Some(_), Some(_)) if ring => (None, false),
             (Some(dx), Some(&v)) => super::effects::record_of(xy(v).0 - dx, xy(v).1).map_or((None, false), |(r, l)| (Some(r), l)),
             _ => (None, false),
         };
@@ -1257,7 +1272,7 @@ impl Glide {
         }
         // a glow of the 3D picture (additive): a dynamic light
         // (not lines: the laser sight would light the ground along it)
-        if !self.cast_only && self.gbuf.is_some() && self.gdepth.is_some() && super::lights::enabled() && verts.len() >= 3 && self.state.blend.1 == 4 && matches!(self.state.blend.0, 1 | 4) {
+        if self.cast_only == 0 && self.gbuf.is_some() && self.gdepth.is_some() && super::lights::enabled() && verts.len() >= 3 && self.state.blend.1 == 4 && matches!(self.state.blend.0, 1 | 4) {
             let _t = super::fps::timer(super::fps::Phase::Lights);
             let colour = self.glow_colour(verts, st_box);
             let (tw, th) = (self.target.0 as f32, self.target.1 as f32);
@@ -1307,7 +1322,7 @@ impl Glide {
         // of the smoke only a rocket's trail (records 0xd_, 3D ribbons): grey clouds and fog
         // are not hot (sprites 0xbc)
         let trail = effect == Effect::Smoke && rec.is_some_and(|r| r[0] & 0xf0 == 0xd0);
-        if (hot || trail) && !self.cast_only && super::heat::enabled() {
+        if (hot || trail) && self.cast_only == 0 && super::heat::enabled() {
             let (tw, th) = (self.target.0 as f32, self.target.1 as f32);
             let (sw, sh) = (self.space.0 as f32, self.space.1 as f32);
             let corners: Vec<_> = verts.iter().map(|&v| (xy(v).0 / sw * tw, th - xy(v).1 / sh * th)).collect();
@@ -1339,7 +1354,7 @@ impl Glide {
             }
         }
         self.zbuf = z;
-        if self.cast_only {
+        if self.cast_only != 0 {
             self.cast(start);
         }
     }
@@ -1354,7 +1369,9 @@ impl Glide {
             let key = s.key;
             let kc = [(key >> 16 & 0xff) as f32 / 255.0, (key >> 8 & 0xff) as f32 / 255.0, (key & 0xff) as f32 / 255.0, s.chroma as u32 as f32].map(f32::to_bits);
             let t = &self.batch[start..];
-            if t.chunks_exact(VERTEX).all(|v| f32::from_bits(v[20]) > 0.0) {
+            let ok = t.chunks_exact(VERTEX).all(|v| f32::from_bits(v[20]) > 0.0);
+            super::shadows::note_cast(self.cast_only, ok);
+            if ok {
                 for v in t.chunks_exact(VERTEX) {
                     self.casters.extend_from_slice(&v[..8]);
                     self.casters.extend(kc);
@@ -1702,9 +1719,9 @@ pub fn set_space(space: Option<(u32, u32)>) {
     });
 }
 
-/// Whether the primitives that follow only cast the sun's shadow (`shadows::nclip`).
-pub fn set_cast_only(on: bool) {
-    with(|g, _| g.cast_only = on);
+/// Whether the primitives that follow only cast the sun's shadow (`shadows::cast_kind`).
+pub fn set_cast_only(kind: u8) {
+    with(|g, _| g.cast_only = kind);
 }
 
 /// The 3D picture's primitives follow (`Some(dx)`: the x the walker adds to their units, the

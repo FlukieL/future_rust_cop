@@ -211,52 +211,156 @@ const LIST_RECORDS: u32 = 0x13a0;
 /// The most records the display list held at a turned-away face (`FCOP_SHADOW_LOG`).
 static PEAK: AtomicU32 = AtomicU32::new(0);
 
+/// What this picture's extra records are for: turned-away faces (`nclip`, record addresses)
+/// and the ring's (`actors_draw`, ranges of records), both only casting.
+#[derive(Default)]
+struct Extra {
+    faces: std::collections::HashSet<u32>,
+    ring: Vec<(u32, u32)>,
+    /// the ring's actors this picture, and the extra triangles kept as casters or not (no
+    /// depth) by kind (`FCOP_SHADOW_LOG`)
+    ring_actors: u32,
+    cast: [[u32; 2]; 3],
+}
+
 thread_local! {
-    /// The records of turned-away faces this picture: they only cast (`glide::set_cast_only`).
-    static FACES: std::cell::RefCell<std::collections::HashSet<u32>> = Default::default();
+    static EXTRA: std::cell::RefCell<Extra> = Default::default();
+}
+
+/// A test switch (`FCOP_<name>=0` off).
+fn switch(name: &str, cell: &'static std::sync::OnceLock<bool>) -> bool {
+    *cell.get_or_init(|| std::env::var(name).map_or(true, |v| v != "0"))
+}
+
+/// The display list has room to spare (the game never checks it).
+fn room() -> bool {
+    let m = mem();
+    let used = m.rd32(LIST_END.at()).wrapping_sub(m.rd32(LIST_START.at())) / 0x38;
+    PEAK.fetch_max(used, Relaxed);
+    used < LIST_RECORDS * 3 / 4
 }
 
 /// The game leaves out a model's faces turned away from the camera, which the sun sees: with
 /// the shadow map they are kept, their records only cast (our walker hands them to `glide` as
-/// such). Only while the display list has room to spare (it is never checked).
+/// such). Only while the display list has room to spare.
 pub fn nclip(c: &mut crate::rt::Cpu) {
     use crate::rt::EAX;
     crate::rt::call_original(c, NCLIP.at());
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let on = *ON.get_or_init(|| std::env::var("FCOP_SHADOW_FACES").map_or(true, |v| v != "0"));
-    if c.r[EAX] == 0 || !on || !map() || !super::walker::precise() || !super::walk::ours() {
-        return;
-    }
-    let m = mem();
-    let end = m.rd32(LIST_END.at());
-    let used = end.wrapping_sub(m.rd32(LIST_START.at())) / 0x38;
-    PEAK.fetch_max(used, Relaxed);
-    if used >= LIST_RECORDS * 3 / 4 {
+    if c.r[EAX] == 0 || !switch("FCOP_SHADOW_FACES", &ON) || !map() || !super::walker::precise() || !super::walk::ours() || !room() {
         return;
     }
     // the face's record is the next one (0x428690 makes it right after)
-    FACES.with_borrow_mut(|f| f.insert(end));
+    let end = mem().rd32(LIST_END.at());
+    EXTRA.with_borrow_mut(|e| e.faces.insert(end));
     c.r[EAX] = 0;
 }
 
-/// Some faces only cast this picture.
-pub fn has_faces() -> bool {
-    FACES.with_borrow(|f| !f.is_empty())
+/// actors_draw(view): message 3 (draw) to each actor on the view's list of visible ones: count
+/// [0x4a3ac0 + 4 * view], list [0x4a31a0 + 4 * view] (actor pointers); then its second loop
+/// (0x427960 for some). Called by render_world 0x453260 after the terrain and the static
+/// objects.
+pub const ACTORS_DRAW: Us = Us(0x4532f0);
+const VISIBLE_COUNT: Us = Us(0x4a3ac0);
+const VISIBLE_LIST: Us = Us(0x4a31a0);
+/// The actors (`cheats.rs`): count, pointers; an actor's handler at +4, active while +8 > 0.
+const ACTOR_COUNT: Us = Us(0x50e420);
+const ACTORS: Us = Us(0x50e428);
+/// Nonzero in split screen.
+const SPLIT: Us = Us(0x511f54);
+/// The ring's projection is zoomed out this much (x and y times it): things up to about twice
+/// as far off the middle as the screen's edge are in it.
+pub const RING_ZOOM: f32 = 0.5;
+
+/// The ring: things just off the screen cast into it. After the view's actors, the others are
+/// drawn too, with the projection zoomed out (`wide::set_zoom`: the game's view test and its
+/// face tests pass them); their records only cast, their corners taken back to their real place
+/// (`glide`'s cast-only primitives with a zoom), their projected points noted at it
+/// (`ao::point`). Not in split screen; only while the display list has room.
+pub fn actors_draw(c: &mut crate::rt::Cpu) {
+    let m = mem();
+    let view = m.rd32(c.r[crate::rt::ESP] + 4);
+    crate::rt::call_original(c, ACTORS_DRAW.at());
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !switch("FCOP_SHADOW_RING", &ON) || !map() || !super::walker::precise() || !super::walk::ours() || m.rd32(SPLIT.at()) != 0 || view > 3 {
+        return;
+    }
+    let (n, list) = (m.rd32(VISIBLE_COUNT.at() + 4 * view) as i32, m.rd32(VISIBLE_LIST.at() + 4 * view));
+    let visible: Vec<u32> = (0..n.clamp(0, 4096) as u32).map(|i| m.rd32(list + 4 * i)).collect();
+    let regs = c.r;
+    let from = m.rd32(LIST_END.at());
+    let mut drawn = 0;
+    super::wide::set_zoom(RING_ZOOM);
+    for i in 0..(m.rd32(ACTOR_COUNT.at()) as i32).clamp(0, 4096) as u32 {
+        let a = m.rd32(ACTORS.at() + 4 * i);
+        if a == 0 || m.rd32(a + 8) as i32 <= 0 || visible.contains(&a) && !ring_all() {
+            continue;
+        }
+        if !room() {
+            break;
+        }
+        super::guest_call(c, m.rd32(a + 4), &[3, a, 0, 0]);
+        drawn += 1;
+        if c.stop != 0 {
+            break;
+        }
+    }
+    super::wide::set_zoom(1.0);
+    c.r = regs;
+    let to = m.rd32(LIST_END.at());
+    EXTRA.with_borrow_mut(|e| {
+        if to > from {
+            e.ring.push((from, to));
+        }
+        e.ring_actors += drawn;
+    });
 }
 
-pub fn is_face(record: u32) -> bool {
-    FACES.with_borrow(|f| f.contains(&record))
+/// `FCOP_SHADOW_RING=all` (a test): the ring draws the visible actors too, its shadows
+/// should lie exactly on theirs.
+fn ring_all() -> bool {
+    static A: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *A.get_or_init(|| std::env::var("FCOP_SHADOW_RING").is_ok_and(|v| v == "all"))
+}
+
+/// `glide` kept an extra triangle of `kind` (`cast_kind`) as a caster, or not.
+pub fn note_cast(kind: u8, ok: bool) {
+    EXTRA.with_borrow_mut(|e| e.cast[kind as usize % 3][ok as usize] += 1);
+}
+
+/// Some records only cast this picture.
+pub fn has_cast() -> bool {
+    EXTRA.with_borrow(|e| !e.faces.is_empty() || !e.ring.is_empty())
+}
+
+/// How a record is drawn: 0 as usual, 1 only casting, 2 only casting from the ring (its
+/// corners zoomed by `RING_ZOOM`).
+pub fn cast_kind(record: u32) -> u8 {
+    EXTRA.with_borrow(|e| {
+        if e.ring.iter().any(|&(a, b)| (a..b).contains(&record)) {
+            2
+        } else {
+            e.faces.contains(&record) as u8
+        }
+    })
 }
 
 /// The picture is drawn: the list is made anew.
 pub fn forget_faces() {
     static LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    if *LOG.get_or_init(|| std::env::var("FCOP_SHADOW_LOG").is_ok_and(|v| v != "0")) && N.fetch_add(1, Relaxed) % 300 == 0 {
-        let peak = PEAK.swap(0, Relaxed);
-        super::log!("shadows: {} turned-away faces cast, display list at most {peak} of {LIST_RECORDS}", FACES.with_borrow(|f| f.len()));
-    }
-    FACES.with_borrow_mut(|f| f.clear());
+    let log = *LOG.get_or_init(|| std::env::var("FCOP_SHADOW_LOG").is_ok_and(|v| v != "0")) && N.fetch_add(1, Relaxed) % 300 == 0;
+    EXTRA.with_borrow_mut(|e| {
+        if log {
+            let peak = PEAK.swap(0, Relaxed);
+            let ring: u32 = e.ring.iter().map(|&(a, b)| (b - a) / 0x38).sum();
+            super::log!("shadows: {} turned-away faces cast, ring {} actors {ring} records, display list at most {peak} of {LIST_RECORDS}; casters kept/without depth: faces {}/{}, ring {}/{}", e.faces.len(), e.ring_actors, e.cast[1][1], e.cast[1][0], e.cast[2][1], e.cast[2][0]);
+        }
+        e.faces.clear();
+        e.ring.clear();
+        e.ring_actors = 0;
+        e.cast = [[0; 2]; 3];
+    });
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {

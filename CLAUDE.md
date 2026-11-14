@@ -354,7 +354,19 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   while the display list is under 3/4 full (5024 records, never checked; ~1600 used in M2C):
   their records (the next at [0x511dc0]) are noted, our walker (`walk.rs`, precise mode)
   hands them to `glide::set_cast_only` (only casters, not drawn); ~300 a picture.
-  `FCOP_SHADOW_FACES=0` off, `FCOP_SHADOW_LOG=1` logs them and the list's use. The sun (world direction
+  `FCOP_SHADOW_FACES=0` off, `FCOP_SHADOW_LOG=1` logs them, the ring and the list's use.
+  The ring (things just off the screen cast into it; step 1 actors): actors_draw 0x4532f0
+  (hooked) sends message 3 (draw) to the view's visible actors (count [0x4a3ac0 + 4 * view],
+  list [0x4a31a0 + 4 * view]); after it the other active actors get it too with the objects'
+  projection zoomed out (`wide::set_zoom(RING_ZOOM)` 0.5: x and y in 0x457340 / 0x457140 /
+  0x4572a0, so the game's view test and face flags pass them), their records (a range from
+  [0x511dc0]) only cast (`cast_kind` 2: `glide` takes their corners back about the centre
+  1280, 960 + the view's origin; their projected points go to `ao::point` at the real place;
+  left out of `effects::begin`). Not in split screen; while the list is under 3/4 full.
+  `FCOP_SHADOW_RING=0` off, `=all` (a test) draws the visible actors through it too: their
+  shadows lie exactly on the others (checked: 2415 triangles, none without depth, no double
+  shadows). ~20-70 actors, 0-200 records a picture in M2C, no cost measured. Next: the static
+  objects of the cells around the visible ones (0x42fe20, grid [0x4a13fc]). The sun (world direction
   `SUN`, y up) in view space by the camera's matrix [0x511f48] + 0x58 (3x3 i32 16.16, rows
   right / up / forward; view space = game camera space, x right, y up, z ahead), noted by the
   projection hooks 0x457340 / 0x452fd0 per view (`camera`), taken in order by `glide::post_3d`

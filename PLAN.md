@@ -356,6 +356,9 @@ sort, the camera [0x511f48] (`fps.rs`, up to +0x88), the actors (0x50e428).
       nuclear_rust_strike's, without its ring. No cost measured (~640 fps either way, M2C
       start, 1920x1080). Open: things off screen cast nothing (nuclear_rust_strike's ring: the
       game's object lists drawn again zoomed out), the user's look (strength, softness).
+      Ring step 1 done (2026-11-14, `shadows::actors_draw`): actors off the screen drawn
+      again zoomed out, only casting; no cost measured. Step 2 open: the static objects of
+      the cells around the visible ones (0x42fe20 walks the visible cells of grid [0x4a13fc]).
       Models' faces turned away from the camera cast too (2026-11-14, the user saw what
       nuclear_rust_strike had: the game culls them; `shadows::nclip`, ~300 a picture, cost
       within the measurement's noise of 0-15%). The dynamic lights keep the ray march. The user: a depth buffer (as

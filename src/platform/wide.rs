@@ -32,6 +32,21 @@ const RES_TABLE: Us = Us(0x487080);
 
 /// k as f32 bits; 1.0 is off.
 static K: AtomicU32 = AtomicU32::new(0x3f80_0000);
+/// The shadows' ring (`shadows::actors_draw`): camera-space x and y times this before the
+/// objects' projection and view test, as f32 bits; 1.0 is off.
+static ZOOM: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+pub fn set_zoom(z: f32) {
+    ZOOM.store(z.to_bits(), Ordering::Relaxed);
+}
+
+fn zoom() -> f32 {
+    f32::from_bits(ZOOM.load(Ordering::Relaxed))
+}
+
+fn sz(v: i32) -> i32 {
+    (v as f32 * zoom()) as i32
+}
 
 /// Records moved by `to_screen` this frame (drawn with the centred HUD).
 static PLACED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
@@ -103,17 +118,23 @@ pub fn terrain_vertex(c: &mut Cpu) {
 
 /// 0x457140(p): a sprite {x, y, z, _, w, h} (s16).
 pub fn sprite(c: &mut Cpu) {
-    if k() != 1.0 {
+    let zoomed = zoom() != 1.0;
+    if k() != 1.0 || zoomed {
         let m = mem();
         let p = m.rd32(c.r[ESP] + 4);
         for a in [p, p + 8] {
-            m.wr16(a, sx(m.rd16(a) as i16 as i32) as u16);
+            m.wr16(a, sz(sx(m.rd16(a) as i16 as i32)) as u16);
+        }
+        if zoomed {
+            for a in [p + 2, p + 10] {
+                m.wr16(a, sz(m.rd16(a) as i16 as i32) as u16);
+            }
         }
     }
     let p = mem().rd32(c.r[ESP] + 4);
     call_original(c, SPRITE.at());
     // projected in place: centre {sx, sy}, z, size {w, h} at +8 (al = 0: in front of the camera)
-    if super::ao::depth_wanted() && c.r[crate::rt::EAX] & 0xff == 0 {
+    if super::ao::depth_wanted() && !zoomed && c.r[crate::rt::EAX] & 0xff == 0 {
         let m = mem();
         let r = |o: u32| m.rd16(p + o) as i16;
         super::ao::sprite(r(0), r(2), r(8), r(10), r(4));
@@ -122,12 +143,16 @@ pub fn sprite(c: &mut Cpu) {
 
 /// 0x457340(points, flags, n): n points {x, y, z, _} (s16, 8 bytes each), projected in place.
 pub fn points(c: &mut Cpu) {
-    if k() != 1.0 {
+    let z = zoom();
+    if k() != 1.0 || z != 1.0 {
         let m = mem();
         let p = m.rd32(c.r[ESP] + 4);
         let n = m.rd32(c.r[ESP] + 12) as i32;
         for i in 0..n.max(0) as u32 {
-            m.wr16(p + 8 * i, sx(m.rd16(p + 8 * i) as i16 as i32) as u16);
+            m.wr16(p + 8 * i, sz(sx(m.rd16(p + 8 * i) as i16 as i32)) as u16);
+            if z != 1.0 {
+                m.wr16(p + 8 * i + 2, sz(m.rd16(p + 8 * i + 2) as i16 as i32) as u16);
+            }
         }
     }
     let m = mem();
@@ -141,7 +166,14 @@ pub fn points(c: &mut Cpu) {
         for i in 0..n.max(0) as u32 {
             if m.rd8(flags + i) != 1 {
                 let a = p + 8 * i;
-                super::ao::point(m.rd16(a) as i16, m.rd16(a + 2) as i16, m.rd16(a + 4) as i16);
+                let (x, y) = (m.rd16(a) as i16, m.rd16(a + 2) as i16);
+                // the ring's: at their real place (2560x1920 units, centre 1280, 960)
+                let (x, y) = if z == 1.0 {
+                    (x, y)
+                } else {
+                    ((1280.0 + (x as f32 - 1280.0) / z) as i16, (960.0 + (y as f32 - 960.0) / z) as i16)
+                };
+                super::ao::point(x, y, m.rd16(a + 4) as i16);
             }
         }
     }
@@ -166,15 +198,17 @@ pub fn terrain_visible(c: &mut Cpu) {
 
 /// 0x4572a0(p, r): the same test for objects, p {x, y, z} s16.
 pub fn object_visible(c: &mut Cpu) {
-    if k() == 1.0 {
+    if k() == 1.0 && zoom() == 1.0 {
         return call_original(c, OBJECT_VISIBLE.at());
     }
     let m = mem();
     let p = m.rd32(c.r[ESP] + 4);
-    let x = m.rd16(p);
-    m.wr16(p, sx(x as i16 as i32) as u16);
+    let (x, y) = (m.rd16(p), m.rd16(p + 2));
+    m.wr16(p, sz(sx(x as i16 as i32)) as u16);
+    m.wr16(p + 2, sz(y as i16 as i32) as u16);
     call_original(c, OBJECT_VISIBLE.at());
     m.wr16(p, x);
+    m.wr16(p + 2, y);
 }
 
 /// 0x435330 draws the target markers at the projected position of their target, on the HUD

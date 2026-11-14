@@ -34,7 +34,7 @@
 0x456270  thrash_walker           display list to THRASH (D3D) primitives; colours doubled and clamped at 255 as in glide_walker
 0x50dc20  textures                pointers by record +7 (page); +0x30 the base its shade-table pointers (record +0x10) count from (light.rs)
 0x42dd90  objects_draw            effects (effects_draw), lists at 0x4a1380 / 0x4a1378, animated objects
-0x4532f0  actors_draw             sends message 3 (draw) to every actor
+0x4532f0  actors_draw             sends message 3 (draw) to every actor of the view's visible list (count [0x4a3ac0 + 4 * view], list [0x4a31a0 + 4 * view]); hooked: shadows.rs ring
 0x4271c0  glow_draw               adds a glow's records to the display list (models' lights, explosions, muzzle flashes...); hooked: effects.rs marks models' (lamps)
 0x4280a0  model_draw              (record: +0 model, +4 matrix 3x3, +0x28 position; flags; mode)
 0x4280f0  model_visible

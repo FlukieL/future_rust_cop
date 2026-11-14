@@ -754,6 +754,7 @@ pub const HOOKS: &[(crate::ver::Us, crate::rt::Hook)] = &[
     (savestate::MISSION_LOOP, savestate::mission_loop),
     (effects::GLOW_DRAW, effects::glow_draw),
     (shadows::NCLIP, shadows::nclip),
+    (shadows::ACTORS_DRAW, shadows::actors_draw),
     (camera::ROBOT_CAMERA, camera::robot_camera),
     (camera::ROBOT_DRAW, camera::robot_draw),
     (camera::RENDER_HUD, camera::render_hud),
