@@ -357,8 +357,26 @@ sort, the camera [0x511f48] (`fps.rs`, up to +0x88), the actors (0x50e428).
       start, 1920x1080). Open: things off screen cast nothing (nuclear_rust_strike's ring: the
       game's object lists drawn again zoomed out), the user's look (strength, softness).
       Ring step 1 done (2026-11-14, `shadows::actors_draw`): actors off the screen drawn
-      again zoomed out, only casting; no cost measured. Step 2 open: the static objects of
-      the cells around the visible ones (0x42fe20 walks the visible cells of grid [0x4a13fc]).
+      again zoomed out, only casting; no cost measured. The user has not yet looked in the
+      game whether shadows still pop in at the edge.
+- [ ] Ring step 2: the static objects (trees, rocks, wall parts?) of the cells around the
+      visible ones. Known so far: render_world 0x453260(0, player, &view) per view: terrain
+      0x453360(a, b, v), 0x437310(a, b, v), static objects 0x42fe20(a, b, v), actors_draw
+      0x4532f0(view), objects_draw 0x42dd90(view) (effects); a = [0x4a3b00 + 2 * view], b =
+      [0x4a3b01 + 2 * view] (bytes: the view's centre cell?), v = 0x50dc80 + view * 0x1f4 (the
+      view's data). 0x42fe20: nothing when grid [0x4a13fc] is 0; walks entries of 0x14 bytes
+      from its third argument (+0 a mask, 0 ends; cell index (a + row) * [0x4a13f4] + column +
+      b, 8 bytes a cell: +0 first object, +4 set to the game time [0x511ee4]); objects linked,
+      skipped when +0x4c & 0x10 or (+0x4e & mask) == 0; drawn with model_draw 0x4280a0. To
+      find: how the entries (visible cells) are made (the visibility pass 0x452880 / 0x452a20
+      / 0x452de0 with terrain_cell_visible 0x452fd0), then the same for the cells around
+      them, drawn as the actors' ring (zoom, `cast_kind` 2). Maybe simpler: call 0x42fe20
+      again zoomed with a widened entry list.
+- [ ] The sun's strength and direction: the user cannot judge them without seeing the
+      differences. Planned: a comparison sheet, the same scene (shadow map, Ultra) rendered
+      with several strengths (`SUN_STRENGTH` now 0.45) and sun directions (`SUN` now
+      (0.45, 1, -0.3)) side by side; needs test switches for both (e.g. `FCOP_SUN_STRENGTH`,
+      `FCOP_SUN=x,y,z`).
       Models' faces turned away from the camera cast too (2026-11-14, the user saw what
       nuclear_rust_strike had: the game culls them; `shadows::nclip`, ~300 a picture, cost
       within the measurement's noise of 0-15%). The dynamic lights keep the ray march. The user: a depth buffer (as

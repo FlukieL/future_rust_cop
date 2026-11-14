@@ -20,6 +20,8 @@
 
 ## Rendering (render block of frame_one_view, in this order)
 0x426eb0  render_begin            camera matrix setup
+0x42fe20  static_objects_draw?    (a, b, view data) the objects of the view's visible cells of grid [0x4a13fc] (entries of 0x14 bytes: +0 mask), model_draw each (see PLAN.md, ring step 2)
+0x437310  ?                       (a, b, view data) called by render_world between terrain and static objects
 0x452880  render_visibility       (0, player, &view) what is visible
 0x44fd20  actor_grid_build        logic in the render block: rebuilds actor_grid (hits use it), empties per-frame lists; skipped when paused
 0x453260  render_world            (0, player, &view) projects terrain, objects, effects into the display list
