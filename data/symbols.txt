@@ -40,6 +40,7 @@
 0x4280f0  model_visible
 0x4284b0  model_draw_polygons
 0x428690  model_face_draw?        one face primitive of a model by its kind (word >> 8 & 0xf, 3...8); its glow (a lamp's light) calls glow_draw, returning to 0x428be7
+0x428c10  model_face_nclip        (p0, p1, p2 screen points x | y << 16): 1 when the face is turned away (cross product < 0), left out; hooked: shadows.rs keeps them for the shadow map
 0x4274b0  line_draw?              a line between two points relative to the camera (the muzzle flash's; the laser sight is drawn by 0x435330)
 0x429830  model_point?            a point of a model in world space (the lights' glow)
 0x453740  project_terrain_vertex  (hooked: wide.rs)

@@ -337,17 +337,32 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   shock wave). A flat vertex attribute (location 7) to the shader. `FCOP_GBUFFER=effects`
   colours each kind; `FCOP_EFFECT_LOG=1` logs blended records and writes their texture
   rectangles to `Textures/effects/`.
-- `shadows.rs`: screen-space shadows (PLAN.md 2a step 3; REG_DWORD `Shadows`, default off,
-  `FCOP_SHADOWS=0/1`, box in Advanced Graphics, `FCOP_GBUFFER=shadows`). A ray march per pixel
-  through the depth toward the light (GLSL `shadow()`, after `ao::COMMON`): a step behind the
-  depth there by less than a thickness is shadowed. The sun (world direction `SUN`, y up) in
-  view space by the camera's matrix [0x511f48] + 0x58 (3x3 i32 16.16, rows right / up /
-  forward; view space = game camera space, x right, y up, z ahead), noted by the projection
-  hooks 0x457340 / 0x452fd0 per view (`camera`), taken in order by `glide::post_3d`
-  (`next_view`); its shadow is multiplied into the AO's half-resolution result (blurred and
-  applied with it, also with the AO off). The 8 strongest dynamic lights are marched (fully blocked, no fade) in the
-  lights' pass. The game's round shadows under objects (blend (0, 5): ZERO, 1 - SRC_ALPHA) are
-  not drawn in the 3D picture while it is on (`glide::add`).
+- `shadows.rs`: shadows (PLAN.md 2a step 3; REG_DWORD `Shadows` 0 off (default), 1
+  screen-space (the ray march below, at half resolution blurred with the AO), 2 shadow map,
+  `FCOP_SHADOWS=0/1/2`; REG_DWORD `ShadowQuality` 0...3 Low / Medium (default) / High / Ultra,
+  `FCOP_SHADOW_QUALITY=low|mid|high|ultra` (`look`, as nuclear_rust_strike's: map 1024 / 2048 /
+  4096 / 4096, PCF 3x3 / 5x5 / 5x5 / 5x5 taps 1 / 1.5 / 1.5 / 1 texels apart, Low looked up in
+  the AO's half-resolution pass and blurred with it); two combos in Advanced Graphics;
+  `FCOP_GBUFFER=shadows`). The sun: a shadow map (as nuclear_rust_strike's, without its off-screen ring): `glide::flush` keeps the 3D
+  picture's triangles that write depth (gmode 1, every corner with a depth) as casters (batched
+  vertices, chroma key in the constant colour's place); `post_3d` draws them from the sun
+  (orthographic, 4096², view space rebuilt from screen position and depth as `ao::COMMON`'s P;
+  casters past `FAR` 12000 units left out, `FCOP_SHADOW_FAR`; keyed texels cut), the AO's last
+  pass looks every pixel up (hardware PCF, `SUN_GLSL`; full resolution, also with the AO
+  off; faces the sun grazes faded in). Only what is on screen casts. Models' faces turned away
+  from the camera (the game leaves them out: winding test 0x428c10, hooked `nclip`) are kept
+  while the display list is under 3/4 full (5024 records, never checked; ~1600 used in M2C):
+  their records (the next at [0x511dc0]) are noted, our walker (`walk.rs`, precise mode)
+  hands them to `glide::set_cast_only` (only casters, not drawn); ~300 a picture.
+  `FCOP_SHADOW_FACES=0` off, `FCOP_SHADOW_LOG=1` logs them and the list's use. The sun (world direction
+  `SUN`, y up) in view space by the camera's matrix [0x511f48] + 0x58 (3x3 i32 16.16, rows
+  right / up / forward; view space = game camera space, x right, y up, z ahead), noted by the
+  projection hooks 0x457340 / 0x452fd0 per view (`camera`), taken in order by `glide::post_3d`
+  (`next_view`, x times widescreen's k: the shaders' space). The 8 strongest dynamic lights:
+  a ray march per pixel through the depth toward the light (GLSL `shadow()`, after
+  `ao::COMMON`: a step behind the depth there by less than a thickness is shadowed; fully
+  blocked, no fade) in the lights' pass. The game's round shadows under objects (blend (0, 5):
+  ZERO, 1 - SRC_ALPHA) are not drawn in the 3D picture while it is on (`glide::add`).
 - `heat.rs`: heat shimmer (PLAN.md 2a step 7; REG_DWORD `HeatDistortion`, default off,
   `FCOP_HEAT=0/1`, box in Advanced Graphics). Sources: effects of kind Fire, warm Glow (explosions'
   fireballs; not lamps: models' lights, the glow 0x4271c0 called by a model's face primitive

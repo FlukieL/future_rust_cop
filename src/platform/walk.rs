@@ -26,6 +26,11 @@ enum Mode {
     Check,
 }
 
+/// The walker is ours (`walk`; the shadows' turned-away faces need it).
+pub fn ours() -> bool {
+    mode() == Mode::Rust
+}
+
 fn mode() -> Mode {
     static M: OnceLock<Mode> = OnceLock::new();
     *M.get_or_init(|| match std::env::var("FCOP_WALK").as_deref() {
@@ -190,11 +195,18 @@ fn walk(m: &Memory, s: u32, list: u32, full: bool) {
     let mut cmode = m.rd32(s + CMODE);
     let mut bmode = m.rd32(s + BMODE);
     let mut r = list;
+    // the turned-away faces of models only cast shadows (`shadows::nclip`)
+    let faces = super::shadows::has_faces();
+    let mut cast_only = false;
     loop {
         'record: {
             let t = m.rd8(r + 4);
             if t == 0 {
                 break 'record;
+            }
+            if faces && super::shadows::is_face(r) != cast_only {
+                cast_only = !cast_only;
+                glide::set_cast_only(cast_only);
             }
             let n = (t & 7) as u32;
             if n != 0 {
@@ -462,6 +474,9 @@ fn walk(m: &Memory, s: u32, list: u32, full: bool) {
         if r == 0 {
             break;
         }
+    }
+    if cast_only {
+        glide::set_cast_only(false);
     }
     m.wr32(s + COLOR, color);
     m.wr32(s + AMODE, amode);

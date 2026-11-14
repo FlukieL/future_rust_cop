@@ -753,6 +753,7 @@ pub const HOOKS: &[(crate::ver::Us, crate::rt::Hook)] = &[
     (cheats::FRAME_WAIT, cheats::frame_wait),
     (savestate::MISSION_LOOP, savestate::mission_loop),
     (effects::GLOW_DRAW, effects::glow_draw),
+    (shadows::NCLIP, shadows::nclip),
     (camera::ROBOT_CAMERA, camera::robot_camera),
     (camera::ROBOT_DRAW, camera::robot_draw),
     (camera::RENDER_HUD, camera::render_hud),
