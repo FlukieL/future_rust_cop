@@ -642,4 +642,5 @@ textures), wet streets / reflections in dark missions.
 - [ ] Difftest: trace mode that finds the first diverging instruction (the old project had one)
 - [x] Start time (2026-10-28): functions compiled on every core (5.5 s -> 1.2 s), the machine
       code kept in `game_files/FCopLAPD/compiled.bin` (later starts ~0.13 s)
-- [ ] Performance: x87 TOP known at compile time, fewer flag/state stores
+- [-] Performance: x87 TOP known at compile time, fewer flag/state stores: not worth it
+      (2026-11-13, "Speed of the game thread": the FPU is hardly in the profile)
