@@ -350,7 +350,17 @@ sort, the camera [0x511f48] (`fps.rs`, up to +0x88), the actors (0x50e428).
       the camera's matrix turns it into view space) and for the 2-4 strongest dynamic
       lights of step 2 (explosions throw shadows). Contact shadows under robots, at walls and
       buildings. Limits: no shadows from things off screen or hidden behind others.
-- [ ] Later, real shadow maps, two ways to try:
+- [x] Shadow map for the sun (2026-11-14, `shadows.rs`; the user: the ray march's shapes could
+      not be made out): the game's own triangles on screen with depth, drawn from the sun into
+      a 4096² depth texture, looked up per pixel (3x3 PCF) in the AO's last pass; as
+      nuclear_rust_strike's, without its ring. No cost measured (~640 fps either way, M2C
+      start, 1920x1080). Open: things off screen cast nothing (nuclear_rust_strike's ring: the
+      game's object lists drawn again zoomed out), the user's look (strength, softness).
+      Models' faces turned away from the camera cast too (2026-11-14, the user saw what
+      nuclear_rust_strike had: the game culls them; `shadows::nclip`, ~300 a picture, cost
+      within the measurement's noise of 0-15%). The dynamic lights keep the ray march. The user: a depth buffer (as
+      nuclear_rust_strike's `zbuffer.rs`) not needed.
+- [ ] Earlier ideas for shadow maps, two ways:
   - the game draws the scene a second time from a camera above the player along the sun
     (as `fps.rs` already reruns the render block, with the same care for random generators,
     visibility leftovers and the display list), its depth is the shadow map; per pixel the
@@ -361,7 +371,9 @@ sort, the camera [0x511f48] (`fps.rs`, up to +0x88), the actors (0x50e428).
     animated models (several vertex lists) and every kind of object have to be right
 - [x] The game's own round shadows under objects (blend ZERO, 1 - SRC_ALPHA, one texture)
       are left out of the 3D picture while Shadows is on (`glide::add`, 2026-11-04).
-- [ ] Setting: Shadows Off / Contact / Full; `FCOP_SHADOWS=0/1/2` (now a box: Off / Contact).
+- [x] Setting (2026-11-14, the user): Shadows Off / Screen-Space / Shadow Map (combo,
+      `FCOP_SHADOWS=0/1/2`; the old box's on is Screen-Space) and Shadow Quality Low / Medium /
+      High / Ultra as nuclear_rust_strike's (`FCOP_SHADOW_QUALITY`).
 
 #### Step 4: knowing the effects (needed by steps 5-9)
 

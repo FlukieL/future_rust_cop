@@ -120,6 +120,10 @@ const BLOOM: u32 = FIRST_OURS + 25;
 const PERSPECTIVE: u32 = FIRST_OURS + 26;
 const TONEMAP_LABEL: u32 = FIRST_OURS + 27;
 const TONEMAP: u32 = FIRST_OURS + 28;
+/// the sun's shadow: Off / Screen-Space / Shadow Map (`SHADOWS`), the map's quality
+const SHADOWS_LABEL: u32 = FIRST_OURS + 29;
+const SHADOW_QUALITY_LABEL: u32 = FIRST_OURS + 30;
+const SHADOW_QUALITY: u32 = FIRST_OURS + 31;
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -176,18 +180,22 @@ pub fn template(id: u32) -> Template {
     // the new effects, a box each (PLAN.md 2a)
     add(Class::Button, AMBIENT_OCCLUSION, "Ambient Occlusion", TABSTOP | 3, [7, 10, w - 14, 9]);
     add(Class::Button, DYNAMIC_LIGHTS, "Dynamic Lights", TABSTOP | 3, [7, 22, w - 14, 9]);
-    add(Class::Button, SHADOWS, "Shadows", TABSTOP | 3, [7, 34, w - 14, 9]);
-    add(Class::Button, LIT_SMOKE, "Lit Smoke (with Dynamic Lights)", TABSTOP | 3, [7, 46, w - 14, 9]);
-    add(Class::Button, HEAT, "Heat Distortion", TABSTOP | 3, [7, 58, w - 14, 9]);
-    add(Class::Button, BLOOM, "Bloom", TABSTOP | 3, [7, 70, w - 14, 9]);
-    add(Class::Button, PERSPECTIVE, "Perspective-Correct Textures", TABSTOP | 3, [7, 82, w - 14, 9]);
-    // the tone mapping curve (`tonemap`; the list's height is part of the combo's)
-    add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 98, 60, 8]);
-    add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [70, 96, w - 77, 70]);
+    add(Class::Button, LIT_SMOKE, "Lit Smoke (with Dynamic Lights)", TABSTOP | 3, [7, 34, w - 14, 9]);
+    add(Class::Button, HEAT, "Heat Distortion", TABSTOP | 3, [7, 46, w - 14, 9]);
+    add(Class::Button, BLOOM, "Bloom", TABSTOP | 3, [7, 58, w - 14, 9]);
+    add(Class::Button, PERSPECTIVE, "Perspective-Correct Textures", TABSTOP | 3, [7, 70, w - 14, 9]);
+    // the shadows (`shadows`) and the tone mapping curve (`tonemap`; a list's height is part
+    // of its combo's)
+    add(Class::Static, SHADOWS_LABEL, "Shadows", 0, [7, 88, 66, 8]);
+    add(Class::ComboBox, SHADOWS, "", TABSTOP | 3, [76, 86, w - 83, 60]);
+    add(Class::Static, SHADOW_QUALITY_LABEL, "Shadow Quality", 0, [7, 102, 66, 8]);
+    add(Class::ComboBox, SHADOW_QUALITY, "", TABSTOP | 3, [76, 100, w - 83, 70]);
+    add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 116, 66, 8]);
+    add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 114, w - 83, 70]);
     // OK (1, the default) and Cancel (2), bottom right
-    add(Class::Button, 1, "OK", TABSTOP | 1, [w - 116, 116, 50, 14]);
-    add(Class::Button, 2, "Cancel", TABSTOP, [w - 57, 116, 50, 14]);
-    Template { style: 0x00c0_0000, title: "Advanced Graphics".into(), rect: [0, 0, w, 136], font: None, items }
+    add(Class::Button, 1, "OK", TABSTOP | 1, [w - 116, 134, 50, 14]);
+    add(Class::Button, 2, "Cancel", TABSTOP, [w - 57, 134, 50, 14]);
+    Template { style: 0x00c0_0000, title: "Advanced Graphics".into(), rect: [0, 0, w, 154], font: None, items }
 }
 
 fn renderer() -> String {
@@ -358,7 +366,16 @@ pub fn init(d: &mut Dialog) {
             c.check = crate::platform::lights::enabled() as u32;
         }
         if let Some(c) = d.control(SHADOWS) {
-            c.check = crate::platform::shadows::enabled() as u32;
+            if let Kind::Combo { items, sel, .. } = &mut c.kind {
+                *items = crate::platform::shadows::MODES.iter().map(|&(k, name)| (name.into(), k as u32)).collect();
+                *sel = crate::platform::shadows::mode() as i32;
+            }
+        }
+        if let Some(c) = d.control(SHADOW_QUALITY) {
+            if let Kind::Combo { items, sel, .. } = &mut c.kind {
+                *items = crate::platform::shadows::QUALITIES.iter().map(|&(k, name)| (name.into(), k as u32)).collect();
+                *sel = crate::platform::shadows::quality() as i32;
+            }
         }
         if let Some(c) = d.control(LIT_SMOKE) {
             c.check = crate::platform::lights::smoke_chosen() as u32;
@@ -606,8 +623,17 @@ pub fn ok(d: &mut Dialog) {
         if let Some(on) = d.control(DYNAMIC_LIGHTS).map(|c| c.check != 0) {
             crate::platform::lights::set_enabled(on);
         }
-        if let Some(on) = d.control(SHADOWS).map(|c| c.check != 0) {
-            crate::platform::shadows::set_enabled(on);
+        let chosen = |id| {
+            d.controls.iter().find(|c| c.id == id).and_then(|c| match &c.kind {
+                Kind::Combo { items, sel, .. } => items.get(*sel as usize).map(|i| i.1),
+                _ => None,
+            })
+        };
+        if let Some(&(m, _)) = chosen(SHADOWS).and_then(|v| crate::platform::shadows::MODES.get(v as usize)) {
+            crate::platform::shadows::set_mode(m);
+        }
+        if let Some(&(q, _)) = chosen(SHADOW_QUALITY).and_then(|v| crate::platform::shadows::QUALITIES.get(v as usize)) {
+            crate::platform::shadows::set_quality(q);
         }
         if let Some(on) = d.control(LIT_SMOKE).map(|c| c.check != 0) {
             crate::platform::lights::set_smoke(on);

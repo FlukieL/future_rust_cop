@@ -262,11 +262,11 @@ vec3 N(ivec2 q, float z, vec3 p, int s) {
 const AO_FS: &str = r#"
 uniform float radius;
 uniform float max_px;
-uniform int ao_on;
-uniform int sun_on;       // the sun's shadow too (shadows.rs)
+uniform int use_ao;
+uniform int sun_mode;     // the sun's shadow here: 0 none, 1 screen-space, 2 the map (shadows.rs)
 uniform vec3 sun;         // toward the sun, view space
 uniform float sun_len;
-uniform float sun_strength;
+uniform float sun_k;
 out vec4 o;
 const int SAMPLES = 12;
 void main() {
@@ -277,9 +277,10 @@ void main() {
     vec3 n = N(q, z, p, 2);
     // a different turn of the samples at every pixel (interleaved gradient noise), blurred after
     float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-    float lit = sun_on != 0 ? 1.0 - sun_strength * shadow(p, n, sun, sun_len, ign, 16, 0.6) : 1.0;
+    float lit = sun_mode == 1 ? 1.0 - sun_k * shadow(p, n, sun, sun_len, ign, 16, 0.6)
+              : sun_mode == 2 ? 1.0 - sun_k * sun_shadow(p, n) : 1.0;
     float rpx = min(radius * focal / z, max_px);
-    if (ao_on == 0 || rpx < 2.0) { o = vec4(lit); return; }
+    if (use_ao == 0 || rpx < 2.0) { o = vec4(lit); return; }
     float a = 6.2831853 * ign;
     float occ = 0.0;
     for (int i = 0; i < SAMPLES; i++) {
@@ -322,6 +323,9 @@ const APPLY_FS: &str = r#"
 uniform sampler2D ao;
 uniform float strength;
 uniform int show;       // 0 the AO as a factor, 1 the depth, 2 the AO alone
+uniform int use_half;   // the half-resolution pass ran (AO, a half-resolution sun's shadow)
+uniform int use_sun;    // the sun's shadow map (shadows.rs), looked up per pixel
+uniform float sun_k;
 out vec4 o;
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
@@ -329,7 +333,7 @@ void main() {
     float z = g.r;
     if (show == 1) { o = vec4(vec3(z > 0.0 ? exp(-z / 6000.0) : 0.0), 1.0); return; }
     float v = 1.0;
-    if (z > 0.0) {
+    if (z > 0.0 && use_half != 0) {
         // the four nearest half-resolution values, weighed by how near their depth is
         ivec2 hs = textureSize(ao, 0);
         vec2 h = (vec2(q) + 0.5) * 0.5 - 0.5;
@@ -347,10 +351,24 @@ void main() {
         }
         v = sum / wsum;
     }
+    if (z > 0.0 && use_sun != 0) {
+        vec3 p = P(vec2(q), z);
+        v *= 1.0 - sun_k * sun_shadow(p, N(q, z, p, 1));
+    }
     if (show == 2) { o = vec4(vec3(v), 1.0); return; }
     o = vec4(vec3(mix(1.0, v, strength * (1.0 - clamp(g.g, 0.0, 1.0)))), 1.0);
 }
 "#;
+
+/// The sun's shadow a view gets (`shadows.rs`).
+#[derive(Clone, Copy)]
+pub enum Sun<'a> {
+    None,
+    /// screen-space: toward the sun in view space
+    Ray([f32; 3]),
+    /// the view's shadow map
+    Map(&'a super::shadows::View),
+}
 
 /// A half-resolution texture and its framebuffer.
 type Half = (glow::Texture, glow::Framebuffer);
@@ -365,7 +383,7 @@ pub struct Ssao {
 
 impl Ssao {
     pub fn new(gl: &glow::Context) -> Ssao {
-        let prog = |fs: &str, ms: bool| compile(gl, VS, &format!("{}{COMMON}{}{fs}", if ms { "#define MS\n" } else { "" }, super::shadows::GLSL));
+        let prog = |fs: &str, ms: bool| compile(gl, VS, &format!("{}{COMMON}{}{}{fs}", if ms { "#define MS\n" } else { "" }, super::shadows::GLSL, super::shadows::SUN_GLSL));
         let progs = [AO_FS, BLUR_FS, APPLY_FS].map(|fs| [prog(fs, false), prog(fs, true)]);
         let vao = unsafe { gl.create_vertex_array().expect("GL vertex array") };
         Ssao { progs, vao, half: None }
@@ -413,9 +431,38 @@ impl Ssao {
     /// The passes over the 3D picture: `depth` the attachment (multisampled or not), `target`
     /// its size, `out` a framebuffer with only the picture's colour, `clip` the scissor box
     /// (x, y from below, w, h) the result is limited to; `ao` whether the AO is wanted, `sun`
-    /// toward the sun in view space for its shadow.
+    /// the sun's shadow (`Sun`).
     #[allow(clippy::too_many_arguments)]
-    pub fn run(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, target: (u32, u32), out: glow::Framebuffer, clip: [i32; 4], ao: bool, sun: Option<[f32; 3]>) {
+    pub fn run(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, target: (u32, u32), out: glow::Framebuffer, clip: [i32; 4], ao: bool, sun: Sun) {
+        let look = super::shadows::look();
+        // the sun's shadow in the half-resolution pass (1 screen-space, 2 the map at Low
+        // quality), or the map per pixel in the last
+        let (sun_half, sun_full) = match sun {
+            Sun::Ray(_) => (1, false),
+            Sun::Map(_) if !look.full => (2, false),
+            Sun::Map(_) => (0, true),
+            Sun::None => (0, false),
+        };
+        let half_pass = ao || sun_half != 0;
+        // the shadow map's uniforms (and texture, on unit 2) for a program
+        let set_map = |u: &dyn Fn(&'static str) -> Option<glow::UniformLocation>| {
+            if let Sun::Map(s) = sun {
+                unsafe {
+                    gl.active_texture(glow::TEXTURE2);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(s.tex));
+                    gl.active_texture(glow::TEXTURE0);
+                    let [x, y, z] = s.axes;
+                    gl.uniform_3_f32(u("sx").as_ref(), x[0], x[1], x[2]);
+                    gl.uniform_3_f32(u("sy").as_ref(), y[0], y[1], y[2]);
+                    gl.uniform_3_f32(u("sz").as_ref(), z[0], z[1], z[2]);
+                    gl.uniform_4_f32(u("srect").as_ref(), s.rect[0], s.rect[1], s.rect[2], s.rect[3]);
+                    gl.uniform_2_f32(u("sdepth").as_ref(), s.depth[0], s.depth[1]);
+                    gl.uniform_1_f32(u("sfar").as_ref(), super::shadows::far());
+                    gl.uniform_1_i32(u("staps").as_ref(), look.taps);
+                    gl.uniform_1_f32(u("sstep").as_ref(), look.step);
+                }
+            }
+        };
         let (w, h) = (target.0 as i32, target.1 as i32);
         let hs = ((w + 1) / 2, (h + 1) / 2);
         let half = self.half(gl, hs);
@@ -432,33 +479,41 @@ impl Ssao {
                 let u = move |n: &'static str| super::gl::uniform(gl, p, n);
                 gl.uniform_1_i32(u("gdepth").as_ref(), 0);
                 gl.uniform_1_i32(u("ao").as_ref(), 1);
+                // the shadow map's unit (a sampler of another type must not share a unit)
+                gl.uniform_1_i32(u("smap").as_ref(), 2);
                 gl.uniform_2_i32(u("size").as_ref(), w, h);
                 gl.uniform_1_f32(u("focal").as_ref(), focal);
                 u
             };
-            // the AO at half resolution
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(half[0].1));
-            gl.viewport(0, 0, hs.0, hs.1);
-            let u = common(self.progs[0][v]);
-            gl.uniform_1_f32(u("radius").as_ref(), RADIUS);
-            gl.uniform_1_f32(u("max_px").as_ref(), h as f32 / 4.0);
-            gl.uniform_1_i32(u("ao_on").as_ref(), ao as i32);
-            gl.uniform_1_i32(u("sun_on").as_ref(), sun.is_some() as i32);
-            let s = sun.unwrap_or([0.0, 1.0, 0.0]);
-            gl.uniform_3_f32(u("sun").as_ref(), s[0], s[1], s[2]);
-            gl.uniform_1_f32(u("sun_len").as_ref(), super::shadows::SUN_LENGTH);
-            gl.uniform_1_f32(u("sun_strength").as_ref(), super::shadows::SUN_STRENGTH);
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            // blurred across, then down
-            gl.active_texture(glow::TEXTURE1);
-            for (from, to, dir) in [(0, 1, (1, 0)), (1, 0, (0, 1))] {
-                gl.bind_texture(glow::TEXTURE_2D, Some(half[from].0));
-                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(half[to].1));
-                let u = common(self.progs[1][v]);
-                gl.uniform_2_i32(u("dir").as_ref(), dir.0, dir.1);
+            if half_pass {
+                // the AO (and the sun's shadow) at half resolution
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(half[0].1));
+                gl.viewport(0, 0, hs.0, hs.1);
+                let u = common(self.progs[0][v]);
+                gl.uniform_1_f32(u("radius").as_ref(), RADIUS);
+                gl.uniform_1_f32(u("max_px").as_ref(), h as f32 / 4.0);
+                gl.uniform_1_i32(u("use_ao").as_ref(), ao as i32);
+                gl.uniform_1_i32(u("sun_mode").as_ref(), sun_half);
+                let d = if let Sun::Ray(d) = sun { d } else { [0.0, 1.0, 0.0] };
+                gl.uniform_3_f32(u("sun").as_ref(), d[0], d[1], d[2]);
+                gl.uniform_1_f32(u("sun_len").as_ref(), super::shadows::SUN_LENGTH);
+                gl.uniform_1_f32(u("sun_k").as_ref(), super::shadows::SUN_STRENGTH);
+                if sun_half == 2 {
+                    set_map(&u);
+                }
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                // blurred across, then down
+                gl.active_texture(glow::TEXTURE1);
+                for (from, to, dir) in [(0, 1, (1, 0)), (1, 0, (0, 1))] {
+                    gl.bind_texture(glow::TEXTURE_2D, Some(half[from].0));
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(half[to].1));
+                    let u = common(self.progs[1][v]);
+                    gl.uniform_2_i32(u("dir").as_ref(), dir.0, dir.1);
+                    gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                }
             }
-            // the picture times the AO
+            // the picture times the AO and the sun's shadow
+            gl.active_texture(glow::TEXTURE1);
             gl.bind_texture(glow::TEXTURE_2D, Some(half[0].0));
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(out));
             gl.viewport(0, 0, w, h);
@@ -475,7 +530,17 @@ impl Ssao {
             let u = common(self.progs[2][v]);
             gl.uniform_1_f32(u("strength").as_ref(), STRENGTH);
             gl.uniform_1_i32(u("show").as_ref(), show);
+            gl.uniform_1_i32(u("use_half").as_ref(), half_pass as i32);
+            gl.uniform_1_i32(u("use_sun").as_ref(), sun_full as i32);
+            gl.uniform_1_f32(u("sun_k").as_ref(), super::shadows::SUN_STRENGTH);
+            if sun_full {
+                set_map(&u);
+            }
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            if matches!(sun, Sun::Map(_)) {
+                gl.active_texture(glow::TEXTURE2);
+                gl.bind_texture(glow::TEXTURE_2D, None);
+            }
             gl.disable(glow::BLEND);
             gl.disable(glow::SCISSOR_TEST);
             gl.active_texture(glow::TEXTURE0);

@@ -212,6 +212,11 @@ struct Glide {
     gdepth: Option<Gdepth>,
     gbuf: Option<f32>,
     ssao: Option<super::ao::Ssao>,
+    /// the sun's shadow (`shadows.rs`): this view's casters (batched vertices), the map
+    casters: Vec<u32>,
+    /// the primitives that follow only cast (models' turned-away faces, `shadows::nclip`)
+    cast_only: bool,
+    shadow_map: Option<super::shadows::ShadowMap>,
     /// the dynamic lights of the view being drawn (`lights.rs`), and their pass
     lights: Vec<super::lights::Light>,
     /// `add`'s vertices' depths, kept between primitives
@@ -472,11 +477,29 @@ void main() {
 "#;
 
 /// Words per batched vertex.
-const VERTEX: usize = 22;
+pub(super) const VERTEX: usize = 22;
 /// The vertex buffer's size: some 40 pictures of the game's ~4000 vertices.
 const VBO_SIZE: usize = 16 << 20;
 
 use super::effects::Effect;
+
+/// The batched vertices' attributes, on the vertex array and buffer bound (`VERTEX` words).
+pub(super) fn vertex_layout(gl: &glow::Context) {
+    unsafe {
+        for (loc, n, off) in [(0, 2, 0), (1, 4, 8), (2, 2, 24), (3, 4, 32)] {
+            gl.enable_vertex_attrib_array(loc);
+            gl.vertex_attrib_pointer_f32(loc, n, glow::FLOAT, false, 4 * VERTEX as i32, off);
+        }
+        gl.enable_vertex_attrib_array(4);
+        gl.vertex_attrib_pointer_i32(4, 4, glow::UNSIGNED_INT, 4 * VERTEX as i32, 48);
+        gl.enable_vertex_attrib_array(5);
+        gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, 4 * VERTEX as i32, 64);
+        gl.enable_vertex_attrib_array(6);
+        gl.vertex_attrib_pointer_f32(6, 1, glow::FLOAT, false, 4 * VERTEX as i32, 80);
+        gl.enable_vertex_attrib_array(7);
+        gl.vertex_attrib_pointer_i32(7, 1, glow::UNSIGNED_INT, 4 * VERTEX as i32, 84);
+    }
+}
 
 /// The shaders' uniforms, looked up once.
 struct Uniforms {
@@ -724,18 +747,7 @@ impl Glide {
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_size(glow::ARRAY_BUFFER, VBO_SIZE as i32, glow::STREAM_DRAW);
-            for (loc, n, off) in [(0, 2, 0), (1, 4, 8), (2, 2, 24), (3, 4, 32)] {
-                gl.enable_vertex_attrib_array(loc);
-                gl.vertex_attrib_pointer_f32(loc, n, glow::FLOAT, false, 4 * VERTEX as i32, off);
-            }
-            gl.enable_vertex_attrib_array(4);
-            gl.vertex_attrib_pointer_i32(4, 4, glow::UNSIGNED_INT, 4 * VERTEX as i32, 48);
-            gl.enable_vertex_attrib_array(5);
-            gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, 4 * VERTEX as i32, 64);
-            gl.enable_vertex_attrib_array(6);
-            gl.vertex_attrib_pointer_f32(6, 1, glow::FLOAT, false, 4 * VERTEX as i32, 80);
-            gl.enable_vertex_attrib_array(7);
-            gl.vertex_attrib_pointer_i32(7, 1, glow::UNSIGNED_INT, 4 * VERTEX as i32, 84);
+            vertex_layout(gl);
             let aniso_max = if gl.supported_extensions().iter().any(|e| e.ends_with("texture_filter_anisotropic")) {
                 gl.get_parameter_f32(glow::MAX_TEXTURE_MAX_ANISOTROPY_EXT)
             } else {
@@ -796,6 +808,9 @@ impl Glide {
                 gdepth: None,
                 gbuf: None,
                 ssao: None,
+                casters: Vec::new(),
+                cast_only: false,
+                shadow_map: None,
                 lights: Vec::new(),
                 zbuf: Vec::new(),
                 smoke_lights: Vec::new(),
@@ -1103,6 +1118,20 @@ impl Glide {
                 _ => 0,
             };
             gl.uniform_1_i32(u.gmode.as_ref(), gmode);
+            // the sun's shadow casters: triangles with depth at every corner, the chroma key in
+            // the constant colour's place (`shadows.rs`)
+            if gmode == 1 && self.batch_mode == glow::TRIANGLES && super::shadows::map() {
+                let kc = [(key >> 16 & 0xff) as f32 / 255.0, (key >> 8 & 0xff) as f32 / 255.0, (key & 0xff) as f32 / 255.0, s.chroma as u32 as f32].map(f32::to_bits);
+                for t in self.batch.chunks_exact(3 * VERTEX) {
+                    if t.chunks_exact(VERTEX).all(|v| f32::from_bits(v[20]) > 0.0) {
+                        for v in t.chunks_exact(VERTEX) {
+                            self.casters.extend_from_slice(&v[..8]);
+                            self.casters.extend(kc);
+                            self.casters.extend_from_slice(&v[12..]);
+                        }
+                    }
+                }
+            }
             gl.uniform_1_i32(u.show_effects.as_ref(), (self.gbuf.is_some() && super::effects::showing()) as i32);
             // lit smoke: additive effects of the 3D picture take the view's last lights
             let lit = match (&self.gdepth, self.gbuf) {
@@ -1228,7 +1257,7 @@ impl Glide {
         }
         // a glow of the 3D picture (additive): a dynamic light
         // (not lines: the laser sight would light the ground along it)
-        if self.gbuf.is_some() && self.gdepth.is_some() && super::lights::enabled() && verts.len() >= 3 && self.state.blend.1 == 4 && matches!(self.state.blend.0, 1 | 4) {
+        if !self.cast_only && self.gbuf.is_some() && self.gdepth.is_some() && super::lights::enabled() && verts.len() >= 3 && self.state.blend.1 == 4 && matches!(self.state.blend.0, 1 | 4) {
             let _t = super::fps::timer(super::fps::Phase::Lights);
             let colour = self.glow_colour(verts, st_box);
             let (tw, th) = (self.target.0 as f32, self.target.1 as f32);
@@ -1278,7 +1307,7 @@ impl Glide {
         // of the smoke only a rocket's trail (records 0xd_, 3D ribbons): grey clouds and fog
         // are not hot (sprites 0xbc)
         let trail = effect == Effect::Smoke && rec.is_some_and(|r| r[0] & 0xf0 == 0xd0);
-        if (hot || trail) && super::heat::enabled() {
+        if (hot || trail) && !self.cast_only && super::heat::enabled() {
             let (tw, th) = (self.target.0 as f32, self.target.1 as f32);
             let (sw, sh) = (self.space.0 as f32, self.space.1 as f32);
             let corners: Vec<_> = verts.iter().map(|&v| (xy(v).0 / sw * tw, th - xy(v).1 / sh * th)).collect();
@@ -1287,6 +1316,7 @@ impl Glide {
             }
         }
         let effect = effect as u32;
+        let start = self.batch.len();
         let mut put = |v: u32, (x, y): (f32, f32), z: f32| {
             let (s, t) = st(v);
             self.batch.extend([x.to_bits(), y.to_bits(), m.rd32(v + 0xc), m.rd32(v + 0x10), m.rd32(v + 0x14), m.rd32(v + 0x1c), s.to_bits(), t.to_bits()]);
@@ -1309,6 +1339,30 @@ impl Glide {
             }
         }
         self.zbuf = z;
+        if self.cast_only {
+            self.cast(start);
+        }
+    }
+
+    /// The primitive batched from `start` only casts (`set_cast_only`): not drawn, kept as a
+    /// caster when solid, a triangle and with depth at every corner (as `flush` keeps them).
+    fn cast(&mut self, start: usize) {
+        let s = self.state;
+        let solid = s.blend == (4, 0) || s.blend == (1, 5);
+        let tri = self.batch_mode == glow::TRIANGLES && self.batch.len() - start == 3 * VERTEX;
+        if solid && tri && self.gbuf.is_some() && super::shadows::map() {
+            let key = s.key;
+            let kc = [(key >> 16 & 0xff) as f32 / 255.0, (key >> 8 & 0xff) as f32 / 255.0, (key & 0xff) as f32 / 255.0, s.chroma as u32 as f32].map(f32::to_bits);
+            let t = &self.batch[start..];
+            if t.chunks_exact(VERTEX).all(|v| f32::from_bits(v[20]) > 0.0) {
+                for v in t.chunks_exact(VERTEX) {
+                    self.casters.extend_from_slice(&v[..8]);
+                    self.casters.extend(kc);
+                    self.casters.extend_from_slice(&v[12..]);
+                }
+            }
+        }
+        self.batch.truncate(start);
     }
 
     /// What effect a primitive of record `rec` is: by its record's blend (+6: 2 additive,
@@ -1570,6 +1624,10 @@ fn sst_win_close(_: &mut Cpu) -> u32 {
         if let Some(mut s) = g.ssao.take() {
             s.delete(gl);
         }
+        if let Some(mut s) = g.shadow_map.take() {
+            s.delete(gl);
+        }
+        g.casters.clear();
         if let Some(mut s) = g.lighting.take() {
             s.delete(gl);
         }
@@ -1644,6 +1702,11 @@ pub fn set_space(space: Option<(u32, u32)>) {
     });
 }
 
+/// Whether the primitives that follow only cast the sun's shadow (`shadows::nclip`).
+pub fn set_cast_only(on: bool) {
+    with(|g, _| g.cast_only = on);
+}
+
 /// The 3D picture's primitives follow (`Some(dx)`: the x the walker adds to their units, the
 /// view's origin in split screen), or not: they write the depth attachment for the AO.
 pub fn set_gbuffer(on: Option<f32>) {
@@ -1674,11 +1737,26 @@ pub fn post_3d() {
         let (tex, ms, colour) = (d.tex, d.ms, d.colour);
         let clip = g.scissor_box(g.state.clip);
         let target = g.target;
-        let sun = super::shadows::next_view();
-        let sun = super::shadows::enabled().then_some(sun);
+        // the sun's shadow: screen-space, or the shadow map of this view's casters
+        let dir = super::shadows::next_view();
+        let casters = std::mem::take(&mut g.casters);
+        let map = match super::shadows::map() {
+            true => {
+                let (textures, space) = ((g.array, g.alpha), (g.space.0 as f32, g.space.1 as f32));
+                g.shadow_map.get_or_insert_with(|| super::shadows::ShadowMap::new(gl)).render(gl, &casters, dir, target, space, textures)
+            }
+            false => None,
+        };
+        g.casters = casters;
+        g.casters.clear();
+        let sun = match (super::shadows::mode(), &map) {
+            (super::shadows::Mode::ScreenSpace, _) => super::ao::Sun::Ray(dir),
+            (super::shadows::Mode::Map, Some(v)) => super::ao::Sun::Map(v),
+            _ => super::ao::Sun::None,
+        };
         // FCOP_GBUFFER=shadows: the sun's shadow alone
         let ao = super::ao::enabled() && super::ao::debug_view() != 4;
-        if ao || sun.is_some() {
+        if ao || !matches!(sun, super::ao::Sun::None) {
             g.ssao.get_or_insert_with(|| super::ao::Ssao::new(gl)).run(gl, tex, ms, target, colour, clip, ao, sun);
         }
         if super::lights::enabled() {

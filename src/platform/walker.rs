@@ -195,6 +195,8 @@ pub fn draw_glide(c: &mut Cpu) {
     }
     glide::set_space(None);
     glide::set_view(View::Full);
+    // the list is made anew for the next picture
+    super::shadows::forget_faces();
     if let (Some(e), Some(v)) = (entry, saved) {
         m.wr32(e, v);
     }
