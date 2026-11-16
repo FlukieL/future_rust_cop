@@ -124,6 +124,8 @@ const TONEMAP: u32 = FIRST_OURS + 28;
 const SHADOWS_LABEL: u32 = FIRST_OURS + 29;
 const SHADOW_QUALITY_LABEL: u32 = FIRST_OURS + 30;
 const SHADOW_QUALITY: u32 = FIRST_OURS + 31;
+/// Right of the Frame Rate combo (`fps::vsync`).
+const VSYNC: u32 = FIRST_OURS + 32;
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -328,7 +330,7 @@ pub fn adjust(template: u32, t: &mut Template) {
             let rows = [(FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate"), (TEXTURES_LABEL, TEXTURES, "Textures"), (MSAA_LABEL, MSAA, "Anti-alias")];
             for (k, (label_id, id, text)) in rows.into_iter().enumerate() {
                 let k = k as i32;
-                let (l, c) = if paused {
+                let (mut l, mut c) = if paused {
                     let w = display_mode.map_or(115, |m| m[2]);
                     let y = label[1] + 24 * k;
                     ([combo[0], y, w, 8], [combo[0], y + 10, w, 100])
@@ -342,6 +344,17 @@ pub fn adjust(template: u32, t: &mut Template) {
                     let y = g[1] + g[3] + 5 + 15 * k;
                     ([g[0], y + 2, 52, 8], [g[0] + 54, y, g[2] - 54, 100])
                 };
+                if id == FRAME_RATE {
+                    // V-Sync: on the label's line in the pause bar's column, else right of the combo
+                    let rect = if paused {
+                        l[2] -= 44;
+                        [l[0] + l[2] + 4, l[1] - 1, 40, 9]
+                    } else {
+                        c[2] -= 46;
+                        [c[0] + c[2] + 4, c[1] + 2, 42, 9]
+                    };
+                    t.items.push(Item { class: Class::Button, id: VSYNC, text: "V-Sync".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect });
+                }
                 t.items.push(Item { class: Class::Static, id: label_id, text: text.into(), style: VISIBLE, ex_style: 0, rect: l });
                 t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: c });
             }
@@ -449,6 +462,9 @@ pub fn init(d: &mut Dialog) {
         if let Some(c) = d.control(FULLSCREEN) {
             c.check = full as u32;
             c.visible = glide;
+        }
+        if let Some(c) = d.control(VSYNC) {
+            c.check = crate::platform::fps::vsync() as u32;
         }
         let fps = crate::platform::fps::chosen();
         if let Some(c) = d.control(FRAME_RATE) {
@@ -581,6 +597,9 @@ pub fn ok(d: &mut Dialog) {
         });
         if let Some(f) = fps {
             crate::platform::fps::set_chosen(f);
+        }
+        if let Some(on) = d.control(VSYNC).map(|c| c.check != 0) {
+            crate::platform::fps::set_vsync(on);
         }
         let filter = d.control(TEXTURES).filter(|c| c.visible).and_then(|c| match &c.kind {
             Kind::Combo { items, sel, .. } => items.get(*sel as usize).map(|i| i.1),

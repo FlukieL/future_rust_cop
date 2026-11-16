@@ -1,6 +1,6 @@
 <!doctype html>
-<!-- Frame time graph of FCOP_FRAMELOG files (src/platform/framelog.rs). Open in a browser,
-     drop one or more .csv files on it (several: compared, a colour each). Nothing is sent
+<!-- Frame time graph of FCOP_FRAMELOG files (src/platform/framelog.rs) and CapFrameX captures
+     (.json). Open in a browser, drop one or more files on it (several: compared, a colour each). Nothing is sent
      anywhere. Drag across a graph to zoom in, double-click to zoom out. -->
 <html lang="en">
 <head>
@@ -44,16 +44,18 @@ button { font: inherit; padding: 3px 10px; }
 <body>
 <main>
   <h1>Frame Time Graph</h1>
-  <p class="hint">Logs from <code>FCOP_FRAMELOG=frames.csv</code>. Drop one or more files (several are compared). Drag across a graph to zoom, double-click to reset.</p>
-  <div id="drop">Drop .csv files here or click to choose<input id="file" type="file" accept=".csv,text/csv" multiple hidden></div>
+  <p class="hint">Logs from <code>FCOP_FRAMELOG=frames.csv</code> or CapFrameX captures (<code>.json</code>). Drop one or more files (several are compared). Drag across a graph to zoom, double-click to reset.</p>
+  <div id="drop">Drop .csv / .json files here or click to choose<input id="file" type="file" accept=".csv,text/csv,.json,application/json" multiple hidden></div>
+  <p id="err" class="hint" style="margin:6px 0 0"></p>
   <div class="bar">
     <label>Skip first <input id="skip" type="number" value="0" min="0" step="500" style="width:80px"> ms</label>
     <label>Y range <select id="yr"><option value="auto">auto (99.9%)</option><option value="max">to longest</option><option value="20">0–20 ms</option><option value="50">0–50 ms</option><option value="100">0–100 ms</option></select></label>
     <label><input id="smooth" type="checkbox"> mean over 50 ms</label>
+    <label title="CapFrameX only: the time between presents is what the game hands over; the time between display changes is what the screen shows (a picture shown twice is a long one there)">CapFrameX frame time <select id="src"><option value="display">between display changes (seen)</option><option value="present">between presents</option></select></label>
     <button id="clear">Clear</button>
   </div>
   <div class="panel"><h2>Frame time (ms) — dashed lines: 60 / 30 fps</h2><canvas id="ft" height="300"></canvas></div>
-  <div class="panel"><h2>Motion: game time moved on less time between pictures (ms) — 0 = smooth</h2><canvas id="mo" height="180"></canvas></div>
+  <div class="panel"><h2>Motion (ms) — 0 = smooth. FCOP_FRAMELOG: game time moved on less time between pictures; CapFrameX: animation error</h2><canvas id="mo" height="180"></canvas></div>
   <div class="panel"><h2>Distribution of frame times</h2><canvas id="hi" height="160"></canvas></div>
   <div class="panel scroll"><h2>Summary</h2><table id="sum"></table></div>
 </main>
@@ -67,6 +69,8 @@ const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).
 const colour = i => css("--c" + (i % 4));
 
 function parse(name, text) {
+  text = text.replace(/^﻿/, "");
+  if (text.trimStart().startsWith("{")) return parseCfx(name, text);
   const rows = [];
   const lines = text.split(/\r?\n/);
   for (let i = 1; i < lines.length; i++) {
@@ -74,14 +78,40 @@ function parse(name, text) {
     if (f.length < 7) continue;
     const ms = +f[0], frame = +f[1];
     if (!isFinite(ms) || !(frame > 0)) continue;
-    rows.push({ ms, frame, swap: +f[2], step: f[5] === "" ? null : +f[5], kind: f[6] });
+    const step = f[5] === "" ? null : +f[5];
+    rows.push({ ms, present: frame, frame, swap: +f[2], step, mo: step === null ? null : step / 0.3 - frame, kind: f[6] });
   }
-  return { name, rows };
+  return [{ name, rows }];
+}
+
+// CapFrameX capture: Runs[].CaptureData holds PresentMon's columns as arrays
+function parseCfx(name, text) {
+  const j = JSON.parse(text), out = [];
+  (j.Runs || []).forEach((run, k) => {
+    const c = run.CaptureData || {}, t = c.TimeInSeconds || [], rows = [];
+    const num = (a, i) => { const v = a ? a[i] : undefined; return typeof v === "number" && isFinite(v) ? v : null; };
+    for (let i = 0; i < t.length; i++) {
+      const present = num(c.MsBetweenPresents, i);
+      if (!(present > 0)) continue;
+      const dropped = !!(c.Dropped && c.Dropped[i]);
+      rows.push({ ms: t[i] * 1000, present, frame: present, display: dropped ? null : num(c.MsBetweenDisplayChange, i),
+        step: null, mo: num(c.AnimationError, i), kind: c.FrameType ? c.FrameType[i] : "frame", dropped, cfx: true });
+    }
+    const game = j.Info && j.Info.GameName;
+    out.push({ name: name + ((j.Runs.length > 1) ? ` #${k + 1}` : ""), rows, cfx: true, game });
+  });
+  return out;
 }
 
 function used(run) {
-  const skip = +$("skip").value || 0;
-  return run.rows.filter(r => r.ms > skip);
+  const skip = +$("skip").value || 0, disp = $("src").value === "display";
+  const out = [];
+  for (const r of run.rows) {
+    if (r.ms <= skip) continue;
+    if (r.cfx) { if (disp && !(r.display > 0)) continue; r.frame = disp ? r.display : r.present; }
+    out.push(r);
+  }
+  return out;
 }
 
 function pct(sorted, p) { return sorted.length ? sorted[Math.round((sorted.length - 1) * p)] : NaN; }
@@ -96,10 +126,11 @@ function stats(rows) {
   const hitches = rows.filter(r => r.frame >= Math.max(1.5 * median, median + 4));
   const gaps = []; for (let i = 1; i < hitches.length; i++) gaps.push(hitches[i].ms - hitches[i - 1].ms);
   gaps.sort((a, b) => a - b);
-  const mo = rows.filter(r => r.step !== null).map(r => Math.abs(r.step / 0.3 - r.frame)).sort((a, b) => a - b);
+  const mo = rows.filter(r => r.mo !== null).map(r => Math.abs(r.mo)).sort((a, b) => a - b);
   return { n, span, fps: 1000 * n / span, mean: span / n, median, p99: pct(t, 0.99), p999: pct(t, 0.999), max: t[n - 1],
     low1: low(0.01), low01: low(0.001), hitches: hitches.length, gap: gaps.length ? pct(gaps, 0.5) : NaN,
-    mo99: pct(mo, 0.99), moMax: mo.length ? mo[mo.length - 1] : NaN };
+    mo99: pct(mo, 0.99), moMax: mo.length ? mo[mo.length - 1] : NaN,
+    dropped: rows.some(r => r.cfx) ? rows.filter(r => r.dropped).length : NaN };
 }
 
 function setup(cv) {
@@ -184,12 +215,12 @@ function draw() {
   data.forEach((d, i) => line(c, series(d, r => r.frame, x0, x1, smooth), a.X, a.Y, colour(i)));
   c.g.restore(); ft = { c, a, data, x0, x1, val: r => r.frame };
   // motion
-  let mo = []; data.forEach(d => d.forEach(r => { if (r.step !== null) mo.push(Math.abs(r.step / 0.3 - r.frame)); })); mo.sort((p, q) => p - q);
+  let mo = []; data.forEach(d => d.forEach(r => { if (r.mo !== null) mo.push(Math.abs(r.mo)); })); mo.sort((p, q) => p - q);
   let m = Math.max(2, pct(mo, 0.999) * 1.2 || 2);
   c = setup($("mo")); a = axes(c, x0, x1, -m, m, [0]);
   c.g.save(); c.g.beginPath(); c.g.rect(c.L, c.T, c.w - c.L - c.R, c.h - c.T - c.B); c.g.clip();
-  data.forEach((d, i) => line(c, series(d, r => r.step === null ? null : r.step / 0.3 - r.frame, x0, x1, smooth), a.X, a.Y, colour(i)));
-  c.g.restore(); mot = { c, a, data, x0, x1, val: r => r.step === null ? null : r.step / 0.3 - r.frame };
+  data.forEach((d, i) => line(c, series(d, r => r.mo, x0, x1, smooth), a.X, a.Y, colour(i)));
+  c.g.restore(); mot = { c, a, data, x0, x1, val: r => r.mo };
   // histogram of the shown range
   c = setup($("hi"));
   const bins = 60, hmax = top, counts = data.map(d => { const b = new Array(bins).fill(0); d.forEach(r => { if (r.ms >= x0 && r.ms <= x1) b[Math.min(bins - 1, Math.floor(r.frame / hmax * bins))]++; }); return b; });
@@ -206,11 +237,11 @@ function draw() {
 
 function summary(data) {
   const f = (v, d = 2) => isFinite(v) ? v.toFixed(d) : "–";
-  let h = "<tr><th>File</th><th>Pictures</th><th>Avg fps</th><th>Mean ms</th><th>Median</th><th>99%</th><th>99.9%</th><th>Longest</th><th>1% low fps</th><th>0.1% low fps</th><th>Hitches (≥1.5× median, ≥ +4 ms)</th><th>Their spacing</th><th>Motion 99% |ms|</th><th>Motion max</th></tr>";
+  let h = "<tr><th>File</th><th>Pictures</th><th>Avg fps</th><th>Mean ms</th><th>Median</th><th>99%</th><th>99.9%</th><th>Longest</th><th>1% low fps</th><th>0.1% low fps</th><th>Hitches (≥1.5× median, ≥ +4 ms)</th><th>Their spacing</th><th>Motion 99% |ms|</th><th>Motion max</th><th>Dropped</th></tr>";
   runs.forEach((r, i) => {
     const s = stats(data[i]);
-    if (!s) { h += `<tr><td><span class="sw" style="background:${colour(i)}"></span>${esc(r.name)}</td><td colspan="13">no pictures in range</td></tr>`; return; }
-    h += `<tr><td><span class="sw" style="background:${colour(i)}"></span>${esc(r.name)}</td><td>${s.n}</td><td>${f(s.fps, 1)}</td><td>${f(s.mean)}</td><td>${f(s.median)}</td><td>${f(s.p99)}</td><td>${f(s.p999)}</td><td>${f(s.max)}</td><td>${f(s.low1, 1)}</td><td>${f(s.low01, 1)}</td><td>${s.hitches}</td><td>${isFinite(s.gap) ? f(s.gap, 0) + " ms" : "–"}</td><td>${f(s.mo99)}</td><td>${f(s.moMax)}</td></tr>`;
+    if (!s) { h += `<tr><td><span class="sw" style="background:${colour(i)}"></span>${esc(r.name)}</td><td colspan="14">no pictures in range</td></tr>`; return; }
+    h += `<tr><td><span class="sw" style="background:${colour(i)}"></span>${esc(r.name)}</td><td>${s.n}</td><td>${f(s.fps, 1)}</td><td>${f(s.mean)}</td><td>${f(s.median)}</td><td>${f(s.p99)}</td><td>${f(s.p999)}</td><td>${f(s.max)}</td><td>${f(s.low1, 1)}</td><td>${f(s.low01, 1)}</td><td>${s.hitches}</td><td>${isFinite(s.gap) ? f(s.gap, 0) + " ms" : "–"}</td><td>${f(s.mo99)}</td><td>${f(s.moMax)}</td><td>${isFinite(s.dropped) ? s.dropped : "–"}</td></tr>`;
   });
   $("sum").innerHTML = runs.length ? h : "<tr><td>No files yet.</td></tr>";
 }
@@ -246,7 +277,8 @@ function tip(e, p) {
     // the frame with the largest value within 3 pixels
     const win = 3 / (p.c.w - p.c.L - p.c.R) * (p.x1 - p.x0); let best = null;
     for (const r of d) if (Math.abs(r.ms - t) <= win) { const v = p.val(r); if (v !== null && (!best || Math.abs(v) > Math.abs(p.val(best)))) best = r; }
-    if (best) lines.push(`${runs[i].name}: frame ${best.frame.toFixed(2)} ms, ${best.kind}` + (best.step !== null ? `, game moved ${(best.step / 0.3).toFixed(2)} ms` : ""));
+    if (best && best.cfx) lines.push(`${runs[i].name}: presents ${best.present.toFixed(2)} ms, display ${best.display === null ? "–" : best.display.toFixed(2)} ms` + (best.mo !== null ? `, animation error ${best.mo.toFixed(2)} ms` : "") + (best.dropped ? ", dropped" : ""));
+    else if (best) lines.push(`${runs[i].name}: frame ${best.frame.toFixed(2)} ms, ${best.kind}` + (best.step !== null ? `, game moved ${(best.step / 0.3).toFixed(2)} ms` : ""));
   });
   const el = $("tip"); el.textContent = lines.join("\n"); el.style.display = "block";
   el.style.left = Math.min(e.clientX + 14, window.innerWidth - el.offsetWidth - 8) + "px"; el.style.top = (e.clientY + 14) + "px";
@@ -255,14 +287,16 @@ hook($("ft"), () => ft); hook($("mo"), () => mot);
 
 function load(files) {
   const list = [...files];
-  Promise.all(list.map(f => f.text().then(t => parse(f.name, t)))).then(rs => { rs.forEach(r => runs.push(r)); view = null; draw(); });
+  Promise.all(list.map(f => f.text().then(t => { try { return parse(f.name, t); } catch (e) { alertless(f.name, e); return []; } })))
+    .then(rs => { rs.flat().forEach(r => runs.push(r)); view = null; draw(); });
 }
+function alertless(name, e) { $("err").textContent = `${name}: could not be read (${e.message})`; }
 $("drop").addEventListener("click", () => $("file").click());
 $("file").addEventListener("change", e => load(e.target.files));
 ["dragover", "dragenter"].forEach(n => document.addEventListener(n, e => { e.preventDefault(); $("drop").classList.add("over"); }));
 ["dragleave", "drop"].forEach(n => document.addEventListener(n, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
 document.addEventListener("drop", e => load(e.dataTransfer.files));
-["skip", "yr", "smooth"].forEach(id => $(id).addEventListener("input", () => { view = null; draw(); }));
+["skip", "yr", "smooth", "src"].forEach(id => $(id).addEventListener("input", () => { view = null; draw(); }));
 $("clear").addEventListener("click", () => { runs.length = 0; view = null; draw(); });
 window.addEventListener("resize", draw);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
