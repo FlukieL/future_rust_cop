@@ -389,7 +389,9 @@ pub fn show_texture(tex: glow::Texture, w: u32, h: u32, gamma: f32) {
         if let Some(gl) = &mut host.app.gl {
             super::stats::picture();
             gl.shown = (tex, w, h, false, gamma);
+            let begin = std::time::Instant::now();
             host.app.draw();
+            super::framelog::shown(begin);
         }
     });
 }

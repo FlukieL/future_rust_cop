@@ -20,6 +20,7 @@ pub mod dshow;
 pub mod dsound;
 pub mod effects;
 pub mod fps;
+pub mod framelog;
 pub mod gamepad;
 pub mod gdi32;
 pub mod gl;

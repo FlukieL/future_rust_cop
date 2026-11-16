@@ -477,7 +477,10 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   Between frames it sleeps (turn handed over) until 2 ms before the next picture or frame.
   The cursor is never caught or hidden in scripted runs (`FCOP_INPUT`) or with `FCOP_GRAB=0`.
   `FCOP_STATS=1` draws frames a second and a frame time graph in the window's corner
-  (`stats.rs`, no RivaTuner needed); `FCOP_SAMPLE=1` (`sample.rs`, shows the stats too) logs
+  (`stats.rs`, no RivaTuner needed); `FCOP_FRAMELOG=file.csv` (`framelog.rs`) writes a line per 3D picture
+  shown: ms, frame time, swap time, clock, the game time it shows (`fps::render_start`) and its
+  step (uneven motion stutters even when frames come on time); `examples/framelog.rs <csv> [skip
+  ms]` sums it up (lows, hitches and their spacing, pictures not moving with the clock); `FCOP_SAMPLE=1` (`sample.rs`, shows the stats too) logs
   every 2 s where the game thread spends its time (functions by name, system code unwound).
   `FCOP_FPS=1` logs the frames shown per second (Glide); with `FCOP_PHASES=1` also µs a
   frame spent in the effects' phases (`fps::timer`: projected points, `glide::add`, `ao::depths`,
