@@ -732,6 +732,7 @@ fn create_thread(c: &mut Cpu) -> u32 {
     let resume = Arc::new((Mutex::new(flags & 4 == 0), Condvar::new()));
     let r2 = resume.clone();
     let (tx, rx) = std::sync::mpsc::channel();
+    let stack = super::thread_stack();
     std::thread::Builder::new()
         .stack_size(64 << 20)
         .spawn(move || {
@@ -744,7 +745,7 @@ fn create_thread(c: &mut Cpu) -> u32 {
                     go = cv.wait(go).unwrap();
                 }
             }
-            let mut tc = super::new_thread_cpu();
+            let mut tc = super::thread_cpu(stack);
             let r = guest_call(&mut tc, start, &[param]);
             let code = if tc.stop != 0 { EXIT_CODE.get() } else { r };
             let mut g = objects();

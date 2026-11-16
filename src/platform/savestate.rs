@@ -29,7 +29,7 @@ pub const MISSION_LOOP: Us = Us(0x406820);
 /// In a network game this computer's view, else negative: never there.
 const NET_VIEW: Us = Us(0x511fa0);
 
-const MAGIC: &[u8; 8] = b"FCOPSAV1";
+const MAGIC: &[u8; 8] = b"FCOPSAV2";
 const PARTS: [&str; 4] = ["heap blocks", "kernel objects", "sound buffers", "textures"];
 
 /// The fingerprint of the running mission's start (each part's hash), taken at its first frame.
@@ -70,8 +70,9 @@ fn mission() -> String {
     kernel32::LAST_MISSION.lock().unwrap().clone()
 }
 
+/// `savestate.bin` in the game folder, or `FCOP_SAVESTATE` (tests: the player's own stays).
 fn path() -> std::path::PathBuf {
-    super::game_dir().join(crate::setup::SAVESTATE)
+    std::env::var_os("FCOP_SAVESTATE").map_or_else(|| super::game_dir().join(crate::setup::SAVESTATE), Into::into)
 }
 
 fn w32(w: &mut impl Write, v: u32) -> std::io::Result<()> {
@@ -177,7 +178,7 @@ pub fn load(c: &mut Cpu) {
         let mut magic = [0; 8];
         r.read_exact(&mut magic)?;
         if &magic != MAGIC {
-            return Ok(Err("not a savestate of this version".into()));
+            return Ok(Err("made by an older version of fcop (the heap is laid out otherwise now): save again".into()));
         }
         let n = r32(&mut r)?;
         if n > 4096 {
