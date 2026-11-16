@@ -3,10 +3,11 @@
 //! Counted are the new pictures shown (`picture`: Glide's and 2D frames), not the window's
 //! repaints. The text is the last half second's: frames a second and the mean frame time,
 //! then the longest and the 99th percentile frame time of the last second. The graph goes by
-//! time, as RivaTuner's: one column per 1/60 s, 4 s across, a fixed range of 0 to 20 ms. Each
-//! column shows the mean frame time of the frames ending in it and the two columns before
-//! (50 ms), or, taller, a frame longer than a column that it lies within (a hitch stays as tall
-//! as it was). Yellow above 8.3 ms (under 120 fps), red above 16.7 ms (under 60 fps).
+//! time, as RivaTuner's: one column per 1/60 s, 4 s across, a range of 0 to 20 ms, or 50, 100,
+//! 200, 500, 1000 ms when a column shown is longer (labelled in its corner). A line as
+//! RivaTuner's, every frame on its own: each column spans the frames ending in it and joins
+//! the previous column's last; a frame longer than a column is a plateau over the columns it
+//! lies within. Yellow above 8.3 ms (under 120 fps), red above 16.7 ms (under 60 fps).
 //! Redrawn 60 times a second; not in FCOP_SHOT's pictures.
 use super::dialog::draw::glyph;
 use std::collections::VecDeque;
@@ -43,7 +44,7 @@ pub fn enabled() -> bool {
 /// Columns of the graph, one pixel each: the picture's width.
 pub const W: usize = 240;
 const COL_MS: f32 = 1000.0 / 60.0;
-/// The graph's fixed range: 0 to 20 ms.
+/// The graph's range at least: 0 to 20 ms.
 const TOP_MS: f32 = 20.0;
 const LINE: usize = 10;
 const GRAPH: usize = 48;
@@ -64,12 +65,14 @@ struct Stats {
     drawn: Option<Instant>,
 }
 
-/// A column of the graph: the frames ending in it (sum of their times, count), and the
+/// A column of the graph: the frames ending in it (count, shortest, longest, last), and the
 /// longest frame it lies within.
 #[derive(Clone, Copy, Default)]
 struct Col {
-    sum: f32,
     n: u32,
+    min: f32,
+    max: f32,
+    last: f32,
     long: f32,
 }
 
@@ -112,7 +115,9 @@ pub fn picture() {
     // the column it ends in, and every column before it lasted
     let n = s.cols.len() as u64;
     let last = s.cols.back_mut().unwrap();
-    last.sum += ms;
+    last.min = if last.n == 0 { ms } else { last.min.min(ms) };
+    last.max = last.max.max(ms);
+    last.last = ms;
     last.n += 1;
     for k in col_of(t).max(s.col - n)..s.col - 1 {
         let i = (n - (s.col - k)) as usize;
@@ -163,27 +168,44 @@ fn render(s: &Stats) -> Vec<u32> {
     text(&mut px, 2, 1 + LINE, &s.text[1], 0xffc0_c0c0);
     let cols: Vec<Col> = s.cols.iter().copied().collect();
     let skip = W - cols.len();
+    // per column the frames ending in it (shortest, longest, last), or the frame it lies within
+    let span = |c: &Col| if c.n == 0 { (c.long, c.long, c.long) } else { (c.min.min(c.long), c.max.max(c.long), c.last) };
+    let top = top_ms(cols.iter().map(|c| span(c).1).fold(0.0, f32::max));
+    let label = format!("{top:.0} ms");
+    text(&mut px, W - 2 - text_width(&label), H - GRAPH, &label, 0xff80_8080);
+    let y_of = |t: f32| H - 1 - ((t / top).min(1.0) * (GRAPH - 1) as f32).round() as usize;
+    let mut prev: Option<f32> = None;
     for (x, c) in cols.iter().enumerate() {
-        // the mean of the frames ending in this column and the two before, or the hitch it
-        // lies within
-        let (sum, n) = cols[x.saturating_sub(2)..=x].iter().fold((0.0, 0), |(s, n), c| (s + c.sum, n + c.n));
-        let t = if n == 0 { c.long } else { (sum / n as f32).max(c.long) };
-        if t == 0.0 {
+        let (lo, hi, last) = span(c);
+        if hi == 0.0 {
+            prev = None;
             continue;
         }
-        let bar = ((t / TOP_MS).min(1.0) * GRAPH as f32).round().max(1.0) as usize;
-        let (line, fill) = if t > 1000.0 / 60.0 {
-            (0xffff_5050, 0x80c0_3030)
-        } else if t > 1000.0 / 120.0 {
-            (0xffff_e050, 0x80c0_a030)
-        } else {
-            (0xff60_ff60, 0x8030_a030)
-        };
-        for y in H - bar..H {
-            px[y * W + x + skip] = if y == H - bar { line } else { fill };
+        // a line as RivaTuner's: from the previous column's last frame through every frame here
+        let (lo, hi) = prev.map_or((lo, hi), |p| (lo.min(p), hi.max(p)));
+        prev = Some(last);
+        for y in y_of(hi)..=y_of(lo) {
+            let t = (H - 1 - y) as f32 / (GRAPH - 1) as f32 * top;
+            px[y * W + x + skip] = if t > 1000.0 / 60.0 {
+                0xffff_5050
+            } else if t > 1000.0 / 120.0 {
+                0xffff_e050
+            } else {
+                0xff60_ff60
+            };
         }
     }
     px
+}
+
+/// The graph's range for the longest column shown: 20 ms, or the first step above it (low
+/// frame rates filled the whole graph red).
+fn top_ms(max: f32) -> f32 {
+    [TOP_MS, 50.0, 100.0, 200.0, 500.0].into_iter().find(|&t| max <= t).unwrap_or(1000.0)
+}
+
+fn text_width(s: &str) -> usize {
+    s.chars().map(|ch| glyph(ch).map_or(3, |(_, _, w)| w as usize + 1)).sum()
 }
 
 fn text(px: &mut [u32], x: usize, y: usize, s: &str, c: u32) {
@@ -204,3 +226,4 @@ fn text(px: &mut [u32], x: usize, y: usize, s: &str, c: u32) {
         x += w + 1;
     }
 }
+
