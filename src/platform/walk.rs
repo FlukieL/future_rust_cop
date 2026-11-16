@@ -195,18 +195,21 @@ fn walk(m: &Memory, s: u32, list: u32, full: bool) {
     let mut cmode = m.rd32(s + CMODE);
     let mut bmode = m.rd32(s + BMODE);
     let mut r = list;
-    // the turned-away faces of models only cast shadows (`shadows::nclip`)
-    let faces = super::shadows::has_faces();
-    let mut cast_only = false;
+    // models' turned-away faces and the ring's records only cast shadows (`shadows.rs`)
+    let extra = super::shadows::has_cast();
+    let mut cast_only = 0;
     loop {
         'record: {
             let t = m.rd8(r + 4);
             if t == 0 {
                 break 'record;
             }
-            if faces && super::shadows::is_face(r) != cast_only {
-                cast_only = !cast_only;
-                glide::set_cast_only(cast_only);
+            if extra {
+                let k = super::shadows::cast_kind(r);
+                if k != cast_only {
+                    cast_only = k;
+                    glide::set_cast_only(k);
+                }
             }
             let n = (t & 7) as u32;
             if n != 0 {
@@ -475,8 +478,8 @@ fn walk(m: &Memory, s: u32, list: u32, full: bool) {
             break;
         }
     }
-    if cast_only {
-        glide::set_cast_only(false);
+    if cast_only != 0 {
+        glide::set_cast_only(0);
     }
     m.wr32(s + COLOR, color);
     m.wr32(s + AMODE, amode);

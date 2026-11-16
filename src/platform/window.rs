@@ -389,7 +389,9 @@ pub fn show_texture(tex: glow::Texture, w: u32, h: u32, gamma: f32) {
         if let Some(gl) = &mut host.app.gl {
             super::stats::picture();
             gl.shown = (tex, w, h, false, gamma);
+            let begin = std::time::Instant::now();
             host.app.draw();
+            super::framelog::shown(begin);
         }
     });
 }
@@ -403,10 +405,16 @@ fn shot_path() -> Option<&'static String> {
     PATH.get_or_init(|| std::env::var("FCOP_SHOT").ok()).as_ref()
 }
 
+/// `FCOP_SHOT_MS`: the time between pictures (default 500 ms).
+fn shot_ms() -> u64 {
+    static MS: OnceLock<u64> = OnceLock::new();
+    *MS.get_or_init(|| std::env::var("FCOP_SHOT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500))
+}
+
 static LAST_SHOT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 fn shot_due(force: bool) -> bool {
-    shot_path().is_some() && (force || LAST_SHOT.lock().unwrap().is_none_or(|t| t.elapsed() >= Duration::from_millis(500)))
+    shot_path().is_some() && (force || LAST_SHOT.lock().unwrap().is_none_or(|t| t.elapsed() >= Duration::from_millis(shot_ms())))
 }
 
 fn write_shot(px: &[u32], w: u32, h: u32) {

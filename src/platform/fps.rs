@@ -391,6 +391,8 @@ pub fn render_start(c: &mut Cpu) {
     } else {
         network() && view1 != (view == 1)
     };
+    // the game time this picture shows (`framelog`): the game's own unless moved below
+    let mut shown_at = (!second && super::framelog::on()).then(|| (ticks(), m.rd32(GAME_TIME.at()) as f64));
     if active() && !second {
         let now = ticks();
         let mut history = HISTORY.lock().unwrap();
@@ -425,11 +427,17 @@ pub fn render_start(c: &mut Cpu) {
                 // destroyed since a kept frame left memory that may be another thing's by now
                 let real = Places::now();
                 let live: HashSet<u32> = real.actors.iter().map(|x| x.0).collect();
-                if k == 0 {
+                let at = if k == 0 {
                     history[0].1.between(&history[0].1, 0.0, &live);
+                    history[0].0
                 } else {
                     let ((t0, from), (t1, to)) = (&history[k - 1], &history[k]);
-                    from.between(to, ((shown - t0) / (t1 - t0)).clamp(0.0, 1.0), &live);
+                    let f = ((shown - t0) / (t1 - t0)).clamp(0.0, 1.0);
+                    from.between(to, f, &live);
+                    t0 + f * (t1 - t0)
+                };
+                if let Some(s) = &mut shown_at {
+                    s.1 = at;
                 }
                 *REAL.lock().unwrap() = Some(real);
                 // the two-view frame ran the visibility pass before, with the real camera: the
@@ -452,6 +460,9 @@ pub fn render_start(c: &mut Cpu) {
                 }
             }
         }
+    }
+    if let Some((clock, at)) = shown_at {
+        super::framelog::drawing(clock, at, showing);
     }
     call_original(c, RENDER_START.at());
 }

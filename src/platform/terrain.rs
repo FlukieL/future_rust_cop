@@ -40,6 +40,11 @@ fn mode() -> Mode {
     })
 }
 
+/// Our terrain pass runs (not the game's, nor the check of both).
+pub fn ours() -> bool {
+    mode() == Mode::Rust
+}
+
 /// Hook of 0x4534f0(sect, vbuf, pos, mask, view) (cdecl).
 pub fn block_vertices(c: &mut Cpu) {
     let m = mem();
@@ -190,9 +195,12 @@ fn project(m: &Memory, out: u32, x: i32, y: i32, z: i32, k: f32, split: bool, ao
     m.wr16(out + 2, sy as u16);
     let xc = if sx < 0 { 0x34 } else if sx < 2 * cx { 0x32 } else { 0x38 };
     let yc = if sy < 0 { 0x1c } else if sy < 0x780 { 0x0e } else { 0x2c };
-    m.wr8(out + 7, xc & yc);
-    if ao {
-        super::ao::point(sx as i16, sy as i16, (z >> 4) as i16);
+    // our mark (not the game's, nor in the check): the point left s16 and wrapped (a tile off
+    // the screen with it is not kept as a shadow caster)
+    let wrapped = sx != sx as i16 as i32 || sy != sy as i16 as i32;
+    m.wr8(out + 7, xc & yc | if wrapped && ours() { WRAPPED } else { 0 });
+    if ao && !wrapped {
+        super::ao::point(sx, sy, (z >> 4) as i16);
     }
 }
 
@@ -267,6 +275,8 @@ fn compare_records(ours: &[u8], game: &[u8]) {
 /// bit 0, cells row by row. Walls (shape kinds 1..4) only when seen from a side they show
 /// (bit 11 positive, bit 12 negative distance of the camera to the wall's plane).
 fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32) {
+    // the shadow map's sun sees tiles turned away from the camera: kept, only casting
+    let cast = super::shadows::keep_hidden();
     let mut tp = sect + 0x5d0 + (m.rd16(sect + 0x3cc + 2 * gofs) as u32 >> 4);
     let mut c = 0i32;
     let mut ci = gofs;
@@ -306,8 +316,8 @@ fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32) {
                 pos && neg
             }
         };
-        if draw {
-            tile(m, vbuf + 24 * (cell + (cell >> 4)), t, sect, cell);
+        if draw || cast {
+            tile(m, vbuf + 24 * (cell + (cell >> 4)), t, sect, cell, cast, !draw);
         }
         if c >= 16 {
             break;
@@ -315,19 +325,30 @@ fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32) {
     }
 }
 
+/// A projected point's outcode bit of ours: it left s16 (`project`).
+const WRAPPED: u8 = 0x80;
+
 /// 0x453930(vbase, t, sect, cell): one tile culled by its corners' outcodes (and, with t bit 0,
-/// by facing), else appended to the display list.
-fn tile(m: &Memory, vbase: u32, t: u32, sect: u32, cell: u32) {
+/// by facing), else appended to the display list. With `cast` a tile off the screen or turned
+/// away (`hidden`: a wall seen from the side it does not show) is appended too, as a shadow
+/// caster only (`shadows::note_hidden`; the screen's edge cut the shadows of blocks reaching
+/// out of it, the cut moving with the camera); not in `FCOP_TERRAIN=check`.
+fn tile(m: &Memory, vbase: u32, t: u32, sect: u32, cell: u32, cast: bool, hidden: bool) {
     let shape = (t >> 15) & 0x7f;
     let k = CORNERS.at() + 4 * shape;
     let v: [u32; 4] = std::array::from_fn(|i| vbase + 8 * m.rd8(k + i as u32) as u32);
     let f: [u8; 4] = std::array::from_fn(|i| m.rd8(v[i] + 7));
+    let wrapped = (f[0] | f[1] | f[2] | f[3]) & WRAPPED != 0;
+    let f = f.map(|f| f & !WRAPPED);
     let or = f[0] | f[1] | f[2] | f[3];
     let and = f[0] & f[1] & f[2] & f[3];
-    if or & 1 != 0 || (or & 2 == 0 && and != 0) {
+    if or & 1 != 0 {
         return;
     }
-    if t & 1 != 0 && back_facing(m.rd32(v[0]), m.rd32(v[1]), m.rd32(v[2])) {
+    // off the screen (all corners beyond one edge), or turned away: only a caster
+    let off = or & 2 == 0 && and != 0;
+    let hidden = off || hidden || t & 1 != 0 && back_facing(m.rd32(v[0]), m.rd32(v[1]), m.rd32(v[2]));
+    if hidden && !(cast && !wrapped && super::shadows::note_hidden()) {
         return;
     }
     let z = |i: usize| m.rd16(v[i] + 4) as i16 as i32;

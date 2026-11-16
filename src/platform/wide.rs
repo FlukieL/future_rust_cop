@@ -32,6 +32,21 @@ const RES_TABLE: Us = Us(0x487080);
 
 /// k as f32 bits; 1.0 is off.
 static K: AtomicU32 = AtomicU32::new(0x3f80_0000);
+/// The shadows' ring (`shadows::actors_draw`): camera-space x and y times this before the
+/// objects' projection and view test, as f32 bits; 1.0 is off.
+static ZOOM: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+pub fn set_zoom(z: f32) {
+    ZOOM.store(z.to_bits(), Ordering::Relaxed);
+}
+
+fn zoom() -> f32 {
+    f32::from_bits(ZOOM.load(Ordering::Relaxed))
+}
+
+fn sz(v: i32) -> i32 {
+    (v as f32 * zoom()) as i32
+}
 
 /// Records moved by `to_screen` this frame (drawn with the centred HUD).
 static PLACED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
@@ -97,23 +112,29 @@ pub fn terrain_vertex(c: &mut Cpu) {
     // {x, y, z / 16} (s16) for the ambient occlusion's depth
     if super::ao::depth_wanted() {
         let m = mem();
-        super::ao::point(m.rd16(out) as i16, m.rd16(out + 2) as i16, m.rd16(out + 4) as i16);
+        super::ao::point(m.rd16(out) as i16 as i32, m.rd16(out + 2) as i16 as i32, m.rd16(out + 4) as i16);
     }
 }
 
 /// 0x457140(p): a sprite {x, y, z, _, w, h} (s16).
 pub fn sprite(c: &mut Cpu) {
-    if k() != 1.0 {
+    let zoomed = zoom() != 1.0;
+    if k() != 1.0 || zoomed {
         let m = mem();
         let p = m.rd32(c.r[ESP] + 4);
         for a in [p, p + 8] {
-            m.wr16(a, sx(m.rd16(a) as i16 as i32) as u16);
+            m.wr16(a, sz(sx(m.rd16(a) as i16 as i32)) as u16);
+        }
+        if zoomed {
+            for a in [p + 2, p + 10] {
+                m.wr16(a, sz(m.rd16(a) as i16 as i32) as u16);
+            }
         }
     }
     let p = mem().rd32(c.r[ESP] + 4);
     call_original(c, SPRITE.at());
     // projected in place: centre {sx, sy}, z, size {w, h} at +8 (al = 0: in front of the camera)
-    if super::ao::depth_wanted() && c.r[crate::rt::EAX] & 0xff == 0 {
+    if super::ao::depth_wanted() && !zoomed && c.r[crate::rt::EAX] & 0xff == 0 {
         let m = mem();
         let r = |o: u32| m.rd16(p + o) as i16;
         super::ao::sprite(r(0), r(2), r(8), r(10), r(4));
@@ -122,18 +143,43 @@ pub fn sprite(c: &mut Cpu) {
 
 /// 0x457340(points, flags, n): n points {x, y, z, _} (s16, 8 bytes each), projected in place.
 pub fn points(c: &mut Cpu) {
-    if k() != 1.0 {
+    let z = zoom();
+    if k() != 1.0 || z != 1.0 {
         let m = mem();
         let p = m.rd32(c.r[ESP] + 4);
         let n = m.rd32(c.r[ESP] + 12) as i32;
         for i in 0..n.max(0) as u32 {
-            m.wr16(p + 8 * i, sx(m.rd16(p + 8 * i) as i16 as i32) as u16);
+            m.wr16(p + 8 * i, sz(sx(m.rd16(p + 8 * i) as i16 as i32)) as u16);
+            if z != 1.0 {
+                m.wr16(p + 8 * i + 2, sz(m.rd16(p + 8 * i + 2) as i16 as i32) as u16);
+            }
         }
     }
     let m = mem();
     let (p, flags, n) = (m.rd32(c.r[ESP] + 4), m.rd32(c.r[ESP] + 8), m.rd32(c.r[ESP] + 12) as i32);
+    // the ring's: camera-space x, y (zoomed) and z before the projection
+    let before: Vec<(i32, i32, i32)> = if z != 1.0 {
+        (0..n.max(0) as u32).map(|i| (m.rd16(p + 8 * i) as i16 as i32, m.rd16(p + 8 * i + 2) as i16 as i32, m.rd16(p + 8 * i + 4) as i16 as i32)).collect()
+    } else {
+        Vec::new()
+    };
     call_original(c, POINTS.at());
-    // projected in place: {sx, sy, z}; flag 1 = in front of the near plane (not projected)
+    // projected in place: {sx, sy, z}; flags: 1 = in front of the near plane (not projected),
+    // else 0x40 when x is on the screen, 0x80 when y is; a face is drawn when its points' flags
+    // or'ed are 0xc0 (one point on the screen in x, one in y)
+    if z != 1.0 {
+        // the ring draws faces off the screen too, but none with a point projected outside s16
+        // (x / z up to ~7 zoomed; their real place, twice as far off, goes to `ao::point` as
+        // i32: cut to s16 it met others at its ends and took their depth, shadows across the
+        // whole picture)
+        for (i, &(x, y, d)) in before.iter().enumerate() {
+            let a = flags + i as u32;
+            if m.rd8(a) & 1 == 0 {
+                let fits = |v: i32| (v.abs() as i64) * 4096 < 30000 * d as i64;
+                m.wr8(a, if fits(x) && fits(y) { 0xc0 } else { 1 });
+            }
+        }
+    }
     if super::shadows::enabled() {
         super::shadows::camera();
     }
@@ -141,7 +187,14 @@ pub fn points(c: &mut Cpu) {
         for i in 0..n.max(0) as u32 {
             if m.rd8(flags + i) != 1 {
                 let a = p + 8 * i;
-                super::ao::point(m.rd16(a) as i16, m.rd16(a + 2) as i16, m.rd16(a + 4) as i16);
+                let (x, y) = (m.rd16(a) as i16 as i32, m.rd16(a + 2) as i16 as i32);
+                // the ring's: at their real place (2560x1920 units, centre 1280, 960)
+                let (x, y) = if z == 1.0 {
+                    (x, y)
+                } else {
+                    ((1280.0 + (x as f32 - 1280.0) / z).round() as i32, (960.0 + (y as f32 - 960.0) / z).round() as i32)
+                };
+                super::ao::point(x, y, m.rd16(a + 4) as i16);
             }
         }
     }
@@ -164,17 +217,70 @@ pub fn terrain_visible(c: &mut Cpu) {
     m.wr32(p, x);
 }
 
-/// 0x4572a0(p, r): the same test for objects, p {x, y, z} s16.
+/// 0x4572a0(p, r): the same test for objects, p {x, y, z} s16, r in z * 16's units: 1 when
+/// the sphere is not beyond the near plane (z * 16 + r <= 0x405), 0 beside the view (|x| <=
+/// 0.3125 z plus a bit of r: the 4:3 view's sides; y alike), else 2. Only 2 is drawn.
 pub fn object_visible(c: &mut Cpu) {
-    if k() == 1.0 {
+    if k() == 1.0 && zoom() == 1.0 {
         return call_original(c, OBJECT_VISIBLE.at());
     }
     let m = mem();
     let p = m.rd32(c.r[ESP] + 4);
-    let x = m.rd16(p);
-    m.wr16(p, sx(x as i16 as i32) as u16);
+    if zoom() != 1.0 {
+        // the shadows' ring: what casts a shadow into the view. The sphere swept away from the
+        // sun (its shadow, up to `shadows::ring_reach` beyond it: things high above the
+        // ground, flying enemies, bridges, throw theirs far) tested against the real view as
+        // the game does, the segment clipped by the view's planes; the zoom keeps the projected
+        // points inside s16 (`points` leaves out the rest). As if it returned.
+        let (x, y, z) = (m.rd16(p) as i16 as f32, m.rd16(p + 2) as i16 as f32, m.rd16(p + 4) as i16 as f32);
+        let r = m.rd32(c.r[ESP] + 8) as i32 as f32 / 16.0;
+        let s = super::shadows::sun_view();
+        let swept = || {
+            let (xk, sx) = (x * k(), s[0] * k());
+            // each plane: g0 - g1 * t >= 0 along the point P - s * t, t in [0, reach]
+            let planes = [
+                (z + r - 1029.0 / 16.0, s[2]),
+                (0.3125 * z + 1.05 * r - xk, 0.3125 * s[2] - sx),
+                (0.3125 * z + 1.05 * r + xk, 0.3125 * s[2] + sx),
+                (0.234 * z + 1.03 * r - y, 0.234 * s[2] - s[1]),
+                (0.234 * z + 1.03 * r + y, 0.234 * s[2] + s[1]),
+            ];
+            // the sphere itself in the view: the game drew it (things it tried itself)
+            if super::shadows::ring_shown() && planes.iter().all(|&(g0, _)| g0 >= 0.0) {
+                return false;
+            }
+            let (mut lo, mut hi) = (0.0f32, super::shadows::ring_reach() + 2.3 * r);
+            for (g0, g1) in planes {
+                if g1.abs() < 1e-6 {
+                    if g0 < 0.0 {
+                        return false;
+                    }
+                } else if g1 > 0.0 {
+                    hi = hi.min(g0 / g1);
+                } else {
+                    lo = lo.max(g0 / g1);
+                }
+            }
+            lo <= hi
+        };
+        let near = z * 16.0 + r * 16.0 <= 1029.0;
+        c.r[crate::rt::EAX] = (c.r[crate::rt::EAX] & !0xff)
+            | if !near && (super::shadows::ring_wide() || swept()) {
+                2
+            } else if near {
+                1
+            } else {
+                0
+            };
+        c.r[ESP] += 4;
+        return;
+    }
+    let (x, y) = (m.rd16(p), m.rd16(p + 2));
+    m.wr16(p, sz(sx(x as i16 as i32)) as u16);
+    m.wr16(p + 2, sz(y as i16 as i32) as u16);
     call_original(c, OBJECT_VISIBLE.at());
     m.wr16(p, x);
+    m.wr16(p + 2, y);
 }
 
 /// 0x435330 draws the target markers at the projected position of their target, on the HUD

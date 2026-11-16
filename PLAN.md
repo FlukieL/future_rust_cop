@@ -356,6 +356,24 @@ sort, the camera [0x511f48] (`fps.rs`, up to +0x88), the actors (0x50e428).
       nuclear_rust_strike's, without its ring. No cost measured (~640 fps either way, M2C
       start, 1920x1080). Open: things off screen cast nothing (nuclear_rust_strike's ring: the
       game's object lists drawn again zoomed out), the user's look (strength, softness).
+      Ring step 1 done (2026-11-14, `shadows::actors_draw`): actors off the screen drawn
+      again zoomed out, only casting; no cost measured. The user has not yet looked in the
+      game whether shadows still pop in at the edge.
+- [x] Ring step 2 (2026-11-15, `shadows::static_objects`): the static objects of 2 cells
+      around the view's 5x5 window and the window's objects the game left out, drawn with
+      model_draw alone (zoomed, only casting); details in CLAUDE.md.
+      The user (2026-11-15): enemies off the screen cast no shadow. The zoom 0.5 reached only
+      0.47 below the middle (y / z) and the game draws a face only with a point on the screen:
+      now the ring's object test takes what casts into the view (sphere moved away from the
+      sun) and its faces count as on the screen. ~3% cost at the M2C start. Still left out:
+      faces with a point beside the camera at x / z > ~15 (s16), and objects at or behind
+      the near plane.
+      Next step maybe: effects/objects_draw 0x42dd90 (things in flight) in the ring.
+- [ ] The sun's strength and direction: the user cannot judge them without seeing the
+      differences. Planned: a comparison sheet, the same scene (shadow map, Ultra) rendered
+      with several strengths (`SUN_STRENGTH` now 0.45) and sun directions (`SUN` now
+      (0.45, 1, -0.3)) side by side; needs test switches for both (e.g. `FCOP_SUN_STRENGTH`,
+      `FCOP_SUN=x,y,z`).
       Models' faces turned away from the camera cast too (2026-11-14, the user saw what
       nuclear_rust_strike had: the game culls them; `shadows::nclip`, ~300 a picture, cost
       within the measurement's noise of 0-15%). The dynamic lights keep the ray march. The user: a depth buffer (as

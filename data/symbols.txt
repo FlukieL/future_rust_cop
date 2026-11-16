@@ -20,7 +20,10 @@
 
 ## Rendering (render block of frame_one_view, in this order)
 0x426eb0  render_begin            camera matrix setup
+0x42fe20  static_objects_draw     (row, column, entries) the static objects of the view's 5x5 window of grid [0x4a13fc] (row bytes [0x4a3b00 + 2 * view], entries 0x50dc80 + 0x1f4 * view: +0 mask of the cell's 4x4 parts seen, against object +0x4e); animates them, marks cells +4 with the game time, model_draw each
+0x437310  ?                       (a, b, view data) called by render_world between terrain and static objects
 0x452880  render_visibility       (0, player, &view) what is visible
+0x452a20  static_window_visible?  (row, column, entries, ...) the 5x5 window's masks of parts seen (via 0x452de0 / terrain_cell_visible)
 0x44fd20  actor_grid_build        logic in the render block: rebuilds actor_grid (hits use it), empties per-frame lists; skipped when paused
 0x453260  render_world            (0, player, &view) projects terrain, objects, effects into the display list
 0x4075b0  render_part?            (0, 1)
@@ -34,7 +37,7 @@
 0x456270  thrash_walker           display list to THRASH (D3D) primitives; colours doubled and clamped at 255 as in glide_walker
 0x50dc20  textures                pointers by record +7 (page); +0x30 the base its shade-table pointers (record +0x10) count from (light.rs)
 0x42dd90  objects_draw            effects (effects_draw), lists at 0x4a1380 / 0x4a1378, animated objects
-0x4532f0  actors_draw             sends message 3 (draw) to every actor
+0x4532f0  actors_draw             sends message 3 (draw) to every actor of the view's visible list (count [0x4a3ac0 + 4 * view], list [0x4a31a0 + 4 * view]); hooked: shadows.rs ring
 0x4271c0  glow_draw               adds a glow's records to the display list (models' lights, explosions, muzzle flashes...); hooked: effects.rs marks models' (lamps)
 0x4280a0  model_draw              (record: +0 model, +4 matrix 3x3, +0x28 position; flags; mode)
 0x4280f0  model_visible

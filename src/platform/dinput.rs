@@ -138,19 +138,41 @@ const BUTTONS: [Button; 13] = [
 /// our button numbers for `BUTTONS`
 const BUTTON_NUMBERS: [u32; 13] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 
-/// Our button for a gilrs event that presses one.
-fn pressed_by(e: &gilrs::EventType) -> Option<u32> {
+/// Each pad's triggers' rest (pad, left): the lowest value seen, the first read at first. Some
+/// pads (a "HID-konformer Gamecontroller") rest at ~0.45, which counted as pressed: the heavy
+/// weapon (LT) fired all the time.
+static REST: Mutex<Vec<((usize, bool), f32)>> = Mutex::new(Vec::new());
+
+/// A trigger at `v` is pressed: 30% of its travel beyond its rest.
+fn trigger_down(pad: usize, left: bool, v: f32) -> bool {
+    let mut r = REST.lock().unwrap();
+    let rest = match r.iter_mut().find(|e| e.0 == (pad, left)) {
+        Some(e) => {
+            e.1 = e.1.min(v);
+            e.1
+        }
+        None => {
+            r.push(((pad, left), v));
+            v
+        }
+    };
+    v > rest + 0.3 * (1.0 - rest)
+}
+
+/// Our button for a gilrs event of `pad` that presses one.
+fn pressed_by(pad: usize, e: &gilrs::EventType) -> Option<u32> {
     match *e {
-        gilrs::EventType::ButtonChanged(Button::RightTrigger2, v, _) if v > 0.3 => Some(0),
-        gilrs::EventType::ButtonChanged(Button::LeftTrigger2, v, _) if v > 0.3 => Some(1),
+        gilrs::EventType::ButtonChanged(Button::RightTrigger2, v, _) if trigger_down(pad, false, v) => Some(0),
+        gilrs::EventType::ButtonChanged(Button::LeftTrigger2, v, _) if trigger_down(pad, true, v) => Some(1),
         gilrs::EventType::ButtonPressed(b, _) => BUTTONS.iter().position(|&x| x == b).map(|k| BUTTON_NUMBERS[k]),
         _ => None,
     }
 }
 
 fn read(g: &gilrs::Gamepad) -> Pad {
-    let trigger = |b| g.button_data(b).map_or(0.0, |d| d.value()) > 0.3;
-    let mut buttons = trigger(Button::RightTrigger2) as u32 | (trigger(Button::LeftTrigger2) as u32) << 1;
+    let id: usize = g.id().into();
+    let trigger = |b, left| g.button_data(b).is_some_and(|d| trigger_down(id, left, d.value()));
+    let mut buttons = trigger(Button::RightTrigger2, false) as u32 | (trigger(Button::LeftTrigger2, true) as u32) << 1;
     for (b, n) in BUTTONS.into_iter().zip(BUTTON_NUMBERS) {
         buttons |= (g.is_pressed(b) as u32) << n;
     }
@@ -206,10 +228,13 @@ fn update() {
         let mut pressed: Vec<(usize, u32)> = Vec::new();
         while let Some(e) = g.next_event() {
             match e.event {
-                gilrs::EventType::Connected => pad_log!("connected: {}", g.gamepad(e.id).name()),
+                gilrs::EventType::Connected => {
+                    let p = g.gamepad(e.id);
+                    pad_log!("connected: {} (USB {:04x}:{:04x})", p.name(), p.vendor_id().unwrap_or(0), p.product_id().unwrap_or(0))
+                }
                 gilrs::EventType::Disconnected => pad_log!("disconnected: {}", g.gamepad(e.id).name()),
                 ref ev => {
-                    if let Some(b) = pressed_by(ev) {
+                    if let Some(b) = pressed_by(e.id.into(), ev) {
                         pressed.push((e.id.into(), 1 << b));
                     }
                 }

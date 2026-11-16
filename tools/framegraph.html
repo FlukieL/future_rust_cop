@@ -1,0 +1,272 @@
+<!doctype html>
+<!-- Frame time graph of FCOP_FRAMELOG files (src/platform/framelog.rs). Open in a browser,
+     drop one or more .csv files on it (several: compared, a colour each). Nothing is sent
+     anywhere. Drag across a graph to zoom in, double-click to zoom out. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frame Time Graph</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --grid: #e2e2dc;
+  --ref: #c9c9c0; --sel: rgba(60, 110, 200, 0.15);
+  --c0: #2f6fd0; --c1: #d0552f; --c2: #2f9a5a; --c3: #8a4fc4;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161615; --panel: #1f1f1e; --text: #e8e8e4; --muted: #9a9a93; --grid: #2e2e2c;
+    --ref: #4a4a46; --sel: rgba(110, 160, 255, 0.18);
+    --c0: #6fa3ff; --c1: #ff8a5c; --c2: #5fd08e; --c3: #c49bff; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+main { max-width: 1400px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+.hint { color: var(--muted); margin: 0 0 12px; }
+#drop { border: 2px dashed var(--ref); border-radius: 8px; padding: 18px; text-align: center; color: var(--muted);
+  background: var(--panel); cursor: pointer; }
+#drop.over { border-color: var(--c0); color: var(--text); }
+.bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0; }
+.bar label { display: flex; gap: 6px; align-items: center; }
+.panel { background: var(--panel); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+.panel h2 { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--muted); }
+canvas { width: 100%; display: block; cursor: crosshair; }
+#tip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--ref);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; display: none; white-space: pre; z-index: 2; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+.scroll { overflow-x: auto; }
+button { font: inherit; padding: 3px 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Frame Time Graph</h1>
+  <p class="hint">Logs from <code>FCOP_FRAMELOG=frames.csv</code>. Drop one or more files (several are compared). Drag across a graph to zoom, double-click to reset.</p>
+  <div id="drop">Drop .csv files here or click to choose<input id="file" type="file" accept=".csv,text/csv" multiple hidden></div>
+  <div class="bar">
+    <label>Skip first <input id="skip" type="number" value="0" min="0" step="500" style="width:80px"> ms</label>
+    <label>Y range <select id="yr"><option value="auto">auto (99.9%)</option><option value="max">to longest</option><option value="20">0–20 ms</option><option value="50">0–50 ms</option><option value="100">0–100 ms</option></select></label>
+    <label><input id="smooth" type="checkbox"> mean over 50 ms</label>
+    <button id="clear">Clear</button>
+  </div>
+  <div class="panel"><h2>Frame time (ms) — dashed lines: 60 / 30 fps</h2><canvas id="ft" height="300"></canvas></div>
+  <div class="panel"><h2>Motion: game time moved on less time between pictures (ms) — 0 = smooth</h2><canvas id="mo" height="180"></canvas></div>
+  <div class="panel"><h2>Distribution of frame times</h2><canvas id="hi" height="160"></canvas></div>
+  <div class="panel scroll"><h2>Summary</h2><table id="sum"></table></div>
+</main>
+<div id="tip"></div>
+<script>
+"use strict";
+const runs = [];
+let view = null; // [x0, x1] in ms, null = all
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const colour = i => css("--c" + (i % 4));
+
+function parse(name, text) {
+  const rows = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 1; i < lines.length; i++) {
+    const f = lines[i].split(",");
+    if (f.length < 7) continue;
+    const ms = +f[0], frame = +f[1];
+    if (!isFinite(ms) || !(frame > 0)) continue;
+    rows.push({ ms, frame, swap: +f[2], step: f[5] === "" ? null : +f[5], kind: f[6] });
+  }
+  return { name, rows };
+}
+
+function used(run) {
+  const skip = +$("skip").value || 0;
+  return run.rows.filter(r => r.ms > skip);
+}
+
+function pct(sorted, p) { return sorted.length ? sorted[Math.round((sorted.length - 1) * p)] : NaN; }
+
+function stats(rows) {
+  const t = rows.map(r => r.frame).sort((a, b) => a - b), n = t.length;
+  if (!n) return null;
+  const span = rows[n - 1].ms - rows[0].ms + rows[0].frame;
+  const low = share => { const k = Math.max(1, Math.ceil(n * share)); let s = 0; for (let i = n - k; i < n; i++) s += t[i]; return 1000 * k / s; };
+  const median = pct(t, 0.5);
+  // a hitch: 1.5 times the median and 4 ms over it (at high rates 1.5 times alone is noise)
+  const hitches = rows.filter(r => r.frame >= Math.max(1.5 * median, median + 4));
+  const gaps = []; for (let i = 1; i < hitches.length; i++) gaps.push(hitches[i].ms - hitches[i - 1].ms);
+  gaps.sort((a, b) => a - b);
+  const mo = rows.filter(r => r.step !== null).map(r => Math.abs(r.step / 0.3 - r.frame)).sort((a, b) => a - b);
+  return { n, span, fps: 1000 * n / span, mean: span / n, median, p99: pct(t, 0.99), p999: pct(t, 0.999), max: t[n - 1],
+    low1: low(0.01), low01: low(0.001), hitches: hitches.length, gap: gaps.length ? pct(gaps, 0.5) : NaN,
+    mo99: pct(mo, 0.99), moMax: mo.length ? mo[mo.length - 1] : NaN };
+}
+
+function setup(cv) {
+  const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = +cv.getAttribute("height");
+  cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + "px";
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { g, w, h, L: 48, R: 10, T: 8, B: 22 };
+}
+
+function xRange() {
+  if (view) return view;
+  let a = Infinity, b = -Infinity;
+  for (const r of runs) { const u = used(r); if (u.length) { a = Math.min(a, u[0].ms); b = Math.max(b, u[u.length - 1].ms); } }
+  return isFinite(a) ? [a, b > a ? b : a + 1] : [0, 1000];
+}
+
+function niceStep(range, target) {
+  const raw = range / target, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= raw) return m * p;
+  return 10 * p;
+}
+
+function axes(c, x0, x1, y0, y1, refs) {
+  const { g, w, h, L, R, T, B } = c;
+  g.clearRect(0, 0, w, h);
+  g.font = "11px system-ui, sans-serif"; g.fillStyle = css("--muted"); g.strokeStyle = css("--grid"); g.lineWidth = 1;
+  const X = v => L + (v - x0) / (x1 - x0) * (w - L - R), Y = v => T + (1 - (v - y0) / (y1 - y0)) * (h - T - B);
+  const ys = niceStep(y1 - y0, 5);
+  g.textAlign = "right"; g.textBaseline = "middle";
+  for (let v = Math.ceil(y0 / ys) * ys; v <= y1 + 1e-9; v += ys) {
+    g.beginPath(); g.moveTo(L, Y(v) + 0.5); g.lineTo(w - R, Y(v) + 0.5); g.stroke();
+    g.fillText(+v.toFixed(2), L - 6, Y(v));
+  }
+  const xs = niceStep((x1 - x0) / 1000, 8) * 1000;
+  g.textAlign = "center"; g.textBaseline = "top";
+  for (let v = Math.ceil(x0 / xs) * xs; v <= x1; v += xs) g.fillText((v / 1000).toFixed(xs < 1000 ? 2 : 0) + " s", X(v), h - B + 6);
+  g.strokeStyle = css("--ref"); g.setLineDash([4, 4]);
+  for (const v of refs || []) if (v > y0 && v < y1) { g.beginPath(); g.moveTo(L, Y(v) + 0.5); g.lineTo(w - R, Y(v) + 0.5); g.stroke(); }
+  g.setLineDash([]);
+  return { X, Y };
+}
+
+// one value per pixel column: its largest (a hitch stays visible) or with smoothing a 50 ms mean
+function series(rows, val, x0, x1, smooth) {
+  const out = [];
+  if (smooth) {
+    let j = 0, sum = 0, n = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const v = val(rows[i]); if (v === null) continue;
+      sum += v; n++;
+      while (rows[j].ms < rows[i].ms - 50) { const u = val(rows[j]); if (u !== null) { sum -= u; n--; } j++; }
+      if (rows[i].ms >= x0 && rows[i].ms <= x1) out.push([rows[i].ms, sum / n]);
+    }
+    return out;
+  }
+  for (const r of rows) { const v = val(r); if (v !== null && r.ms >= x0 && r.ms <= x1) out.push([r.ms, v]); }
+  return out;
+}
+
+function line(c, pts, X, Y, col) {
+  const g = c.g; g.strokeStyle = col; g.lineWidth = 1.2; g.beginPath();
+  // columns: min and max per pixel, so thousands of frames stay readable
+  let col0 = null, lo = 0, hi = 0, first = true;
+  const flush = () => { if (col0 === null) return; if (first) { g.moveTo(col0, Y(lo)); first = false; } g.lineTo(col0, Y(lo)); g.lineTo(col0, Y(hi)); };
+  for (const [x, v] of pts) {
+    const px = Math.round(X(x));
+    if (px !== col0) { flush(); col0 = px; lo = hi = v; } else { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  }
+  flush(); g.stroke();
+}
+
+function draw() {
+  const [x0, x1] = xRange(), smooth = $("smooth").checked;
+  const data = runs.map(r => used(r).filter(q => q.ms >= x0 - 60 && q.ms <= x1 + 60));
+  // frame times
+  let all = []; data.forEach(d => d.forEach(r => all.push(r.frame))); all.sort((a, b) => a - b);
+  const yr = $("yr").value;
+  let top = yr === "auto" ? pct(all, 0.999) * 1.15 : yr === "max" ? (all[all.length - 1] || 20) * 1.05 : +yr;
+  if (!(top > 0)) top = 20;
+  let c = setup($("ft")); let a = axes(c, x0, x1, 0, top, [1000 / 60, 1000 / 30]);
+  c.g.save(); c.g.beginPath(); c.g.rect(c.L, c.T, c.w - c.L - c.R, c.h - c.T - c.B); c.g.clip();
+  data.forEach((d, i) => line(c, series(d, r => r.frame, x0, x1, smooth), a.X, a.Y, colour(i)));
+  c.g.restore(); ft = { c, a, data, x0, x1, val: r => r.frame };
+  // motion
+  let mo = []; data.forEach(d => d.forEach(r => { if (r.step !== null) mo.push(Math.abs(r.step / 0.3 - r.frame)); })); mo.sort((p, q) => p - q);
+  let m = Math.max(2, pct(mo, 0.999) * 1.2 || 2);
+  c = setup($("mo")); a = axes(c, x0, x1, -m, m, [0]);
+  c.g.save(); c.g.beginPath(); c.g.rect(c.L, c.T, c.w - c.L - c.R, c.h - c.T - c.B); c.g.clip();
+  data.forEach((d, i) => line(c, series(d, r => r.step === null ? null : r.step / 0.3 - r.frame, x0, x1, smooth), a.X, a.Y, colour(i)));
+  c.g.restore(); mot = { c, a, data, x0, x1, val: r => r.step === null ? null : r.step / 0.3 - r.frame };
+  // histogram of the shown range
+  c = setup($("hi"));
+  const bins = 60, hmax = top, counts = data.map(d => { const b = new Array(bins).fill(0); d.forEach(r => { if (r.ms >= x0 && r.ms <= x1) b[Math.min(bins - 1, Math.floor(r.frame / hmax * bins))]++; }); return b; });
+  const share = counts.map(b => { const s = b.reduce((p, q) => p + q, 0) || 1; return b.map(v => v / s * 100); });
+  const ymax = Math.max(1, ...share.flat()) * 1.1;
+  a = axes(c, 0, hmax * 1000, 0, ymax);
+  // x labels of the histogram are ms, not s
+  c.g.clearRect(0, c.h - c.B + 1, c.w, c.B); c.g.fillStyle = css("--muted"); c.g.textAlign = "center"; c.g.textBaseline = "top";
+  const hs = niceStep(hmax, 8); for (let v = 0; v <= hmax; v += hs) c.g.fillText(+v.toFixed(2) + " ms", a.X(v * 1000), c.h - c.B + 6);
+  const bw = (c.w - c.L - c.R) / bins / Math.max(1, share.length);
+  share.forEach((b, i) => { c.g.fillStyle = colour(i); b.forEach((v, k) => { if (v > 0) { const x = a.X(k / bins * hmax * 1000) + i * bw; c.g.fillRect(x, a.Y(v), Math.max(1, bw - 1), a.Y(0) - a.Y(v)); } }); });
+  summary(data.map(d => d.filter(r => r.ms >= x0 && r.ms <= x1)));
+}
+
+function summary(data) {
+  const f = (v, d = 2) => isFinite(v) ? v.toFixed(d) : "–";
+  let h = "<tr><th>File</th><th>Pictures</th><th>Avg fps</th><th>Mean ms</th><th>Median</th><th>99%</th><th>99.9%</th><th>Longest</th><th>1% low fps</th><th>0.1% low fps</th><th>Hitches (≥1.5× median, ≥ +4 ms)</th><th>Their spacing</th><th>Motion 99% |ms|</th><th>Motion max</th></tr>";
+  runs.forEach((r, i) => {
+    const s = stats(data[i]);
+    if (!s) { h += `<tr><td><span class="sw" style="background:${colour(i)}"></span>${esc(r.name)}</td><td colspan="13">no pictures in range</td></tr>`; return; }
+    h += `<tr><td><span class="sw" style="background:${colour(i)}"></span>${esc(r.name)}</td><td>${s.n}</td><td>${f(s.fps, 1)}</td><td>${f(s.mean)}</td><td>${f(s.median)}</td><td>${f(s.p99)}</td><td>${f(s.p999)}</td><td>${f(s.max)}</td><td>${f(s.low1, 1)}</td><td>${f(s.low01, 1)}</td><td>${s.hitches}</td><td>${isFinite(s.gap) ? f(s.gap, 0) + " ms" : "–"}</td><td>${f(s.mo99)}</td><td>${f(s.moMax)}</td></tr>`;
+  });
+  $("sum").innerHTML = runs.length ? h : "<tr><td>No files yet.</td></tr>";
+}
+const esc = s => s.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+
+let ft = null, mot = null, drag = null;
+function hook(cv, get) {
+  cv.addEventListener("mousedown", e => { const p = get(); if (!p) return; drag = { cv, p, x: e.offsetX, now: e.offsetX }; });
+  cv.addEventListener("mousemove", e => {
+    const p = get(); if (!p) return;
+    if (drag && drag.cv === cv) {
+      drag.now = e.offsetX; draw(); const g = get().c.g; g.fillStyle = css("--sel");
+      g.fillRect(Math.min(drag.x, drag.now), p.c.T, Math.abs(drag.now - drag.x), p.c.h - p.c.T - p.c.B);
+    }
+    tip(e, p);
+  });
+  cv.addEventListener("mouseleave", () => { $("tip").style.display = "none"; });
+  cv.addEventListener("dblclick", () => { view = null; draw(); });
+}
+window.addEventListener("mouseup", e => {
+  if (!drag) return;
+  const { p, x, now } = drag; drag = null;
+  if (Math.abs(now - x) > 4) {
+    const t = px => p.x0 + (px - p.c.L) / (p.c.w - p.c.L - p.c.R) * (p.x1 - p.x0);
+    view = [t(Math.min(x, now)), t(Math.max(x, now))];
+  }
+  draw();
+});
+function tip(e, p) {
+  const t = p.x0 + (e.offsetX - p.c.L) / (p.c.w - p.c.L - p.c.R) * (p.x1 - p.x0);
+  let lines = [`${(t / 1000).toFixed(3)} s`];
+  p.data.forEach((d, i) => {
+    // the frame with the largest value within 3 pixels
+    const win = 3 / (p.c.w - p.c.L - p.c.R) * (p.x1 - p.x0); let best = null;
+    for (const r of d) if (Math.abs(r.ms - t) <= win) { const v = p.val(r); if (v !== null && (!best || Math.abs(v) > Math.abs(p.val(best)))) best = r; }
+    if (best) lines.push(`${runs[i].name}: frame ${best.frame.toFixed(2)} ms, ${best.kind}` + (best.step !== null ? `, game moved ${(best.step / 0.3).toFixed(2)} ms` : ""));
+  });
+  const el = $("tip"); el.textContent = lines.join("\n"); el.style.display = "block";
+  el.style.left = Math.min(e.clientX + 14, window.innerWidth - el.offsetWidth - 8) + "px"; el.style.top = (e.clientY + 14) + "px";
+}
+hook($("ft"), () => ft); hook($("mo"), () => mot);
+
+function load(files) {
+  const list = [...files];
+  Promise.all(list.map(f => f.text().then(t => parse(f.name, t)))).then(rs => { rs.forEach(r => runs.push(r)); view = null; draw(); });
+}
+$("drop").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", e => load(e.target.files));
+["dragover", "dragenter"].forEach(n => document.addEventListener(n, e => { e.preventDefault(); $("drop").classList.add("over"); }));
+["dragleave", "drop"].forEach(n => document.addEventListener(n, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
+document.addEventListener("drop", e => load(e.dataTransfer.files));
+["skip", "yr", "smooth"].forEach(id => $(id).addEventListener("input", () => { view = null; draw(); }));
+$("clear").addEventListener("click", () => { runs.length = 0; view = null; draw(); });
+window.addEventListener("resize", draw);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+draw();
+</script>
+</body>
+</html>

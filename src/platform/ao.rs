@@ -76,9 +76,12 @@ impl std::hash::Hasher for KeyHash {
     fn write_u32(&mut self, k: u32) {
         self.0 = (self.0.rotate_left(5) ^ k as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
     }
+    fn write_u64(&mut self, k: u64) {
+        self.0 = (self.0.rotate_left(5) ^ k).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
 }
 
-type KeyMap<V> = HashMap<u32, V, std::hash::BuildHasherDefault<KeyHash>>;
+type KeyMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<KeyHash>>;
 
 /// The cells `depth_near` looks in: this many units square.
 const CELL: f32 = 160.0;
@@ -87,13 +90,14 @@ const CELL: f32 = 160.0;
 /// game's), so no lock; cleared by length, not freed.
 #[derive(Default)]
 struct Frame {
-    /// screen position (x | y << 16, 2560x1920 units) -> up to two z (0: none)
+    /// screen position (x | y << 32, 2560x1920 units; the shadows' ring's points lie up to
+    /// several screens off, beyond s16) -> up to two z (0: none)
     points: KeyMap<[i16; 2]>,
     /// sprites: their rectangle (x0, y0, x1, y1 in 2560x1920 units) and z; their corners are
     /// not projected points
     sprites: Vec<([i16; 4], i16)>,
     /// the points by `CELL` (made at the first `depth_near` of a frame): cell -> (x, y, z)
-    cells: KeyMap<Vec<(i16, i16, i16)>>,
+    cells: KeyMap<Vec<(i32, i32, i16)>>,
     cells_made: bool,
     /// `depths`' scratch
     found: Vec<[i16; 2]>,
@@ -104,20 +108,20 @@ thread_local! {
     static FRAME: RefCell<Frame> = RefCell::new(Frame::default());
 }
 
-fn key(x: i16, y: i16) -> u32 {
-    x as u16 as u32 | (y as u16 as u32) << 16
+fn key(x: i32, y: i32) -> u64 {
+    x as u32 as u64 | (y as u32 as u64) << 32
 }
 
 fn cell_of(x: f32, y: f32) -> (i32, i32) {
     ((x / CELL).floor() as i32, (y / CELL).floor() as i32)
 }
 
-fn cell_key((cx, cy): (i32, i32)) -> u32 {
-    cx as u16 as u32 | (cy as u16 as u32) << 16
+fn cell_key((cx, cy): (i32, i32)) -> u64 {
+    key(cx, cy)
 }
 
 /// A point the game projected to (x, y) at depth z.
-pub fn point(x: i16, y: i16, z: i16) {
+pub fn point(x: i32, y: i32, z: i16) {
     if z <= 0 {
         return;
     }
@@ -161,7 +165,7 @@ pub fn depth_near(x: f32, y: f32, reach: f32) -> Option<f32> {
             let Frame { points, cells, .. } = f;
             cells.values_mut().for_each(Vec::clear);
             for (&k, z) in points.iter() {
-                let (px, py) = (k as u16 as i16, (k >> 16) as u16 as i16);
+                let (px, py) = (k as u32 as i32, (k >> 32) as u32 as i32);
                 cells.entry(cell_key(cell_of(px as f32, py as f32))).or_default().push((px, py, z[0]));
             }
             f.cells_made = true;
@@ -196,7 +200,7 @@ pub fn depths(verts: impl ExactSizeIterator<Item = (f32, f32)> + Clone, out: &mu
     FRAME.with_borrow_mut(|f| {
         let Frame { points, sprites, found, sure, .. } = f;
         found.clear();
-        found.extend(verts.clone().map(|(x, y)| points.get(&key(x.round() as i16, y.round() as i16)).copied().unwrap_or([0, 0])));
+        found.extend(verts.clone().map(|(x, y)| points.get(&key(x.round() as i32, y.round() as i32)).copied().unwrap_or([0, 0])));
         // a reference: the vertices with one candidate (their median), else any candidate
         sure.clear();
         sure.extend(found.iter().filter(|f| f[0] != 0 && f[1] == 0).map(|f| f[0]));
