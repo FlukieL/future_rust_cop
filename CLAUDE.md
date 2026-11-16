@@ -129,7 +129,8 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   their sign (0 inside its 25% dead zone), but hooks on robot physics and its hover/walk movement
   vector helpers restore each assigned axis independently for proportional movement, turning,
   and jinking (not in network games: their packets have no magnitude), and
-  buttons 0...16. Our button order makes the
+  buttons 0...16 (triggers pressed at 30% of their travel beyond their rest, the lowest value
+  seen: a "HID-konformer Gamecontroller" rests at ~0.45, LT fired the heavy weapon all the time). Our button order makes the
   game's own joystick profile 1 a modern layout: 0 RT gun, 1 LT heavy, 2 B special, 3 A jump,
   4 X action, 5 Y change target, 6/7 LB/RB jink, 8 Back map, 9 R3 camera, 10 L3, 11...14 D-pad
   (free to bind); the left stick moves; Start is the Escape key (pause). Right-stick directions
@@ -358,15 +359,36 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   The ring (things just off the screen cast into it; step 1 actors): actors_draw 0x4532f0
   (hooked) sends message 3 (draw) to the view's visible actors (count [0x4a3ac0 + 4 * view],
   list [0x4a31a0 + 4 * view]); after it the other active actors get it too with the objects'
-  projection zoomed out (`wide::set_zoom(RING_ZOOM)` 0.5: x and y in 0x457340 / 0x457140 /
-  0x4572a0, so the game's view test and face flags pass them), their records (a range from
+  projection zoomed out (`wide::set_zoom(RING_ZOOM)` 0.5: x and y in 0x457340 / 0x457140, which
+  keeps points off the screen inside s16). While zoomed, the object test 0x4572a0
+  (`wide::object_visible`, returns 1 before the near plane, 0 beside the 4:3 view, 2 drawn) is
+  ours: 2 when the sphere swept away from the sun (`shadows::sun_view`, `ring_reach` 2000 units
+  plus 2.3 radii, `FCOP_SHADOW_REACH`; the segment clipped by the view's planes) reaches the real
+  view, never before the near plane; things the game tried itself (its visible actors, objects of a
+  cell part seen: lists by cells) are drawn too unless their sphere is in the view (the game's view
+  test left those out and their shadows came with them, `shadows::ring_shown`); and `wide::points` sets every projected
+  point's flag to 0xc0 (0x40 x on the screen, 0x80 y; a face is drawn only when its points'
+  flags or'ed are 0xc0: a zoom alone left out near enemies below or beside the view), 1 for
+  points whose real place (zoomed place / zoom) would leave s16 (cut to its ends they met
+  others there in `ao::point` and took their depth: shadows across the picture). `FCOP_SHADOW_RING=wide` (a test) takes everything beyond the
+  near plane: the same shadows (checked). Their records (a range from
   [0x511dc0]) only cast (`cast_kind` 2: `glide` takes their corners back about the centre
   1280, 960 + the view's origin; their projected points go to `ao::point` at the real place;
   left out of `effects::begin`). Not in split screen; while the list is under 3/4 full.
   `FCOP_SHADOW_RING=0` off, `=all` (a test) draws the visible actors through it too: their
   shadows lie exactly on the others (checked: 2415 triangles, none without depth, no double
-  shadows). ~20-70 actors, 0-200 records a picture in M2C, no cost measured. Next: the static
-  objects of the cells around the visible ones (0x42fe20, grid [0x4a13fc]). The sun (world direction
+  shadows). ~20-70 actors a picture in M2C. Step 2, the static
+  objects (`static_objects`, in the same hook before the actors): grid [0x4a13fc] (cells of
+  0x20000 in 20.12, [0x4a13f4] wide, [0x4a1400] rows; 8 bytes: first object, linked by +0x58,
+  and the game time last drawn); static_objects_draw 0x42fe20 draws the view's 5x5 window from
+  row/column bytes [0x4a3b00 + 2 * view] with entries at 0x50dc80 + 0x1f4 * view (+0 the mask of
+  the cell's 4x4 parts seen, 0x452a20; an object is drawn when its +0x4e has one). The ring
+  draws the objects of 2 cells more on every side and those of the window the game left out,
+  with model_draw 0x4280a0 alone (0x42fe20 also advances animations and marks cells seen:
+  logic), at their place of the last draw; `=all` takes the seen ones too (checked: shadows
+  the same but for edge noise). `FCOP_SHADOW_STATIC=0` off. Ring cost at the M2C start with
+  the sun test: ~10 records, 617 -> 600 fps (Ultra, 1920x1080; without it ~1800 records, 400
+  fps). The sun (world direction
   `SUN`, y up) in view space by the camera's matrix [0x511f48] + 0x58 (3x3 i32 16.16, rows
   right / up / forward; view space = game camera space, x right, y up, z ahead), noted by the
   projection hooks 0x457340 / 0x452fd0 per view (`camera`), taken in order by `glide::post_3d`
@@ -461,7 +483,7 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
 - Imports not implemented yet are listed at start and stop the game when called.
   Switches: `FCOP_TRACE_API=1` (every import call with its caller), `FCOP_TRACE_MSG=1`
   (window messages), `FCOP_TRACE_REG=1`, `FCOP_DD_LOG=1` (surfaces and blits),
-  `FCOP_SHOT=file.png` (the frame shown, every half second; `{t}` in the name: ms since start,
+  `FCOP_SHOT=file.png` (the frame shown, every half second or `FCOP_SHOT_MS`; `{t}` in the name: ms since start,
   every picture kept), `FCOP_INPUT="6000:click@484,303
   14000:Up*5000"` (scripted input, ms after start; that one starts the first mission and
   walks forward with the user's bindings in `controls.txt`: player 1 on the arrow keys, the
@@ -522,7 +544,10 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   buffers, kernel objects, threads) is the running one's: a fingerprint (heap blocks, object
   handles and kinds, sound buffer addresses, Glide texture addresses) taken at each mission's
   first frame (hook of the mission loop 0x406820) must equal the saved one, else the load is
-  refused naming the part. Scripted: a fresh start with "8000:click@484,303 16000:load" (and
+  refused naming the part. New guest threads get their TIB and stack in CreateThread / timeSetEvent
+  (`thread_stack`), not when they first run: that timing moved every heap block after them and
+  failed the check at random. `FCOP_SAVESTATE=<file>` uses another file (tests: the player's
+  own stays). Scripted: a fresh start with "8000:click@484,303 16000:load" (and
   FCOP_NO_VIDEO=1) loads one saved the same way. Sounds playing are not kept.
 - Cameras (`camera.rs`): robot_camera 0x4456a0 (hooked) places the player's camera each
   frame; the camera key counts the robot data's mode +0xa4 (0...6, a table at 0x48c468 /

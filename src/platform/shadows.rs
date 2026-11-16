@@ -183,6 +183,18 @@ pub fn camera() {
     v.push((cam, d));
 }
 
+/// Toward the sun (unit) in the view space of the camera in use (x right, y up, z ahead: the
+/// game's camera space).
+pub fn sun_view() -> [f32; 3] {
+    let m = mem();
+    let cam = m.rd32(CAMERA.at());
+    if cam == 0 {
+        return [0.0, 1.0, 0.0];
+    }
+    let s = unit(SUN);
+    [0, 1, 2].map(|r| (0..3).map(|c| m.rd32(cam + MATRIX + 12 * r + 4 * c) as i32 as f32 / 65536.0 * s[c as usize]).sum::<f32>())
+}
+
 /// At every frame shown: the next frame's views come anew.
 pub fn clear() {
     VIEWS.lock().unwrap().clear();
@@ -220,6 +232,7 @@ struct Extra {
     /// the ring's actors this picture, and the extra triangles kept as casters or not (no
     /// depth) by kind (`FCOP_SHADOW_LOG`)
     ring_actors: u32,
+    ring_objects: u32,
     cast: [[u32; 2]; 3],
 }
 
@@ -256,6 +269,25 @@ pub fn nclip(c: &mut crate::rt::Cpu) {
     c.r[EAX] = 0;
 }
 
+/// Terrain tiles turned away from the camera are kept as casters too (`terrain::tiles`; walls
+/// seen from their back threw no shadow until turned toward the camera): on with the turned-away
+/// faces, our terrain pass (not its check), only while the display list has room.
+pub fn keep_hidden() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    switch("FCOP_SHADOW_FACES", &ON) && map() && super::walker::precise() && super::walk::ours() && super::terrain::ours() && room()
+}
+
+/// The next record (at the display list's end) is a turned-away terrain tile: only casting.
+/// False when the list has no room left (then it is left out).
+pub fn note_hidden() -> bool {
+    if !room() {
+        return false;
+    }
+    let end = mem().rd32(LIST_END.at());
+    EXTRA.with_borrow_mut(|e| e.faces.insert(end));
+    true
+}
+
 /// actors_draw(view): message 3 (draw) to each actor on the view's list of visible ones: count
 /// [0x4a3ac0 + 4 * view], list [0x4a31a0 + 4 * view] (actor pointers); then its second loop
 /// (0x427960 for some). Called by render_world 0x453260 after the terrain and the static
@@ -268,15 +300,17 @@ const ACTOR_COUNT: Us = Us(0x50e420);
 const ACTORS: Us = Us(0x50e428);
 /// Nonzero in split screen.
 const SPLIT: Us = Us(0x511f54);
-/// The ring's projection is zoomed out this much (x and y times it): things up to about twice
-/// as far off the middle as the screen's edge are in it.
+/// The ring's projection is zoomed out this much (x and y times it), which keeps points off the
+/// screen inside s16.
 pub const RING_ZOOM: f32 = 0.5;
 
-/// The ring: things just off the screen cast into it. After the view's actors, the others are
-/// drawn too, with the projection zoomed out (`wide::set_zoom`: the game's view test and its
-/// face tests pass them); their records only cast, their corners taken back to their real place
-/// (`glide`'s cast-only primitives with a zoom), their projected points noted at it
-/// (`ao::point`). Not in split screen; only while the display list has room.
+/// The ring: things off the screen cast into it. After the view's actors, the static objects
+/// around the view (`static_objects`) and the other actors are drawn too, with the projection
+/// zoomed out (`wide::set_zoom`): while it is, the game's object test 0x4572a0 passes what may
+/// cast into the view (`wide::object_visible`: the sphere or its shadow inside it) and its faces
+/// count as on the screen (`wide::points`). Their records only cast, their corners taken back to
+/// their real place (`glide`'s cast-only primitives with a zoom), their projected points noted at
+/// it (`ao::point`). Not in split screen; only while the display list has room.
 pub fn actors_draw(c: &mut crate::rt::Cpu) {
     let m = mem();
     let view = m.rd32(c.r[crate::rt::ESP] + 4);
@@ -291,11 +325,13 @@ pub fn actors_draw(c: &mut crate::rt::Cpu) {
     let from = m.rd32(LIST_END.at());
     let mut drawn = 0;
     super::wide::set_zoom(RING_ZOOM);
+    let objects = static_objects(c, view);
     for i in 0..(m.rd32(ACTOR_COUNT.at()) as i32).clamp(0, 4096) as u32 {
         let a = m.rd32(ACTORS.at() + 4 * i);
-        if a == 0 || m.rd32(a + 8) as i32 <= 0 || visible.contains(&a) && !ring_all() {
+        if a == 0 || m.rd32(a + 8) as i32 <= 0 {
             continue;
         }
+        SHOWN.store(visible.contains(&a) && !ring_all(), Relaxed);
         if !room() {
             break;
         }
@@ -305,6 +341,7 @@ pub fn actors_draw(c: &mut crate::rt::Cpu) {
             break;
         }
     }
+    SHOWN.store(false, Relaxed);
     super::wide::set_zoom(1.0);
     c.r = regs;
     let to = m.rd32(LIST_END.at());
@@ -313,14 +350,110 @@ pub fn actors_draw(c: &mut crate::rt::Cpu) {
             e.ring.push((from, to));
         }
         e.ring_actors += drawn;
+        e.ring_objects += objects;
     });
 }
 
-/// `FCOP_SHADOW_RING=all` (a test): the ring draws the visible actors too, its shadows
+/// The static objects' grid (trees, lamps, wall parts...): cells of 0x20000 (20.12) in rows
+/// of [0x4a13f4] cells, [0x4a1400] rows; 8 bytes a cell: +0 first object (linked by +0x58),
+/// +4 the game time it was last drawn. 0 without one.
+const GRID: Us = Us(0x4a13fc);
+const GRID_WIDTH: Us = Us(0x4a13f4);
+const GRID_HEIGHT: Us = Us(0x4a1400);
+/// The view's window of cells static_objects_draw 0x42fe20 draws: first row and column (bytes,
+/// [0x4a3b00 + 2 * view] and + 1, set by render_visibility 0x452880), 5x5 entries of 0x14 bytes
+/// at 0x50dc80 + 0x1f4 * view, +0 the mask of a cell's 4x4 parts seen (0x452a20); an object is
+/// drawn when its +0x4e has one of them.
+const WINDOW: Us = Us(0x4a3b00);
+const ENTRIES: Us = Us(0x50dc80);
+const MODEL_DRAW: Us = Us(0x4280a0);
+/// The ring reaches this many cells beyond the view's window on every side.
+const RING_CELLS: i32 = 2;
+
+/// The ring's static objects: the objects of the cells around the view's window and those in
+/// it the game left out (none of their parts seen), drawn with model_draw 0x4280a0 alone (the
+/// ring's object test is in it). Not 0x42fe20: that also advances their animations and marks
+/// the cells as seen (logic). An object's place is the one it had when last drawn (static ones
+/// do not move; spinning ones turn only while seen). Returns how many were drawn.
+/// `FCOP_SHADOW_STATIC=0` off.
+fn static_objects(c: &mut crate::rt::Cpu, view: u32) -> u32 {
+    let m = mem();
+    let grid = m.rd32(GRID.at());
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if grid == 0 || !switch("FCOP_SHADOW_STATIC", &ON) {
+        return 0;
+    }
+    let (w, h) = (m.rd32(GRID_WIDTH.at()) as i32, m.rd32(GRID_HEIGHT.at()) as i32);
+    let (a, b) = (m.rd8(WINDOW.at() + 2 * view) as i32, m.rd8(WINDOW.at() + 2 * view + 1) as i32);
+    let entries = ENTRIES.at() + 0x1f4 * view;
+    // model_draw's flags (a dword, 0) below the guest stack
+    c.r[crate::rt::ESP] -= 16;
+    let flags = c.r[crate::rt::ESP];
+    let mut drawn = 0;
+    'cells: for row in -RING_CELLS..5 + RING_CELLS {
+        for col in -RING_CELLS..5 + RING_CELLS {
+            let (r, k) = (a + row, b + col);
+            if !(0..h).contains(&r) || !(0..w).contains(&k) {
+                continue;
+            }
+            let seen = if ring_all() {
+                0
+            } else if (0..5).contains(&row) && (0..5).contains(&col) { m.rd32(entries + 0x14 * (row * 5 + col) as u32) } else { 0 };
+            let mut o = m.rd32(grid + 8 * (r * w + k) as u32);
+            let mut n = 0;
+            while o != 0 && n < 4096 {
+                if m.rd8(o + 0x4c) & 0x10 == 0 && m.rd32(o) != 0 {
+                    SHOWN.store(m.rd16(o + 0x4e) as u32 & seen != 0, Relaxed);
+                    if !room() {
+                        break 'cells;
+                    }
+                    m.wr32(flags, 0);
+                    super::guest_call(c, MODEL_DRAW.at(), &[o, flags, 1]);
+                    drawn += 1;
+                    if c.stop != 0 {
+                        break 'cells;
+                    }
+                }
+                o = m.rd32(o + 0x58);
+                n += 1;
+            }
+        }
+    }
+    drawn
+}
+
+/// The thing the ring draws now is one the game tried itself (a visible actor, an object of a
+/// cell part seen): those lists go by cells, so the game's own view test may have left it out
+/// although its shadow reaches into the view (it came with the thing). `wide::object_visible`
+/// leaves out only those whose sphere is in the view: the game drew them.
+static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn ring_shown() -> bool {
+    SHOWN.load(Relaxed)
+}
+
+/// `FCOP_SHADOW_RING=all` (a test): the ring draws the visible actors and static objects too, its shadows
 /// should lie exactly on theirs.
 fn ring_all() -> bool {
     static A: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *A.get_or_init(|| std::env::var("FCOP_SHADOW_RING").is_ok_and(|v| v == "all"))
+}
+
+/// How far beyond a thing the ring looks for its shadow along the sun's rays (object units, on
+/// top of 2.3 radii): a thing this high above the ground throws its shadow ~1.1 times as far.
+/// `FCOP_SHADOW_REACH` for tests.
+const RING_REACH: f32 = 2000.0;
+
+pub fn ring_reach() -> f32 {
+    static R: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *R.get_or_init(|| std::env::var("FCOP_SHADOW_REACH").ok().and_then(|v| v.parse().ok()).unwrap_or(RING_REACH))
+}
+
+/// `FCOP_SHADOW_RING=wide` (a test): the ring draws everything beyond the near plane, not only
+/// what may cast into the view; the shadows should be the same.
+pub fn ring_wide() -> bool {
+    static A: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *A.get_or_init(|| std::env::var("FCOP_SHADOW_RING").is_ok_and(|v| v == "wide"))
 }
 
 /// `glide` kept an extra triangle of `kind` (`cast_kind`) as a caster, or not.
@@ -354,11 +487,12 @@ pub fn forget_faces() {
         if log {
             let peak = PEAK.swap(0, Relaxed);
             let ring: u32 = e.ring.iter().map(|&(a, b)| (b - a) / 0x38).sum();
-            super::log!("shadows: {} turned-away faces cast, ring {} actors {ring} records, display list at most {peak} of {LIST_RECORDS}; casters kept/without depth: faces {}/{}, ring {}/{}", e.faces.len(), e.ring_actors, e.cast[1][1], e.cast[1][0], e.cast[2][1], e.cast[2][0]);
+            super::log!("shadows: {} turned-away faces cast, ring {} actors {} static objects {ring} records, display list at most {peak} of {LIST_RECORDS}; casters kept/without depth: faces {}/{}, ring {}/{}", e.faces.len(), e.ring_actors, e.ring_objects, e.cast[1][1], e.cast[1][0], e.cast[2][1], e.cast[2][0]);
         }
         e.faces.clear();
         e.ring.clear();
         e.ring_actors = 0;
+        e.ring_objects = 0;
         e.cast = [[0; 2]; 3];
     });
 }

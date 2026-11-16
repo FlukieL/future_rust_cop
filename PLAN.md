@@ -359,19 +359,16 @@ sort, the camera [0x511f48] (`fps.rs`, up to +0x88), the actors (0x50e428).
       Ring step 1 done (2026-11-14, `shadows::actors_draw`): actors off the screen drawn
       again zoomed out, only casting; no cost measured. The user has not yet looked in the
       game whether shadows still pop in at the edge.
-- [ ] Ring step 2: the static objects (trees, rocks, wall parts?) of the cells around the
-      visible ones. Known so far: render_world 0x453260(0, player, &view) per view: terrain
-      0x453360(a, b, v), 0x437310(a, b, v), static objects 0x42fe20(a, b, v), actors_draw
-      0x4532f0(view), objects_draw 0x42dd90(view) (effects); a = [0x4a3b00 + 2 * view], b =
-      [0x4a3b01 + 2 * view] (bytes: the view's centre cell?), v = 0x50dc80 + view * 0x1f4 (the
-      view's data). 0x42fe20: nothing when grid [0x4a13fc] is 0; walks entries of 0x14 bytes
-      from its third argument (+0 a mask, 0 ends; cell index (a + row) * [0x4a13f4] + column +
-      b, 8 bytes a cell: +0 first object, +4 set to the game time [0x511ee4]); objects linked,
-      skipped when +0x4c & 0x10 or (+0x4e & mask) == 0; drawn with model_draw 0x4280a0. To
-      find: how the entries (visible cells) are made (the visibility pass 0x452880 / 0x452a20
-      / 0x452de0 with terrain_cell_visible 0x452fd0), then the same for the cells around
-      them, drawn as the actors' ring (zoom, `cast_kind` 2). Maybe simpler: call 0x42fe20
-      again zoomed with a widened entry list.
+- [x] Ring step 2 (2026-11-15, `shadows::static_objects`): the static objects of 2 cells
+      around the view's 5x5 window and the window's objects the game left out, drawn with
+      model_draw alone (zoomed, only casting); details in CLAUDE.md.
+      The user (2026-11-15): enemies off the screen cast no shadow. The zoom 0.5 reached only
+      0.47 below the middle (y / z) and the game draws a face only with a point on the screen:
+      now the ring's object test takes what casts into the view (sphere moved away from the
+      sun) and its faces count as on the screen. ~3% cost at the M2C start. Still left out:
+      faces with a point beside the camera at x / z > ~15 (s16), and objects at or behind
+      the near plane.
+      Next step maybe: effects/objects_draw 0x42dd90 (things in flight) in the ring.
 - [ ] The sun's strength and direction: the user cannot judge them without seeing the
       differences. Planned: a comparison sheet, the same scene (shadow map, Ultra) rendered
       with several strengths (`SUN_STRENGTH` now 0.45) and sun directions (`SUN` now
