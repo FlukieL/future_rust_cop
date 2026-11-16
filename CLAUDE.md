@@ -481,7 +481,15 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   replaced unseen, ~2 a second at 120 fps on 120 Hz, seen only in CapFrameX; our log showed 10
   then 6.6 ms). `tools/framegraph.html` also reads CapFrameX .json (frame time between display
   changes or presents, animation error as motion, dropped).
+  Pictures keep their own times: the frame's own picture is one of the rate's (`NEXT` moves on a
+  period, at most 2 ahead: the clock goes back by a pause at resume (0x4130a0) and restarts with
+  each mission; started again at each frame, 60 fps gave 75 and 100 gave 112.5).
   Between frames it sleeps (turn handed over) until 2 ms before the next picture or frame.
+  A frame found 1...7 ticks late (a picture or sleep ran past its start) starts at its due tick
+  (the clock read at 0x406a56 returns last + 8): frame_wait sets frame_dt [0x511f58] and the game
+  time from it, but the logic moves the player and camera as far in every frame, so a 9-tick frame
+  (~1% of frames, every few seconds) moved things slower for a frame (a stutter in pictures).
+  The next frames catch up; 16 ticks or more are left to the game.
   The cursor is never caught or hidden in scripted runs (`FCOP_INPUT`) or with `FCOP_GRAB=0`.
   "Show FPS" in Preferences, right of Fullscreen (REG_DWORD `ShowFps`, default off; `FCOP_STATS=0/1`)
   draws frames a second and a frame time graph in the window's corner (`stats.rs`, no
