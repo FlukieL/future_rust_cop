@@ -481,7 +481,8 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   replaced unseen, ~2 a second at 120 fps on 120 Hz, seen only in CapFrameX; our log showed 10
   then 6.6 ms). `tools/framegraph.html` also reads CapFrameX .json (frame time between display
   changes or presents, animation error as motion, dropped).
-  Pictures keep their own times: the frame's own picture is one of the rate's (`NEXT` moves on a
+  Pictures keep their own times: the frame's own picture is one of the rate's (the frame waits
+  for its slot, at most a period: at 100 fps pictures came 1, 5, 3, 3, 3, 2, 4, 3 ticks apart) (`NEXT` moves on a
   period, at most 2 ahead: the clock goes back by a pause at resume (0x4130a0) and restarts with
   each mission; started again at each frame, 60 fps gave 75 and 100 gave 112.5).
   Between frames it sleeps (turn handed over) until 2 ms before the next picture or frame.
