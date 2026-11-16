@@ -126,6 +126,8 @@ const SHADOW_QUALITY_LABEL: u32 = FIRST_OURS + 30;
 const SHADOW_QUALITY: u32 = FIRST_OURS + 31;
 /// Right of the Frame Rate combo (`fps::vsync`).
 const VSYNC: u32 = FIRST_OURS + 32;
+/// Right of Fullscreen: the frame rate display (`stats.rs`).
+const SHOW_FPS: u32 = FIRST_OURS + 33;
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -305,6 +307,9 @@ pub fn adjust(template: u32, t: &mut Template) {
             let x = filtering.map_or(r[0], |f| f[0]);
             let y = display_mode.map_or(r[1], |m| m[1]);
             t.items.push(Item { class: Class::Button, id: FULLSCREEN, text: "Fullscreen".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, y, r[2], r[3] - 1] });
+            // on the same row, where Widescreen is below Filtering
+            let x = filtering.map_or(x + 58, |f| f[0] + 58);
+            t.items.push(Item { class: Class::Button, id: SHOW_FPS, text: "Show FPS".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, y, 70, r[3] - 1] });
         }
         if let Some(f) = filtering {
             // an auto check box (BS_AUTOCHECKBOX) right of Filtering
@@ -466,6 +471,9 @@ pub fn init(d: &mut Dialog) {
         if let Some(c) = d.control(VSYNC) {
             c.check = crate::platform::fps::vsync() as u32;
         }
+        if let Some(c) = d.control(SHOW_FPS) {
+            c.check = crate::platform::stats::enabled() as u32;
+        }
         let fps = crate::platform::fps::chosen();
         if let Some(c) = d.control(FRAME_RATE) {
             if let Kind::Combo { items, sel, .. } = &mut c.kind {
@@ -597,6 +605,9 @@ pub fn ok(d: &mut Dialog) {
         });
         if let Some(f) = fps {
             crate::platform::fps::set_chosen(f);
+        }
+        if let Some(on) = d.control(SHOW_FPS).map(|c| c.check != 0) {
+            crate::platform::stats::set_enabled(on);
         }
         if let Some(on) = d.control(VSYNC).map(|c| c.check != 0) {
             crate::platform::fps::set_vsync(on);
