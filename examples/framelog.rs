@@ -1,6 +1,6 @@
 //! Sums up a frame log (`FCOP_FRAMELOG=file.csv`): `framelog <file.csv> [skip ms]`.
 //! Frame times (as RivaTuner's: mean, 1% / 0.1% lows, longest), hitches (frames 1.5 times
-//! the median or longer) with when they came and how far apart (a regular stutter has a
+//! the median and 4 ms over it, or longer; at high rates 1.5 times alone is noise) with when they came and how far apart (a regular stutter has a
 //! steady spacing), and the motion: how far the game time shown moved on per picture
 //! against the time between them (`step` / 0.3 ticks a ms less `frame_ms`; 0 when the
 //! game moves in step with the clock). Pictures that move too much or too little stutter
@@ -60,8 +60,9 @@ fn main() {
     swaps.sort_by(f64::total_cmp);
     println!("showing (swap): median {:.2} ms, 99% {:.2}, longest {:.2}", pct(&swaps, 0.5), pct(&swaps, 0.99), swaps[n - 1]);
 
-    let hitches: Vec<(f64, f64)> = rows.iter().filter(|r| r.1 >= 1.5 * median).map(|r| (r.0, r.1)).collect();
-    println!("hitches (>= {:.2} ms, 1.5 x median): {}", 1.5 * median, hitches.len());
+    let limit = (1.5 * median).max(median + 4.0);
+    let hitches: Vec<(f64, f64)> = rows.iter().filter(|r| r.1 >= limit).map(|r| (r.0, r.1)).collect();
+    println!("hitches (>= {limit:.2} ms: 1.5 x median, 4 ms over it): {}", hitches.len());
     for h in hitches.iter().take(20) {
         println!("  at {:9.1} ms: {:.2} ms", h.0, h.1);
     }

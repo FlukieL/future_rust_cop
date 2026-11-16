@@ -92,7 +92,8 @@ function stats(rows) {
   const span = rows[n - 1].ms - rows[0].ms + rows[0].frame;
   const low = share => { const k = Math.max(1, Math.ceil(n * share)); let s = 0; for (let i = n - k; i < n; i++) s += t[i]; return 1000 * k / s; };
   const median = pct(t, 0.5);
-  const hitches = rows.filter(r => r.frame >= 1.5 * median);
+  // a hitch: 1.5 times the median and 4 ms over it (at high rates 1.5 times alone is noise)
+  const hitches = rows.filter(r => r.frame >= Math.max(1.5 * median, median + 4));
   const gaps = []; for (let i = 1; i < hitches.length; i++) gaps.push(hitches[i].ms - hitches[i - 1].ms);
   gaps.sort((a, b) => a - b);
   const mo = rows.filter(r => r.step !== null).map(r => Math.abs(r.step / 0.3 - r.frame)).sort((a, b) => a - b);
@@ -205,7 +206,7 @@ function draw() {
 
 function summary(data) {
   const f = (v, d = 2) => isFinite(v) ? v.toFixed(d) : "–";
-  let h = "<tr><th>File</th><th>Pictures</th><th>Avg fps</th><th>Mean ms</th><th>Median</th><th>99%</th><th>99.9%</th><th>Longest</th><th>1% low fps</th><th>0.1% low fps</th><th>Hitches (≥1.5× median)</th><th>Their spacing</th><th>Motion 99% |ms|</th><th>Motion max</th></tr>";
+  let h = "<tr><th>File</th><th>Pictures</th><th>Avg fps</th><th>Mean ms</th><th>Median</th><th>99%</th><th>99.9%</th><th>Longest</th><th>1% low fps</th><th>0.1% low fps</th><th>Hitches (≥1.5× median, ≥ +4 ms)</th><th>Their spacing</th><th>Motion 99% |ms|</th><th>Motion max</th></tr>";
   runs.forEach((r, i) => {
     const s = stats(data[i]);
     if (!s) { h += `<tr><td><span class="sw" style="background:${colour(i)}"></span>${esc(r.name)}</td><td colspan="13">no pictures in range</td></tr>`; return; }
