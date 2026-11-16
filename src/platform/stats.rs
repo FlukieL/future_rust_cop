@@ -13,9 +13,31 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+/// "Show Frame Rate" in Advanced Graphics (REG_DWORD `ShowFps`, default off; `FCOP_STATS=0/1`).
+static SHOW: super::light::Setting = super::light::Setting::with_default("ShowFps", "FCOP_STATS", false);
+
 pub fn on() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| ["FCOP_STATS", "FCOP_SAMPLE"].iter().any(|v| std::env::var_os(v).is_some_and(|v| v != "0")))
+    static SAMPLE: OnceLock<bool> = OnceLock::new();
+    SHOW.get() || *SAMPLE.get_or_init(|| std::env::var_os("FCOP_SAMPLE").is_some_and(|v| v != "0"))
+}
+
+/// The box: saved, and shown (or not) from the next picture on, counting afresh.
+pub fn set_enabled(on: bool) {
+    SHOW.set(on);
+    let s = &mut *STATS.lock().unwrap();
+    s.start = None;
+    s.last = None;
+    s.times.clear();
+    s.total = 0.0;
+    s.cols.clear();
+    s.col = 0;
+    s.text = [String::new(), String::new()];
+    s.text_at = None;
+    s.drawn = None;
+}
+
+pub fn enabled() -> bool {
+    SHOW.get()
 }
 
 /// Columns of the graph, one pixel each: the picture's width.
