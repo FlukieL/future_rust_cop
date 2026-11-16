@@ -129,6 +129,10 @@ void main() {
 }
 "#;
 
+fn swap_interval(vsync: bool) -> SwapInterval {
+    if vsync { SwapInterval::Wait(NonZeroU32::MIN) } else { SwapInterval::DontWait }
+}
+
 impl Gl {
     /// Create the window with an OpenGL 3.3 context.
     pub fn new(el: &ActiveEventLoop, attrs: WindowAttributes) -> (Window, Gl) {
@@ -148,8 +152,12 @@ impl Gl {
         let sattrs = win.build_surface_attributes(Default::default()).expect("surface attributes");
         let surface = unsafe { display.create_window_surface(&config, &sattrs) }.expect("cannot create the GL surface");
         let context = context.make_current(&surface).expect("cannot make the GL context current");
-        // the game paces itself
-        let _ = surface.set_swap_interval(&context, SwapInterval::DontWait);
+        // the game paces itself, with V-Sync up to the screen's rate (`fps::vsync`)
+        let vsync = super::fps::vsync();
+        match surface.set_swap_interval(&context, swap_interval(vsync)) {
+            Ok(()) => super::log!("gl: V-Sync {}", if vsync { "on" } else { "off" }),
+            Err(e) => super::log!("warn: V-Sync {}: {e}", if vsync { "on" } else { "off" }),
+        }
         let gl = unsafe { glow::Context::from_loader_function_cstr(|s| display.get_proc_address(s)) };
         let blit = compile(&gl, BLIT_VS, BLIT_FS);
         let vao = unsafe { gl.create_vertex_array() }.expect("GL vertex array");
@@ -179,6 +187,13 @@ impl Gl {
         self.video_size = v.map(|v| (v.1, v.2));
         if let Some((px, w, h)) = v {
             upload(&self.gl, self.video, px, w, h);
+        }
+    }
+
+    /// V-Sync: the swap waits for the screen's next refresh.
+    pub fn set_vsync(&self, on: bool) {
+        if let Err(e) = self.surface.set_swap_interval(&self.context, swap_interval(on)) {
+            super::log!("warn: V-Sync {}: {e}", if on { "on" } else { "off" });
         }
     }
 

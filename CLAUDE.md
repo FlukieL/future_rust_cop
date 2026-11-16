@@ -474,6 +474,13 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   moves it on), places put back after the second view's 0x4114c0; not while a player's view
   shows 0x405cb0 instead of the world. Only with Glide, playing ([0x511fb8] = 4), not paused. Choices 60 ... 300 and unlimited (REG_DWORD
   `FrameRate`, 0 = original 37.5, 0xffffffff unlimited: ~950 fps in the first mission; our combo below the 3DFX Options group in Preferences).
+  V-Sync (REG_DWORD `VSync`, default on, `FCOP_VSYNC=0/1`, box right of the Frame Rate combo):
+  swap interval 1; a rate at 97% of the display's refresh (`window::refresh_hz`) or above, and
+  unlimited, then draws pictures one after another and the swap paces them (our clock beside the
+  screen's: a picture 1.4 ms late after the game's own frame missed its refresh, shown twice /
+  replaced unseen, ~2 a second at 120 fps on 120 Hz, seen only in CapFrameX; our log showed 10
+  then 6.6 ms). `tools/framegraph.html` also reads CapFrameX .json (frame time between display
+  changes or presents, animation error as motion, dropped).
   Between frames it sleeps (turn handed over) until 2 ms before the next picture or frame.
   The cursor is never caught or hidden in scripted runs (`FCOP_INPUT`) or with `FCOP_GRAB=0`.
   `FCOP_STATS=1` draws frames a second and a frame time graph in the window's corner

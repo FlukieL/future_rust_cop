@@ -148,6 +148,26 @@ pub fn set_chosen(fps: u32) {
     RATE.store(fps, Ordering::Relaxed);
 }
 
+/// V-Sync (REG_DWORD `VSync`, default on; `FCOP_VSYNC=0/1`): the window's swap waits for
+/// the screen's refresh. A rate at the screen's or above (and unlimited) is then the
+/// screen's: pictures are drawn one after another and the swap paces them. Our own clock
+/// beside the screen's left no room: a picture 1.4 ms late (the one after the game's own
+/// frame, which ran its logic first) missed its refresh, the one before stayed on the screen
+/// twice as long and the late one was replaced unseen (CapFrameX, 120 fps at 120 Hz: ~2 a
+/// second, our log showed only 10 ms then 6.6 ms). Below the screen's rate our clock paces
+/// and the swap shows each picture at the next refresh.
+static VSYNC: super::light::Setting = super::light::Setting::with_default("VSync", "FCOP_VSYNC", true);
+
+pub fn vsync() -> bool {
+    VSYNC.get()
+}
+
+/// Preferences' OK: saved, and used from the next picture on.
+pub fn set_vsync(on: bool) {
+    VSYNC.set(on);
+    super::window::set_vsync(on);
+}
+
 fn f64_at(a: u32) -> f64 {
     let m = mem();
     f64::from_bits(m.rd32(a) as u64 | (m.rd32(a + 4) as u64) << 32)
@@ -366,6 +386,8 @@ pub fn forget() {
 fn period() -> f64 {
     match RATE.load(Ordering::Relaxed) {
         UNLIMITED => 0.0,
+        // the swap waits for the screen (a 120 Hz screen may run at 119.96)
+        fps if vsync() && super::window::refresh_hz().is_some_and(|hz| fps as f64 >= hz * 0.97) => 0.0,
         fps => 300.0 / fps.max(1) as f64,
     }
 }
