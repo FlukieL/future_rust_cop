@@ -421,7 +421,14 @@ pub fn render_start(c: &mut Cpu) {
         let mut behind = BEHIND.lock().unwrap();
         if !showing {
             DRAWN.store(m.rd32(LAST.at()).wrapping_add(1), Ordering::Relaxed);
-            *NEXT.lock().unwrap() = now + period();
+            // the frame's picture is one of the rate's, as one in between (started again from
+            // each frame, 60 fps drew 2 pictures a frame: 75 a second)
+            let p = period();
+            let mut next = NEXT.lock().unwrap();
+            // never far ahead: the clock goes back by a pause's time when the game resumes
+            // (0x4130a0) and starts again with each mission (there were no pictures in between
+            // until the clock had caught up)
+            *next = (*next + p).clamp(now + p / 2.0, now + 2.0 * p);
             let time = m.rd32(GAME_TIME.at()) as f64;
             // a clock that started again, or a long pause in between: start over
             if history.back().is_some_and(|&(t, _)| time < t || time > t + 4.0 * FRAME as f64) {
@@ -637,6 +644,14 @@ pub fn clock(c: &mut Cpu) {
     let mut wake = last.wrapping_add(FRAME) as f64;
     if !receiving {
         let passed = c.r[EAX].wrapping_sub(last) as i32;
+        // a frame found a tick or more late (a picture or a sleep ran past its start) would
+        // take 9 ticks as its time and its start (the game time pictures go by), but the logic
+        // moves things as far in every frame: they went slower for a frame. It starts at its
+        // due tick instead; the next comes that much sooner. A long stop is left to the game.
+        if from == WAITING[0].at() && (FRAME as i32 + 1..2 * FRAME as i32).contains(&passed) {
+            c.r[EAX] = last.wrapping_add(FRAME);
+            return;
+        }
         // the loop's own test; outside 0..8 (a clock that started again) it is left alone
         if !(0..FRAME as i32).contains(&passed) {
             return;
