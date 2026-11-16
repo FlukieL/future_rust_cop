@@ -339,7 +339,9 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   colours each kind; `FCOP_EFFECT_LOG=1` logs blended records and writes their texture
   rectangles to `Textures/effects/`.
 - `shadows.rs`: shadows (PLAN.md 2a step 3; REG_DWORD `Shadows` 0 off (default), 1
-  screen-space (the ray march below, at half resolution blurred with the AO), 2 shadow map,
+  screen-space (the ray march below, at half resolution blurred with the AO), 2 shadow map (not
+  offered for now, `shadows::MAP_OFFERED` false: the combo lists Off / Screen-Space, no quality
+  combo, a stored 2 is Off; only `FCOP_SHADOWS=2` turns it on),
   `FCOP_SHADOWS=0/1/2`; REG_DWORD `ShadowQuality` 0...3 Low / Medium (default) / High / Ultra,
   `FCOP_SHADOW_QUALITY=low|mid|high|ultra` (`look`, as nuclear_rust_strike's: map 1024 / 2048 /
   4096 / 4096, PCF 3x3 / 5x5 / 5x5 / 5x5 taps 1 / 1.5 / 1.5 / 1 texels apart, Low looked up in

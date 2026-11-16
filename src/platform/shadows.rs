@@ -52,8 +52,16 @@ pub enum Mode {
     Map = 2,
 }
 
-/// The modes as Advanced Graphics lists them.
-pub const MODES: [(Mode, &str); 3] = [(Mode::Off, "Off"), (Mode::ScreenSpace, "Screen-Space"), (Mode::Map, "Shadow Map")];
+/// The shadow map is offered in Advanced Graphics (off for now, 2026-11-16: not finished;
+/// `FCOP_SHADOWS=2` still turns it on, for tests).
+pub const MAP_OFFERED: bool = false;
+
+/// The modes as Advanced Graphics lists them (the map only with `MAP_OFFERED`).
+pub const MODES: &[(Mode, &str)] = if MAP_OFFERED {
+    &[(Mode::Off, "Off"), (Mode::ScreenSpace, "Screen-Space"), (Mode::Map, "Shadow Map")]
+} else {
+    &[(Mode::Off, "Off"), (Mode::ScreenSpace, "Screen-Space")]
+};
 
 /// The shadow map's quality (REG_DWORD `ShadowQuality`), as nuclear_rust_strike's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -101,7 +109,7 @@ static QUALITY: Choice = Choice { v: AtomicU32::new(u32::MAX), value: "ShadowQua
 pub fn mode() -> Mode {
     match MODE.get() {
         1 => Mode::ScreenSpace,
-        2 => Mode::Map,
+        2 if MAP_OFFERED || std::env::var_os("FCOP_SHADOWS").is_some() => Mode::Map,
         _ => Mode::Off,
     }
 }

@@ -188,14 +188,20 @@ pub fn template(id: u32) -> Template {
     // of its combo's)
     add(Class::Static, SHADOWS_LABEL, "Shadows", 0, [7, 88, 66, 8]);
     add(Class::ComboBox, SHADOWS, "", TABSTOP | 3, [76, 86, w - 83, 60]);
-    add(Class::Static, SHADOW_QUALITY_LABEL, "Shadow Quality", 0, [7, 102, 66, 8]);
-    add(Class::ComboBox, SHADOW_QUALITY, "", TABSTOP | 3, [76, 100, w - 83, 70]);
-    add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 116, 66, 8]);
-    add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 114, w - 83, 70]);
+    // the map's quality only while the map is offered; the rows below move up without it
+    let up = if crate::platform::shadows::MAP_OFFERED {
+        add(Class::Static, SHADOW_QUALITY_LABEL, "Shadow Quality", 0, [7, 102, 66, 8]);
+        add(Class::ComboBox, SHADOW_QUALITY, "", TABSTOP | 3, [76, 100, w - 83, 70]);
+        0
+    } else {
+        14
+    };
+    add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 116 - up, 66, 8]);
+    add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 114 - up, w - 83, 70]);
     // OK (1, the default) and Cancel (2), bottom right
-    add(Class::Button, 1, "OK", TABSTOP | 1, [w - 116, 134, 50, 14]);
-    add(Class::Button, 2, "Cancel", TABSTOP, [w - 57, 134, 50, 14]);
-    Template { style: 0x00c0_0000, title: "Advanced Graphics".into(), rect: [0, 0, w, 154], font: None, items }
+    add(Class::Button, 1, "OK", TABSTOP | 1, [w - 116, 134 - up, 50, 14]);
+    add(Class::Button, 2, "Cancel", TABSTOP, [w - 57, 134 - up, 50, 14]);
+    Template { style: 0x00c0_0000, title: "Advanced Graphics".into(), rect: [0, 0, w, 154 - up], font: None, items }
 }
 
 fn renderer() -> String {
