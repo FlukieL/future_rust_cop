@@ -480,7 +480,9 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   (`stats.rs`, no RivaTuner needed); `FCOP_FRAMELOG=file.csv` (`framelog.rs`) writes a line per 3D picture
   shown: ms, frame time, swap time, clock, the game time it shows (`fps::render_start`) and its
   step (uneven motion stutters even when frames come on time); `examples/framelog.rs <csv> [skip
-  ms]` sums it up (lows, hitches and their spacing, pictures not moving with the clock); `FCOP_SAMPLE=1` (`sample.rs`, shows the stats too) logs
+  ms]` sums it up (lows, hitches and their spacing, pictures not moving with the clock);
+  `tools/framegraph.html` (open in a browser, drop CSVs; several compared) draws them: frame
+  times, motion, distribution, summary; drag to zoom; `FCOP_SAMPLE=1` (`sample.rs`, shows the stats too) logs
   every 2 s where the game thread spends its time (functions by name, system code unwound).
   `FCOP_FPS=1` logs the frames shown per second (Glide); with `FCOP_PHASES=1` also µs a
   frame spent in the effects' phases (`fps::timer`: projected points, `glide::add`, `ao::depths`,
