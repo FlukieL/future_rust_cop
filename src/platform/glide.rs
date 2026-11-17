@@ -205,6 +205,9 @@ struct Glide {
     /// rectangle of the primitive's texture coordinates s0 t0 s1 t1 (floats)
     batch: Vec<u32>,
     batch_mode: u32,
+    /// how the batch's primitives meet the depth buffer (`zbuffer.rs`): 0 not, 1 tested,
+    /// 2 tested and (when solid) written: every corner has its own depth
+    batch_z: u8,
     gamma: f32,
     /// ambient occlusion (`ao.rs`): view-space depth and a mask, a second attachment of the
     /// framebuffer drawn into, written by the 3D picture (`gbuf`: the walker says when, and
@@ -239,6 +242,8 @@ struct Gdepth {
     tex: glow::Texture,
     ms: bool,
     colour: glow::Framebuffer,
+    /// the depth buffer (`zbuffer.rs`), as many samples as the picture
+    zrb: glow::Renderbuffer,
 }
 
 thread_local! {
@@ -247,6 +252,9 @@ thread_local! {
 
 const VS: &str = r#"
 uniform vec2 space;
+uniform int ztest;      // the depth buffer (`zbuffer.rs`): 1 the depth from z
+uniform float zbias;    // pulled nearer by this share
+invariant gl_Position;
 layout(location = 0) in vec2 pos;
 layout(location = 1) in vec4 col;
 layout(location = 2) in vec2 tc;
@@ -273,7 +281,9 @@ void main() {
     vinvz = z > 0.0 ? 1.0 / z : 0.0;
     // perspective-correct: s/z, t/z, 1/z interpolated linearly on the screen
     stq = vec3(tc * vinvz, vinvz);
-    gl_Position = vec4(pos.x / space.x * 2.0 - 1.0, 1.0 - pos.y / space.y * 2.0, 0.0, 1.0);
+    // 1 - NEAR / z: linear in 1/z, so exact across a plane on the screen (w is 1)
+    float d = ztest != 0 && z > 0.0 ? clamp(1.0 - 8.0 / (z * (1.0 - zbias)), 0.0, 1.0) : 0.5;
+    gl_Position = vec4(pos.x / space.x * 2.0 - 1.0, 1.0 - pos.y / space.y * 2.0, 2.0 * d - 1.0, 1.0);
 }
 "#;
 
@@ -288,6 +298,7 @@ uniform vec3 key;
 uniform int linear_filter;
 uniform int edge;      // how the chroma key's soft edge is applied (see `flush`)
 uniform int gmode;     // the depth attachment: 0 not written, 1 depth, 2/3 mask (blended/additive)
+uniform int zonly;     // the depth buffer's own pass: 1 everything, 2 where alpha >= 0.5
 in vec4 vcol;
 noperspective in float vinvz;
 noperspective in vec2 st_affine;
@@ -445,6 +456,12 @@ void main() {
     if (edge == 2) a *= cover;
     if (edge == 3) c *= cover;
     if (cover <= 0.0) discard;
+    if (zonly != 0) {
+        if (zonly == 2 && a < 0.5) discard;
+        color = vec4(0.0);
+        gbuf = vec4(0.0);
+        return;
+    }
     // lit smoke: by distance (no normal), and from behind through it (forward scattering)
     if (smoke_count > 0 && veffect == 1u && vinvz > 0.0) {
         float z = 1.0 / vinvz;
@@ -515,6 +532,9 @@ struct Uniforms {
     linear_filter: Option<glow::UniformLocation>,
     edge: Option<glow::UniformLocation>,
     gmode: Option<glow::UniformLocation>,
+    ztest: Option<glow::UniformLocation>,
+    zbias: Option<glow::UniformLocation>,
+    zonly: Option<glow::UniformLocation>,
     show_effects: Option<glow::UniformLocation>,
     smoke_count: Option<glow::UniformLocation>,
     smoke_lpos: Option<glow::UniformLocation>,
@@ -539,6 +559,9 @@ impl Uniforms {
             linear_filter: u("linear_filter"),
             edge: u("edge"),
             gmode: u("gmode"),
+            ztest: u("ztest"),
+            zbias: u("zbias"),
+            zonly: u("zonly"),
             show_effects: u("show_effects"),
             smoke_count: u("smoke_count"),
             smoke_lpos: u("smoke_lpos"),
@@ -805,6 +828,7 @@ impl Glide {
                 },
                 batch: Vec::new(),
                 batch_mode: glow::TRIANGLES,
+                batch_z: 0,
                 gamma: 1.0,
                 gdepth: None,
                 gbuf: None,
@@ -945,9 +969,19 @@ impl Glide {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, None);
                 return;
             }
+            let zrb = gl.create_renderbuffer().expect("GL renderbuffer");
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(zrb));
+            gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, ms.unwrap_or(0) as i32, glow::DEPTH_COMPONENT32F, w, h);
+            gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(zrb));
+            if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+                log!("warn: no depth buffer (not taken beside the depth attachment)");
+                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, None);
+            }
             gl.disable(glow::SCISSOR_TEST);
             gl.color_mask_draw_buffer(1, true, true, true, true);
             gl.clear_buffer_f32_slice(glow::COLOR, 1, &[0.0; 4]);
+            gl.depth_mask(true);
+            gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[1.0]);
             let colour = gl.create_framebuffer().expect("GL framebuffer");
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(colour));
             match self.ms {
@@ -955,7 +989,7 @@ impl Glide {
                 None => gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(self.color), 0),
             }
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            self.gdepth = Some(Gdepth { tex, ms: ms.is_some(), colour });
+            self.gdepth = Some(Gdepth { tex, ms: ms.is_some(), colour, zrb });
         }
     }
 
@@ -965,10 +999,12 @@ impl Glide {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.draw_fbo()));
             let kind = if d.ms { glow::TEXTURE_2D_MULTISAMPLE } else { glow::TEXTURE_2D };
             gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT1, kind, None, 0);
+            gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, None);
             gl.draw_buffers(&[glow::COLOR_ATTACHMENT0]);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             gl.delete_framebuffer(d.colour);
             gl.delete_texture(d.tex);
+            gl.delete_renderbuffer(d.zrb);
         }
     }
 
@@ -982,6 +1018,8 @@ impl Glide {
             gl.disable(glow::SCISSOR_TEST);
             gl.color_mask_draw_buffer(1, true, true, true, true);
             gl.clear_buffer_f32_slice(glow::COLOR, 1, &[0.0; 4]);
+            gl.depth_mask(true);
+            gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[1.0]);
         }
     }
 
@@ -1151,16 +1189,33 @@ impl Glide {
                 gl.uniform_1_f32(u.smoke_focal.as_ref(), 4096.0 * th / 1920.0);
                 gl.uniform_1_f32(u.smoke_k.as_ref(), super::lights::SMOKE_STRENGTH);
             }
-            if self.gdepth.is_some() {
-                match gmode {
-                    1 => gl.color_mask_draw_buffer(1, true, true, false, false),
-                    2 | 3 => {
-                        gl.color_mask_draw_buffer(1, false, true, false, false);
-                        gl.disable_draw_buffer(glow::BLEND, 1);
+            let has_gdepth = self.gdepth.is_some();
+            let masks = || {
+                if has_gdepth {
+                    match gmode {
+                        1 => gl.color_mask_draw_buffer(1, true, true, false, false),
+                        2 | 3 => {
+                            gl.color_mask_draw_buffer(1, false, true, false, false);
+                            gl.disable_draw_buffer(glow::BLEND, 1);
+                        }
+                        _ => gl.color_mask_draw_buffer(1, false, false, false, false),
                     }
-                    _ => gl.color_mask_draw_buffer(1, false, false, false, false),
                 }
+            };
+            masks();
+            // the depth buffer (`zbuffer.rs`): solid primitives with their own depth at every
+            // corner write it, the others with depth only test
+            let zk = self.batch_z;
+            let zwrite = zk == 2 && gmode == 1;
+            gl.uniform_1_i32(u.ztest.as_ref(), (zk != 0) as i32);
+            gl.uniform_1_i32(u.zonly.as_ref(), 0);
+            if zk != 0 {
+                gl.enable(glow::DEPTH_TEST);
+                gl.depth_func(glow::LEQUAL);
+                gl.depth_mask(false);
+                gl.uniform_1_f32(u.zbias.as_ref(), if zwrite { 0.0 } else { super::zbuffer::TEST_BIAS });
             }
+            let (zonly, ztest_u, zbias_u) = (u.zonly.clone(), u.ztest.clone(), u.zbias.clone());
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             let bytes = std::slice::from_raw_parts(self.batch.as_ptr() as *const u8, self.batch.len() * 4);
             if self.vbo_at + bytes.len() > VBO_SIZE {
@@ -1172,8 +1227,28 @@ impl Glide {
             let p = gl.map_buffer_range(glow::ARRAY_BUFFER, self.vbo_at as i32, bytes.len() as i32, flags);
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
             gl.unmap_buffer(glow::ARRAY_BUFFER);
-            gl.draw_arrays(self.batch_mode, (self.vbo_at / (4 * VERTEX)) as i32, (self.batch.len() / VERTEX) as i32);
+            let (first, count) = ((self.vbo_at / (4 * VERTEX)) as i32, (self.batch.len() / VERTEX) as i32);
+            if zwrite {
+                // first the depth alone, where the alpha is at least half when it counts
+                // (keyed holes and soft edges leave what is behind visible)
+                gl.color_mask(false, false, false, false);
+                gl.depth_mask(true);
+                gl.uniform_1_i32(zonly.as_ref(), if opaque && edge != 1 { 1 } else { 2 });
+                gl.uniform_1_f32(zbias_u.as_ref(), -super::zbuffer::slack());
+                gl.draw_arrays(self.batch_mode, first, count);
+                gl.uniform_1_f32(zbias_u.as_ref(), 0.0);
+                gl.uniform_1_i32(zonly.as_ref(), 0);
+                gl.depth_mask(false);
+                gl.color_mask(true, true, true, true);
+                masks();
+            }
+            gl.draw_arrays(self.batch_mode, first, count);
             self.vbo_at += bytes.len();
+            if zk != 0 {
+                gl.disable(glow::DEPTH_TEST);
+                gl.depth_mask(true);
+                gl.uniform_1_i32(ztest_u.as_ref(), 0);
+            }
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
         }
@@ -1216,6 +1291,7 @@ impl Glide {
             (self.cc[4] & 1) | (self.ac[4] & 1) << 1 | (tex.is_some() as u32) << 2 | tex.map_or(0, |t| t.layer << 8 | t.hd.map_or(0, |l| l + 1) << 16),
             tex.map_or(0, |t| t.w | t.h << 16),
         ];
+        let textured = tex.is_some();
         // x y z r g b ooz a oow, then tmu 0: sow tow oow
         let st = |v: u32| {
             let oow = f32::from_bits(m.rd32(v + 0x2c));
@@ -1254,9 +1330,20 @@ impl Glide {
                 false
             }
         };
+        // the depth buffer: the 3D picture's primitives with a depth at every corner (written
+        // only with their own), a batch of one kind
+        let zk = if super::zbuffer::enabled() && self.gbuf.is_some() && self.gdepth.is_some() && self.cast_only == 0 && z.iter().all(|&d| d > 0.0) {
+            if exact { 2 } else { 1 }
+        } else {
+            0
+        };
+        if zk != self.batch_z {
+            self.flush(gl);
+            self.batch_z = zk;
+        }
         // perspective-correct textures: only with every vertex's own depth
         let mut mode = mode;
-        if exact && tex.is_some() && verts.len() >= 3 && perspective() {
+        if exact && textured && verts.len() >= 3 && perspective() {
             mode[2] |= 8;
         }
         // the display list record it comes from (`effects.rs`), in the 3D picture
@@ -1680,6 +1767,8 @@ fn buffer_clear(c: &mut Cpu) -> u32 {
             if g.gdepth.is_some() {
                 gl.color_mask_draw_buffer(1, true, true, true, true);
                 gl.clear_buffer_f32_slice(glow::COLOR, 1, &[0.0; 4]);
+                gl.depth_mask(true);
+                gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[1.0]);
             }
             gl.disable(glow::SCISSOR_TEST);
         }

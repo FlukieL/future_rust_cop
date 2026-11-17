@@ -140,7 +140,14 @@ pub fn draw_glide(c: &mut Cpu) {
     'passes: for pass in 0..4 {
         glide::set_view(if wide { hud_view(pass) } else { View::Full });
         for text in [false, true] {
-            let mut sel = recs.iter().filter(|r| r.pass == pass && r.text == text);
+            let mut order: Vec<&Record> = recs.iter().filter(|r| r.pass == pass && r.text == text).collect();
+            // with the depth buffer the terrain comes first (its order kept, then the rest's):
+            // what lies on the ground (decals) is never painted over by a ground tile the
+            // game's depth buckets put after it; what the ground hides the depth test hides
+            if pass == 0 && !text && super::zbuffer::enabled() {
+                order.sort_by_key(|r| !super::terrain::is_terrain(r.at));
+            }
+            let mut sel = order.iter();
             let Some(first) = sel.next() else { continue };
             let mut last = first.at;
             for r in sel {
@@ -164,13 +171,10 @@ pub fn draw_glide(c: &mut Cpu) {
             glide::set_space(Some(if text { (gw, gh) } else { (2560, 1920) }));
             // the records the 3D picture's primitives come from (before `light` changes them)
             if pass == 0 && !text && super::effects::wanted() {
-                super::effects::begin(recs.iter().filter(|r| r.pass == 0 && !r.text && super::shadows::cast_kind(r.at) != 2).map(|r| r.at));
+                super::effects::begin(order.iter().filter(|r| super::shadows::cast_kind(r.at) != 2).map(|r| r.at));
             }
             // the 3D picture in PlayStation lighting (the HUD as the game draws it)
-            let lit = (pass == 0 && !text).then(|| {
-                let mine = recs.iter().filter(|r| r.pass == 0 && !r.text);
-                light::begin(mine.map(|r| (r.at, if r.kind >= 5 { 4 } else { r.kind as u32 })))
-            });
+            let lit = (pass == 0 && !text).then(|| light::begin(order.iter().map(|r| (r.at, if r.kind >= 5 { 4 } else { r.kind as u32 }))));
             // the 3D picture writes the depth for the ambient occlusion, applied before the HUD
             let world = pass == 0 && !text;
             if world {
@@ -197,6 +201,7 @@ pub fn draw_glide(c: &mut Cpu) {
     glide::set_view(View::Full);
     // the list is made anew for the next picture
     super::shadows::forget_faces();
+    super::terrain::forget_records();
     if let (Some(e), Some(v)) = (entry, saved) {
         m.wr32(e, v);
     }

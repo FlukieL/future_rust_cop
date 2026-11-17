@@ -587,6 +587,28 @@ small gains are measured with timers in the code, not by fps.
       state ~57 µs a picture (unchanged state sent again), the game's own code ~15-20% (the kit's
       fixed memory base and x87 work).
 
+#### Depth buffer and AO noise (2026-11-17, in progress, branch feat/depth-buffer)
+
+- [x] AO: AO and the screen-space sun in two channels (RG8), each blurred along its surface
+      (1/z predicted by its slope), upsampled without mixing across depth edges; normals from
+      the side whose two pixels continue best (decals' rims gave a dark ring); occluders read
+      from a quarter-size nearest-depth map (lattices flickered). The user: still noisy "vorne
+      am Gebäude" (the building's front) in motion; not seen in our stills. Next idea: temporal
+      accumulation with reprojection (camera [0x511f48] matrix and position per view).
+- [x] `zbuffer.rs`: a real GPU depth test (REG_DWORD `DepthBuffer`, default on, Advanced
+      Graphics, `FCOP_ZBUFFER`), terrain records drawn first (`walker.rs`), writers' depth
+      0.1% farther (`FCOP_ZSLACK`). Fixed the decal wedge in the user's savestate (oil stain,
+      `savestate.bin` 2026-11-17 21:55, the first mission's start area; test: fresh start
+      "8000:click@484,303 16000:load 17000:Up*2500", FCOP_NO_VIDEO=1).
+- [ ] **The user still sees Z-fighting** (2026-11-17, not located yet: ask for the place or a
+      savestate there). Suspects: coplanar model faces (writers, LEQUAL with slack), test-only
+      primitives with borrowed depth, terrain records drawn first now covering things the
+      game drew under them on purpose, MSAA sample depth vs. the depth-only pass.
+- [ ] First person (`FCOP_CAMERA=first`): the user expects the depth buffer to fix its drawing
+      problems; one short run did not crash. Still off the camera key.
+- Tried and dropped: ground tiles sorted by their farthest corner (`terrain.rs`): "richtige
+  Z-Probleme" (the user).
+
 #### Ideas after these (the user: "more to come")
 
 Tone mapping (with step 9's HDR target), FXAA/SMAA as an alternative to MSAA, colour grading,
