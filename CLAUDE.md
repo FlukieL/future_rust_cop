@@ -291,19 +291,24 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   grBufferSwap). Depth 1 - 8 / z from each vertex's z (`ao::depths`, so the depth attachment is
   made whenever it is on). Primitives of the 3D picture with a depth at every corner test
   (LEQUAL); solid ones (gmode 1) whose corners are all projected points also write: a depth-only
-  draw first (discarding alpha < 0.5 where alpha counts: keyed holes, lattices), then the colour;
+  draw first (discarding alpha < 0.75 where alpha counts: keyed holes, lattices, and translucent
+  surfaces, the PS1's semi-transparency at alpha 0x80: a pipe dipping into the first mission's
+  green liquid was cut at its surface), then the colour;
   writers write their depth 0.1% farther (`slack`, `FCOP_ZSLACK`: within it the game's order decides,
   coplanar surfaces fought with a strict test), test-only ones (blended, darkening, borrowed
   depths) are pulled 0.4% nearer. A batch holds one kind
   (`Glide::batch_z`). HUD and primitives without depth as before. The terrain's records
   (noted by `terrain::tile`, `is_terrain`) are drawn first in the 3D picture (`walker.rs`
-  relinks them ahead, their order and the rest's kept): a ground tile the buckets put after a
+  relinks them ahead, their order and the rest's kept; semi-transparent records, type bit 3,
+  keep their place among them: the fog's layers, behind all the ground, darkened the picture): a ground tile the buckets put after a
   decal painted part of it over, also with the depth test (decals dip into the ground).
 - `ao.rs`: ambient occlusion (SSAO, PLAN.md 2a step 1; REG_DWORD `AmbientOcclusion`, default
   off, `FCOP_SSAO=0/1`, box in Advanced Graphics). Depth without a depth buffer: the hooks of
   0x457340 (object points, in place {sx, sy, z}, flag 1 = before the near plane) and 0x453740
   (terrain, out {sx, sy, z / 16}: both in object units) keep each projected point's z by its
-  screen position in 2560x1920 units (`ao::point`, a thread-local table with a fast hash, cleared at grBufferSwap); `glide::add`
+  screen position in 2560x1920 units (`ao::point`, a thread-local table with a fast hash, cleared at grBufferSwap; up to two
+  z a place, each marked ground or model: where both meet, a vertex takes the kind its
+  primitive's other corners are, else a ground tile tipped forward over a pickup box); `glide::add`
   finds each 3D vertex's z by its x/y (precise mode passes the units on; split screen: less the
   view's origin, `glide::set_gbuffer(Some(dx))` from the walker); ~97% are found, the rest (near
   plane clipping) take the primitive's others. A vertex attribute, interpolated as 1/z, into a
@@ -582,8 +587,10 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   to the saved time on load; `fps::forget` drops the kept places. Host state (textures, sound
   buffers, kernel objects, threads) is the running one's: a fingerprint (heap blocks, object
   handles and kinds, sound buffer addresses, Glide texture addresses) taken at each mission's
-  first frame (hook of the mission loop 0x406820) must equal the saved one, else the load is
-  refused naming the part. New guest threads get their TIB and stack in CreateThread / timeSetEvent
+  first frame (hook of the mission loop 0x406820) is only logged when it differs: files and
+  events take the saved handles (`kernel32::adopt_handles`), sound buffers come from the
+  savestate's table (`dsound::voice_table`, FCOPSAV3; FCOPSAV2 keeps this run's whose blocks the
+  loaded heap has); textures and threads stay this run's. New guest threads get their TIB and stack in CreateThread / timeSetEvent
   (`thread_stack`), not when they first run: that timing moved every heap block after them and
   failed the check at random. `FCOP_SAVESTATE=<file>` uses another file (tests: the player's
   own stays). Scripted: a fresh start with "8000:click@484,303 16000:load" (and

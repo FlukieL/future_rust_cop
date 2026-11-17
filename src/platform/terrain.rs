@@ -200,7 +200,7 @@ fn project(m: &Memory, out: u32, x: i32, y: i32, z: i32, k: f32, split: bool, ao
     let wrapped = sx != sx as i16 as i32 || sy != sy as i16 as i32;
     m.wr8(out + 7, xc & yc | if wrapped && ours() { WRAPPED } else { 0 });
     if ao && !wrapped {
-        super::ao::point(sx, sy, (z >> 4) as i16);
+        super::ao::point(sx, sy, (z >> 4) as i16, true);
     }
 }
 

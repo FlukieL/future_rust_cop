@@ -604,6 +604,22 @@ small gains are measured with timers in the code, not by fps.
       savestate there). Suspects: coplanar model faces (writers, LEQUAL with slack), test-only
       primitives with borrowed depth, terrain records drawn first now covering things the
       game drew under them on purpose, MSAA sample depth vs. the depth-only pass.
+- [x] Found one (2026-11-17, savestate turning right): the pipe into the green pool was cut
+      at the liquid. Semi-transparent terrain tiles (alpha 0x80 = 0.502) passed the depth-only
+      pass's alpha >= 0.5 and wrote depth; the pipe's end lies 1-5% of its depth below the
+      surface. Threshold now 0.75: translucent surfaces only test.
+- [x] Second (2026-11-17, savestate beside the pickup box, only at high frame rates): a ground
+      vertex and a box vertex projected to the same 2560x1920 unit; `ao::depths` gave the ground
+      triangle the box's z (nearer the reference), it tipped forward and painted over the box's
+      front for a picture. Points now carry ground/model; the primitive's sure corners decide.
+- [x] Third: the fog by the pool turned the picture dark walking toward it (green mean 76
+      instead of 82). Not the depth test (off per blend: no change) but terrain first: the
+      game draws the fog's semi-transparent layers before the near ground, which painted over
+      them; moved behind all the ground they lay over it. Semi-transparent records (type bit
+      3) now keep their place among the terrain's (81.8). Vertex alpha says nothing: nearly
+      every primitive has some below 255.
+- [x] Savestates load however the mission was started (FCOPSAV3: object kinds and sound
+      buffer table; files and events adopt the saved handles; FCOPSAV2 still loads).
 - [ ] First person (`FCOP_CAMERA=first`): the user expects the depth buffer to fix its drawing
       problems; one short run did not crash. Still off the camera key.
 - Tried and dropped: ground tiles sorted by their farthest corner (`terrain.rs`): "richtige

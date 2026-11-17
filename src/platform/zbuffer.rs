@@ -5,7 +5,7 @@
 //! attachment's), so `glide` tests the 3D primitives whose corners all have one:
 //!
 //! - solid ones (opaque, or alpha-blended as the game draws its solid geometry) test and write,
-//!   first the depth alone where their alpha is at least half (keyed holes, a lattice's gaps do
+//!   first the depth alone where their alpha is at least 0.75 (keyed holes, a lattice's gaps, translucent liquids do
 //!   not hide what is behind), then the colour where they are not behind it. The depth they
 //!   write lies `SLACK` farther than they are: what is drawn later within that of a surface
 //!   (decals, overlapping tiles, faces on faces) is drawn in the game's order, on top; only what

@@ -11,12 +11,14 @@
 //! (other threads' stacks are there too), the registers, the guest's clock (it reads the saved
 //! time again on loading), events' state and files' positions.
 //!
-//! What the host holds besides (Glide's textures, sound buffers, kernel objects, threads) is
-//! the new run's: it fits the saved memory only when the mission started the same way. So at
-//! the first frame of each mission (hook of the mission loop 0x406820) a fingerprint is taken
-//! of the heap's blocks, the kernel objects, the sound buffers and the textures' TMU addresses;
-//! a savestate loads only in the mission it was made in, with the same fingerprint (else a
-//! message says which part differs). Sounds playing are not kept.
+//! What the host holds besides is the new run's, made to fit: files and events take the
+//! savestate's handles (`kernel32::adopt_handles`: a run that opened more files before the
+//! mission numbers them on), the sound buffers come from its table (`dsound::voice_table`;
+//! older savestates keep this run's whose blocks the loaded heap has), Glide's textures and
+//! the threads stay. A savestate loads only in the mission it was made in, at the same call
+//! chain; however the mission was started (the fingerprint taken at its first frame, hook of
+//! the mission loop 0x406820, only says in the log which part differs). Sounds playing are
+//! not kept.
 
 use super::{MemoryCopy, kernel32, log, mem};
 use crate::rt::{Cpu, ESP, call_original};
@@ -29,7 +31,9 @@ pub const MISSION_LOOP: Us = Us(0x406820);
 /// In a network game this computer's view, else negative: never there.
 const NET_VIEW: Us = Us(0x511fa0);
 
-const MAGIC: &[u8; 8] = b"FCOPSAV2";
+const MAGIC: &[u8; 8] = b"FCOPSAV3";
+/// Without the objects' kinds and the sound buffers: those of the loading run are taken over.
+const MAGIC_2: &[u8; 8] = b"FCOPSAV2";
 const PARTS: [&str; 4] = ["heap blocks", "kernel objects", "sound buffers", "textures"];
 
 /// The fingerprint of the running mission's start (each part's hash), taken at its first frame.
@@ -161,6 +165,19 @@ pub fn save(c: &mut Cpu) {
             w32(&mut w, h)?;
             w64(&mut w, s)?;
         }
+        let kinds = kernel32::object_kinds();
+        w32(&mut w, kinds.len() as u32)?;
+        for (h, k) in kinds {
+            w32(&mut w, h)?;
+            w32(&mut w, k)?;
+        }
+        let voices = super::dsound::voice_table();
+        w32(&mut w, voices.len() as u32)?;
+        for v in voices {
+            for x in v {
+                w32(&mut w, x)?;
+            }
+        }
         memory.write(&mut w)?;
         w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
         std::fs::rename(&tmp, path())
@@ -177,7 +194,8 @@ pub fn load(c: &mut Cpu) {
         let mut r = std::io::BufReader::new(std::fs::File::open(path())?);
         let mut magic = [0; 8];
         r.read_exact(&mut magic)?;
-        if &magic != MAGIC {
+        let v3 = &magic == MAGIC;
+        if !v3 && &magic != MAGIC_2 {
             return Ok(Err("made by an older version of fcop (the heap is laid out otherwise now): save again".into()));
         }
         let n = r32(&mut r)?;
@@ -194,10 +212,13 @@ pub fn load(c: &mut Cpu) {
         for h in &mut start {
             *h = r64(&mut r)?;
         }
+        // a mission started otherwise is fine: the heap comes back whole, files and events
+        // take the savestate's handles, the sound buffers its table; only the textures stay
+        // this run's (the same at every start so far)
         let now = START.lock().unwrap().unwrap_or_default();
         let differ: Vec<_> = (0..4).filter(|&k| start[k] != now[k]).map(|k| PARTS[k]).collect();
         if !differ.is_empty() {
-            return Ok(Err(format!("this mission started otherwise ({}): start it as when saved", differ.join(", "))));
+            log!("savestate: the mission started otherwise ({}), taken over", differ.join(", "));
         }
         let clock = r64(&mut r)?;
         let cpu = read_cpu(&mut r)?;
@@ -205,12 +226,35 @@ pub fn load(c: &mut Cpu) {
         for _ in 0..r32(&mut r)? {
             states.push((r32(&mut r)?, r64(&mut r)?));
         }
+        let (mut kinds, mut voices) = (Vec::new(), None);
+        if v3 {
+            for _ in 0..r32(&mut r)? {
+                kinds.push((r32(&mut r)?, r32(&mut r)?));
+            }
+            let mut t = Vec::new();
+            for _ in 0..r32(&mut r)? {
+                let mut e = [0; 12];
+                for x in &mut e {
+                    *x = r32(&mut r)?;
+                }
+                t.push(e);
+            }
+            voices = Some(t);
+        } else {
+            kinds = states.iter().map(|&(h, _)| (h, 0)).collect();
+        }
         let memory = MemoryCopy::read(&mut r)?;
         let sp = c.r[ESP];
         if cpu.r[ESP] != sp || mem().rd32(sp) != memory.rd32(sp) {
             return Ok(Err("made elsewhere in the game".into()));
         }
+        if let Err(why) = kernel32::adopt_handles(&kinds) {
+            return Ok(Err(why));
+        }
         memory.restore();
+        let used = super::heap_blocks();
+        let alive = |a: u32| used.binary_search_by_key(&a, |b| b.0).is_ok();
+        super::dsound::set_voice_table(voices.as_deref(), alive);
         let stop = c.stop;
         *c = cpu;
         c.stop = stop;

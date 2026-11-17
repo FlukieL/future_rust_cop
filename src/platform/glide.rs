@@ -298,7 +298,7 @@ uniform vec3 key;
 uniform int linear_filter;
 uniform int edge;      // how the chroma key's soft edge is applied (see `flush`)
 uniform int gmode;     // the depth attachment: 0 not written, 1 depth, 2/3 mask (blended/additive)
-uniform int zonly;     // the depth buffer's own pass: 1 everything, 2 where alpha >= 0.5
+uniform int zonly;     // the depth buffer's own pass: 1 everything, 2 where alpha >= 0.75
 in vec4 vcol;
 noperspective in float vinvz;
 noperspective in vec2 st_affine;
@@ -457,7 +457,9 @@ void main() {
     if (edge == 3) c *= cover;
     if (cover <= 0.0) discard;
     if (zonly != 0) {
-        if (zonly == 2 && a < 0.5) discard;
+        // translucent surfaces (the PlayStation's semi-transparency, alpha 0x80: liquids) write
+        // none: what dips into them stays visible, as the game draws it after them
+        if (zonly == 2 && a < 0.75) discard;
         color = vec4(0.0);
         gbuf = vec4(0.0);
         return;
@@ -1229,7 +1231,7 @@ impl Glide {
             gl.unmap_buffer(glow::ARRAY_BUFFER);
             let (first, count) = ((self.vbo_at / (4 * VERTEX)) as i32, (self.batch.len() / VERTEX) as i32);
             if zwrite {
-                // first the depth alone, where the alpha is at least half when it counts
+                // first the depth alone, where the alpha is at least 0.75 when it counts
                 // (keyed holes and soft edges leave what is behind visible)
                 gl.color_mask(false, false, false, false);
                 gl.depth_mask(true);

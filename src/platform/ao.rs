@@ -93,8 +93,9 @@ const CELL: f32 = 160.0;
 #[derive(Default)]
 struct Frame {
     /// screen position (x | y << 32, 2560x1920 units; the shadows' ring's points lie up to
-    /// several screens off, beyond s16) -> up to two z (0: none)
-    points: KeyMap<[i16; 2]>,
+    /// several screens off, beyond s16) -> up to two z (0: none) and whether each is the
+    /// terrain's (a ground vertex and a model's can meet at one place)
+    points: KeyMap<([i16; 2], [bool; 2])>,
     /// sprites: their rectangle (x0, y0, x1, y1 in 2560x1920 units) and z; their corners are
     /// not projected points
     sprites: Vec<([i16; 4], i16)>,
@@ -102,7 +103,7 @@ struct Frame {
     cells: KeyMap<Vec<(i32, i32, i16)>>,
     cells_made: bool,
     /// `depths`' scratch
-    found: Vec<[i16; 2]>,
+    found: Vec<([i16; 2], [bool; 2])>,
     sure: Vec<i16>,
 }
 
@@ -122,18 +123,18 @@ fn cell_key((cx, cy): (i32, i32)) -> u64 {
     key(cx, cy)
 }
 
-/// A point the game projected to (x, y) at depth z.
-pub fn point(x: i32, y: i32, z: i16) {
+/// A point the game projected to (x, y) at depth z (`terrain`: a ground vertex).
+pub fn point(x: i32, y: i32, z: i16, terrain: bool) {
     if z <= 0 {
         return;
     }
     let _t = super::fps::timer(super::fps::Phase::Points);
     FRAME.with_borrow_mut(|f| {
-        let e = f.points.entry(key(x, y)).or_insert([0, 0]);
-        if e[0] == 0 || e[0] == z {
-            e[0] = z;
-        } else if e[1] == 0 {
-            e[1] = z;
+        let (z2, t2) = f.points.entry(key(x, y)).or_insert(([0, 0], [false; 2]));
+        if z2[0] == 0 || z2[0] == z {
+            (z2[0], t2[0]) = (z, terrain);
+        } else if z2[1] == 0 {
+            (z2[1], t2[1]) = (z, terrain);
         }
         f.cells_made = false;
     });
@@ -166,7 +167,7 @@ pub fn depth_near(x: f32, y: f32, reach: f32) -> Option<f32> {
         if !f.cells_made {
             let Frame { points, cells, .. } = f;
             cells.values_mut().for_each(Vec::clear);
-            for (&k, z) in points.iter() {
+            for (&k, (z, _)) in points.iter() {
                 let (px, py) = (k as u32 as i32, (k >> 32) as u32 as i32);
                 cells.entry(cell_key(cell_of(px as f32, py as f32))).or_default().push((px, py, z[0]));
             }
@@ -202,12 +203,19 @@ pub fn depths(verts: impl ExactSizeIterator<Item = (f32, f32)> + Clone, out: &mu
     FRAME.with_borrow_mut(|f| {
         let Frame { points, sprites, found, sure, .. } = f;
         found.clear();
-        found.extend(verts.clone().map(|(x, y)| points.get(&key(x.round() as i32, y.round() as i32)).copied().unwrap_or([0, 0])));
+        found.extend(verts.clone().map(|(x, y)| points.get(&key(x.round() as i32, y.round() as i32)).copied().unwrap_or(([0, 0], [false; 2]))));
         // a reference: the vertices with one candidate (their median), else any candidate
         sure.clear();
-        sure.extend(found.iter().filter(|f| f[0] != 0 && f[1] == 0).map(|f| f[0]));
+        sure.extend(found.iter().filter(|f| f.0[0] != 0 && f.0[1] == 0).map(|f| f.0[0]));
+        // and what they are: a ground tile's corner where a model's point lies too is the
+        // ground's (the nearer one by the reference tipped a tile over a pickup box)
+        let (mut ground, mut model) = (0, 0);
+        for f in found.iter().filter(|f| f.0[0] != 0 && f.0[1] == 0) {
+            if f.1[0] { ground += 1 } else { model += 1 }
+        }
+        let kind = (ground != model).then_some(ground > model);
         sure.sort_unstable();
-        let reference = sure.get(sure.len() / 2).copied().or_else(|| found.iter().find(|f| f[0] != 0).map(|f| f[0]));
+        let reference = sure.get(sure.len() / 2).copied().or_else(|| found.iter().find(|f| f.0[0] != 0).map(|f| f.0[0]));
         // none of its corners is a projected point: a sprite's, by its centre
         let reference = reference.or_else(|| {
             let k = n.max(1) as f32;
@@ -218,12 +226,15 @@ pub fn depths(verts: impl ExactSizeIterator<Item = (f32, f32)> + Clone, out: &mu
             out.resize(n, 0.0);
             return false;
         };
-        out.extend(found.iter().map(|f| match *f {
+        out.extend(found.iter().map(|&(z, t)| match z {
             [0, _] => r,
             [a, 0] => a,
-            [a, b] => if (a - r).abs() <= (b - r).abs() { a } else { b },
+            [a, b] => match kind {
+                Some(k) if t[0] != t[1] => if t[0] == k { a } else { b },
+                _ => if (a - r).abs() <= (b - r).abs() { a } else { b },
+            },
         } as f32));
-        found.iter().all(|f| f[0] != 0)
+        found.iter().all(|f| f.0[0] != 0)
     })
 }
 
