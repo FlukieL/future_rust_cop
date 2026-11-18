@@ -62,6 +62,7 @@
 0x446e00  robot_update            (actor, dt) physics in whole 8-tick steps (remainder at +0xb6)
 0x442120  robot_physics           (actor, dt, steps, out) mode [data+0xad]: 1 hover, else walk; hooked: analog stick magnitude for player movement/turn
 0x442510  robot_physics_hover     adds dt to the turn speed in every step
+0x443b7a  robot_water?            terrain case: difficulty (game record +0x8 / +0x98 by team) 0, walking, [0x511f60 + team] 0: data +0xde = 1 (sinks); else walking: data +0x2fd = 1 (turn into hover)
 0x443e80  robot_hover_move_vector (actor, speed, side, out, strafe): horizontal desired movement; hooked for analog speed
 0x444100  robot_physics_walk
 0x444f40  robot_walk_move_vector  (actor, speed, side, out, strafe): horizontal desired movement; hooked for analog speed
@@ -159,7 +160,7 @@
 0x511f40  frame_count
 0x511fb8  game_state              4 playing, 8 paused, 0xb mission over (won or lost by game record +0x40/+0x44), 0xd ending (timer)
 0x511fc0  mission_end_timer       counts frame_dt down to the end of a mission (mode +0x5c = 1), then game_state 0xd
-0x511f80  game_record             pointer (0x10002e0): +0x10 mission result, +0x40 progress, +0x44 goal, +0x5c mode (1 Precinct Assault), +0x64 + 4*team Precinct Assault points (i32; team = robot data +0xc1)
+0x511f80  game_record             pointer (0x10002e0): +0x10 mission result, +0x40 progress, +0x44 goal, +0x5c mode (1 Precinct Assault), +0x64 + 4*team Precinct Assault points (i32; team = robot data +0xc1), +0x8 / +0x98 difficulty of player 1 / 2 (0 Profi, 1 default; menu progress +0x14 / +0x15, menu item 0x487cc0 / 0x487da0; ammo x1 / x1.25 / x1.5 / 9999 at 0x458dda; 0 (Profi): no automatic hover in water, the robot sinks, 0x443b7a, as the game means it)
 0x511f50  views                   1 one view
 0x511f54  split_screen            nonzero in split screen
 0x511fa4  glide_active
