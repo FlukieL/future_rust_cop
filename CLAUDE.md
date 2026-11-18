@@ -299,8 +299,8 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   depths) are pulled 0.4% nearer. A batch holds one kind
   (`Glide::batch_z`). HUD and primitives without depth as before. The terrain's records
   (noted by `terrain::tile`, `is_terrain`) are drawn first in the 3D picture (`walker.rs`
-  relinks them ahead, their order and the rest's kept; semi-transparent records, type bit 3,
-  keep their place among them: the fog's layers, behind all the ground, darkened the picture): a ground tile the buckets put after a
+  relinks them ahead, their order and the rest's kept, semi-transparent decals too: oil
+  flickered while they kept their place among the tiles): a ground tile the buckets put after a
   decal painted part of it over, also with the depth test (decals dip into the ground).
 - `ao.rs`: ambient occlusion (SSAO, PLAN.md 2a step 1; REG_DWORD `AmbientOcclusion`, default
   off, `FCOP_SSAO=0/1`, box in Advanced Graphics). Depth without a depth buffer: the hooks of
@@ -352,7 +352,8 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
 - `effects.rs`: which primitive is an effect (PLAN.md 2a step 4). The walker hands the 3D
   picture's display list records over in order (`effects::begin`, only when `wanted`); in
   precise mode their x/y (+0x28) are the vertices `glide::add` gets, so each primitive finds
-  its record by its first vertex (`record_of`, a few ahead). Record byte +6 = blend (0 opaque,
+  its record by its first vertex (`record_of`: the first ahead with it, by a sorted index; a
+  window of 16 lost the fog's smoke once the terrain was moved first: not lit, darker). Record byte +6 = blend (0 opaque,
   1 alpha, 2 additive, 3 darkening); `glide::effect`: 2/3 lines = Laser, untextured = Glow,
   textured by the mean colour of the texture rectangle Smoke / Fire / Energy (muzzle flashes,
   shock wave). A flat vertex attribute (location 7) to the shader. `FCOP_GBUFFER=effects`

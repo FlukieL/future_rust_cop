@@ -618,6 +618,13 @@ small gains are measured with timers in the code, not by fps.
       them; moved behind all the ground they lay over it. Semi-transparent records (type bit
       3) now keep their place among the terrain's (81.8). Vertex alpha says nothing: nearly
       every primitive has some below 255.
+- [x] Fourth: that made oil on the ground flicker (a decal of semi-transparent records, 0xac,
+      painted over by the ground the buckets put after it). The real cause of the dark fog:
+      `effects::record_of` looked only 16 records ahead; with the terrain moved first the
+      fog's smoke records lay farther and were not found, so Lit Smoke left them unlit (with
+      lights or lit smoke off the order made no difference). Now a sorted index finds the
+      first ahead; everything but the terrain goes after it again (fog 85.3 as without the
+      depth buffer, oil whole in every picture).
 - [x] Savestates load however the mission was started (FCOPSAV3: object kinds and sound
       buffer table; files and events adopt the saved handles; FCOPSAV2 still loads).
 - [ ] First person (`FCOP_CAMERA=first`): the user expects the depth buffer to fix its drawing

@@ -94,6 +94,10 @@ struct List {
     recs: Vec<((i16, i16), Record)>,
     /// each record's: a model's light (`glow_draw`)
     lights: Vec<bool>,
+    /// (first vertex, index) sorted: a primitive's record is found however far ahead it is
+    /// (records that draw nothing, the terrain's when its tiles were moved first, put
+    /// several screens of records between two that draw: the fog's smoke was not lit)
+    index: Vec<((i16, i16), usize)>,
     next: usize,
     /// `FCOP_EFFECT_LOG`: primitives with and without their record found, pictures
     found: [u32; 2],
@@ -103,11 +107,8 @@ struct List {
 thread_local! {
     /// the records of models' lights added since the last picture (`glow_draw`)
     static MODEL_LIGHTS: RefCell<HashSet<u32>> = RefCell::new(HashSet::new());
-    static LIST: RefCell<List> = const { RefCell::new(List { recs: Vec::new(), lights: Vec::new(), next: 0, found: [0; 2], pictures: 0 }) };
+    static LIST: RefCell<List> = const { RefCell::new(List { recs: Vec::new(), lights: Vec::new(), index: Vec::new(), next: 0, found: [0; 2], pictures: 0 }) };
 }
-
-/// How far ahead a primitive's record is looked for.
-const AHEAD: usize = 16;
 
 /// The walker draws the 3D picture: its records (guest addresses) in order.
 pub fn begin(recs: impl Iterator<Item = u32>) {
@@ -121,6 +122,9 @@ pub fn begin(recs: impl Iterator<Item = u32>) {
             l.recs.push(((m.rd16(r + 0x28) as i16, m.rd16(r + 0x2a) as i16), m.rd32(r + 4).to_le_bytes()));
             l.lights.push(lights.contains(&r));
         }
+        l.index.clear();
+        l.index.extend(l.recs.iter().enumerate().map(|(k, r)| (r.0, k)));
+        l.index.sort_unstable();
     });
 }
 
@@ -142,10 +146,10 @@ pub fn end() {
 pub fn record_of(x: f32, y: f32) -> Option<(Record, bool)> {
     let v = (x.round() as i16, y.round() as i16);
     LIST.with_borrow_mut(|l| {
-        let end = (l.next + AHEAD).min(l.recs.len());
-        // the last one found again (the second triangle of a quad), then ahead
+        // the last one found again (the second triangle of a quad), then the first ahead
         let from = l.next.saturating_sub(1);
-        let k = (from..end).find(|&k| l.recs[k].0 == v);
+        let at = l.index.partition_point(|&e| e < (v, from));
+        let k = l.index.get(at).filter(|e| e.0 == v).map(|e| e.1);
         l.found[k.is_none() as usize] += 1;
         let k = k?;
         l.next = k + 1;

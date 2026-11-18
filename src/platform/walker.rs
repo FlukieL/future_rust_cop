@@ -144,11 +144,10 @@ pub fn draw_glide(c: &mut Cpu) {
             // with the depth buffer the terrain comes first (its order kept, then the rest's):
             // what lies on the ground (decals) is never painted over by a ground tile the
             // game's depth buckets put after it; what the ground hides the depth test hides
-            // Semi-transparent records (type bit 3: the fog's layers, liquids) keep their place
-            // among the terrain's: the ground the game draws after them paints over them as it
-            // did (moved behind all the ground, the whole fog lay over it and darkened it).
+            // (semi-transparent decals too: oil on the ground flickered while they kept their
+            // place among the tiles)
             if pass == 0 && !text && super::zbuffer::enabled() {
-                order.sort_by_key(|r| !(super::terrain::is_terrain(r.at) || m.rd8(r.at + 4) & 8 != 0));
+                order.sort_by_key(|r| !super::terrain::is_terrain(r.at));
             }
             let mut sel = order.iter();
             let Some(first) = sel.next() else { continue };
