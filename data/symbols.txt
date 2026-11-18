@@ -192,3 +192,5 @@
 0x49fe3c  direct_input
 0x49fe4c  joy_count
 0x511c20  bindings_player1        14 (device, key) pairs; player 2 at 0x511ca0
+0x511e00  menu_progress           the menus' progress (save.cfg slot): +0 PA map, +1 CW mission chosen, +2 CW highest (0...7, 8 all won), +3 mode (1 Crime War), +7+map PA highest level (0...9, 10 won), +0xd+map PA level chosen, +0x24 all PA maps won
+0x409630  mission_progress        after a mission: PA level / CW mission unlocked when won

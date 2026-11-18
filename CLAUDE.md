@@ -575,7 +575,15 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   never in a release: `cargo build --release --features cheats`): `points` (Shift+F6) gives
   each human player's team 1000 Precinct Assault points: game record +0x64 + 4 * team (i32;
   team = robot data +0xc1 as i8; HUD 0x434e34, a pickup adds 200 at 0x44ed7d), only in mode
-  +0x5c = 1 (Precinct Assault, its end is the score screen 0x407fe0). (The user's Cheat
+  +0x5c = 1 (Precinct Assault, its end is the score screen 0x407fe0). `pa_win` (Shift+F9): player 1 wins a
+  Precinct Assault match as the script's "won" command 0x1adcfed (0x44ec90) does: end timer
+  [0x511fc0] = 120, progress = goal - player + 1 (progress != goal: player 1 won, the score
+  screen 0x4080a0 raises the level +0x4c, the menu 0x409630 unlocks the next). `unlock`
+  (Shift+F10, runs at once, in the menus too: `Run::Now`, only memory writes): the menus'
+  progress 0x511e00 (save.cfg's slots; +3 mode 1 Crime War / 0 Precinct Assault, +0 PA map
+  0...5, +7 + map its highest level 0...9 (10 all won), +0xd + map the one chosen, +0x24 all
+  maps won; +1 Crime War mission chosen, +2 highest 0...7 (8 all won)): every PA level and CW
+  mission selectable (map panel built again when the mode is switched). (The user's Cheat
   Engine address 0x80FF0344 was guest 0x1000344 with the guest base at 0x7FFF0000.)
 - Savestates (`savestate.rs`, test tool): cheats `save` / `load` (Shift+F7 / F8, FCOP_INPUT
   "20000:save 30000:load"), one slot: `savestate.bin` in the game folder (kept by `setup`),

@@ -44,6 +44,12 @@ const MODE: u32 = 0x5c;
 const POINTS: u32 = 0x64;
 #[cfg(feature = "cheats")]
 const TEAM: u32 = 0xc1;
+/// Precinct Assault's end timer: counts frame_dt down, then the score screen.
+#[cfg(feature = "cheats")]
+const END_TIMER: Us = Us(0x511fc0);
+/// The menus' progress (`unlock`).
+#[cfg(feature = "cheats")]
+const PROGRESS: Us = Us(0x511e00);
 
 pub struct Cheat {
     pub name: &'static str,
@@ -52,20 +58,32 @@ pub struct Cheat {
     pub what: &'static str,
     /// only in a one-player Crime War (not in Precinct Assault, split screen or a network game)
     solo: bool,
-    run: fn(&mut Cpu),
+    run: Run,
+}
+
+enum Run {
+    /// in the mission loop's frame wait, while a mission is played
+    Frame(fn(&mut Cpu)),
+    /// at once, wherever the game is (the menus too): only memory written, no game code called
+    #[cfg_attr(not(feature = "cheats"), allow(dead_code))]
+    Now(fn()),
 }
 
 pub const CHEATS: &[Cheat] = &[
-    Cheat { name: "win", key: 1, what: "win the mission (as its script does)", solo: true, run: win },
-    Cheat { name: "lose", key: 2, what: "lose the mission", solo: true, run: lose },
-    Cheat { name: "health", key: 3, what: "full health", solo: true, run: health },
-    Cheat { name: "ammo", key: 4, what: "ammunition as at the mission's start", solo: true, run: ammo },
-    Cheat { name: "hurt", key: 5, what: "a quarter of the health lost (the game's damage)", solo: true, run: hurt },
-    Cheat { name: "save", key: 7, what: "savestate: the game as it is now, in memory", solo: false, run: super::savestate::save },
-    Cheat { name: "load", key: 8, what: "savestate: back to the one saved (same mission, this run)", solo: false, run: super::savestate::load },
+    Cheat { name: "win", key: 1, what: "win the mission (as its script does)", solo: true, run: Run::Frame(win) },
+    Cheat { name: "lose", key: 2, what: "lose the mission", solo: true, run: Run::Frame(lose) },
+    Cheat { name: "health", key: 3, what: "full health", solo: true, run: Run::Frame(health) },
+    Cheat { name: "ammo", key: 4, what: "ammunition as at the mission's start", solo: true, run: Run::Frame(ammo) },
+    Cheat { name: "hurt", key: 5, what: "a quarter of the health lost (the game's damage)", solo: true, run: Run::Frame(hurt) },
+    Cheat { name: "save", key: 7, what: "savestate: the game as it is now, in memory", solo: false, run: Run::Frame(super::savestate::save) },
+    Cheat { name: "load", key: 8, what: "savestate: back to the one saved (same mission, this run)", solo: false, run: Run::Frame(super::savestate::load) },
     // test-only: compiled in only with `--features cheats`, never in a release build
     #[cfg(feature = "cheats")]
-    Cheat { name: "points", key: 6, what: "Precinct Assault: +1000 points for the players' teams", solo: false, run: points },
+    Cheat { name: "points", key: 6, what: "Precinct Assault: +1000 points for the players' teams", solo: false, run: Run::Frame(points) },
+    #[cfg(feature = "cheats")]
+    Cheat { name: "pa_win", key: 9, what: "Precinct Assault: player 1 wins the match (as the base's capture does)", solo: false, run: Run::Frame(pa_win) },
+    #[cfg(feature = "cheats")]
+    Cheat { name: "unlock", key: 10, what: "every level selectable (Crime War and Precinct Assault; also in the menus)", solo: false, run: Run::Now(unlock) },
 ];
 
 struct State {
@@ -97,7 +115,13 @@ pub fn by_key(f: u8) -> Option<usize> {
 }
 
 pub fn request(k: usize) {
-    STATE.lock().unwrap().pending.push(k);
+    match CHEATS[k].run {
+        Run::Now(run) => {
+            log!("cheat: {}", CHEATS[k].name);
+            run();
+        }
+        Run::Frame(_) => STATE.lock().unwrap().pending.push(k),
+    }
 }
 
 /// The names, for an unknown one in FCOP_INPUT.
@@ -138,7 +162,9 @@ pub fn frame_wait(c: &mut Cpu) {
                 continue;
             }
             log!("cheat: {}", CHEATS[k].name);
-            (CHEATS[k].run)(c);
+            if let Run::Frame(run) = CHEATS[k].run {
+                run(c);
+            }
         }
     }
     call_original(c, FRAME_WAIT.at());
@@ -231,6 +257,45 @@ fn points(_: &mut Cpu) {
         let v = m.rd32(at) as i32;
         m.wr32(at, v.saturating_add(1000) as u32);
         log!("cheat: team {team} points {v} -> {}", v.saturating_add(1000));
+    }
+}
+
+/// Precinct Assault: player 1 wins, as the mission script's "won" command (0x1adcfed in
+/// 0x44ec90) does for player p: the end timer [0x511fc0] at 120 ticks, progress = goal - p + 1.
+/// When it runs out, frame_end 0x407fe0 goes to the score screen 0x4080a0: progress != goal is
+/// player 1's win there, which raises the level (game record +0x4c), and the menu then unlocks
+/// the map's next one (0x409630).
+#[cfg(feature = "cheats")]
+fn pa_win(_: &mut Cpu) {
+    let m = mem();
+    let g = m.rd32(GAME.at());
+    if m.rd32(g + MODE) != 1 || (m.rd32(NET_VIEW.at()) as i32) >= 0 {
+        log!("cheat: pa_win only in Precinct Assault, not in a network game");
+        return;
+    }
+    if (m.rd32(END_TIMER.at()) as i32) > 0 {
+        return; // already ending
+    }
+    m.wr32(END_TIMER.at(), 120);
+    m.wr32(g + 0x40, m.rd32(g + 0x44).wrapping_add(1));
+}
+
+/// Every level selectable. The menus' progress (0x511e00, saved in save.cfg's slots):
+/// Precinct Assault's highest level of map i (0...5, Joke last) at +7 + i (0...9; 10 after the
+/// last is won), all maps done +0x24; Crime War's highest mission +2 (0...7; 8 after the last).
+/// The menu panels read them when they are built: go back and in again.
+#[cfg(feature = "cheats")]
+fn unlock() {
+    let m = mem();
+    let p = PROGRESS.at();
+    for i in 0..6 {
+        if (m.rd8(p + 7 + i) as i8) < 9 {
+            m.wr8(p + 7 + i, 9);
+        }
+    }
+    m.wr8(p + 0x24, 1);
+    if (m.rd8(p + 2) as i8) < 7 {
+        m.wr8(p + 2, 7);
     }
 }
 

@@ -641,8 +641,10 @@ textures), wet streets / reflections in dark missions.
 ### 3. Smaller open points
 
 - [x] Debug cheats (`cheats.rs`, 2026-10-27): `win`, `lose`, `health`, `ammo` by name in
-      FCOP_INPUT and on Shift+F1...F4 with `FCOP_CHEATS=1`. Ideas: invulnerable, all missions
-      open, mission choice
+      FCOP_INPUT and on Shift+F1...F4 with `FCOP_CHEATS=1`. Ideas: invulnerable
+- [x] Test cheats (`--features cheats`, 2026-11-18): `pa_win` (Shift+F9, Precinct Assault won
+      by player 1, score screen and next level as the game does) and `unlock` (Shift+F10, in the
+      menu: every Precinct Assault level up to 10 and every Crime War mission selectable)
 - [x] Savestates, stage 1 (`savestate.rs`, 2026-11-06; test tool): cheats `save` / `load`
       (Shift+F7 / F8, or by name in FCOP_INPUT), one slot in memory, same mission and run.
       Guest memory (EXE pages, main stack and TIB, heap with its bookkeeping: 22 MB in the first
