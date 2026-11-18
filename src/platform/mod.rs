@@ -44,6 +44,7 @@ pub mod walk;
 pub mod walker;
 pub mod wide;
 pub mod window;
+pub mod zbuffer;
 
 pub use crate::image::ResId;
 use crate::image::Image;

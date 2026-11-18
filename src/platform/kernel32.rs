@@ -62,6 +62,49 @@ pub fn object_states() -> Vec<(u32, u64)> {
     v
 }
 
+/// A savestate's files and events under its handles (`saved`: handle and kind as
+/// `object_kinds` gives them, 0 when not known: older savestates kept only the handles). This
+/// run's that the savestate has under another handle are moved there, in the order made (a
+/// run that opened more files before the mission numbers them on). Err when they do not pair.
+pub fn adopt_handles(saved: &[(u32, u32)]) -> Result<(), String> {
+    let mut g = objects();
+    let kind = |o: &Obj| match o {
+        Obj::File(_) => 1,
+        Obj::Event { .. } => 3,
+        _ => 0,
+    };
+    let fits = |k: u32, s: u32| k != 0 && (s == 0 || s == k);
+    let saved: Vec<(u32, u32)> = saved.iter().copied().filter(|&(_, k)| matches!(k, 0 | 1 | 3)).collect();
+    let mut from: Vec<u32> = g.map.iter().filter(|(h, o)| kind(o) != 0 && !saved.iter().any(|s| s.0 == **h && fits(kind(o), s.1))).map(|(&h, _)| h).collect();
+    let mut to: Vec<(u32, u32)> = saved.iter().copied().filter(|&(h, k)| !g.map.get(&h).is_some_and(|o| fits(kind(o), k))).collect();
+    from.sort_unstable();
+    to.sort_unstable();
+    if from.len() != to.len() {
+        return Err(format!("{} files and events of this run do not pair with the savestate's {}", from.len(), to.len()));
+    }
+    let mut moved = Vec::new();
+    for (&f, &(t, k)) in from.iter().zip(&to) {
+        let o = g.map.remove(&f).unwrap();
+        if !fits(kind(&o), k) || g.map.contains_key(&t) {
+            g.map.insert(f, o);
+            for (f, t) in moved.into_iter().rev() {
+                let o = g.map.remove(&t).unwrap();
+                g.map.insert(f, o);
+            }
+            return Err(format!("handle {t:#x} of the savestate is something else in this run"));
+        }
+        g.map.insert(t, o);
+        moved.push((f, t));
+    }
+    if let Some(&m) = g.map.keys().max() {
+        g.next = g.next.max(m);
+    }
+    for (f, t) in moved {
+        log!("savestate: handle {f:#x} is now {t:#x}");
+    }
+    Ok(())
+}
+
 /// A savestate's events and file positions put back.
 pub fn set_object_states(states: &[(u32, u64)]) {
     use std::io::{Seek, SeekFrom};

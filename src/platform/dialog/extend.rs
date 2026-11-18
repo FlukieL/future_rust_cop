@@ -128,6 +128,8 @@ const SHADOW_QUALITY: u32 = FIRST_OURS + 31;
 const VSYNC: u32 = FIRST_OURS + 32;
 /// Right of Fullscreen: the frame rate display (`stats.rs`).
 const SHOW_FPS: u32 = FIRST_OURS + 33;
+/// Advanced Graphics: the 3D picture's depth test (`zbuffer.rs`).
+const DEPTH_BUFFER: u32 = FIRST_OURS + 34;
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -188,24 +190,25 @@ pub fn template(id: u32) -> Template {
     add(Class::Button, HEAT, "Heat Distortion", TABSTOP | 3, [7, 46, w - 14, 9]);
     add(Class::Button, BLOOM, "Bloom", TABSTOP | 3, [7, 58, w - 14, 9]);
     add(Class::Button, PERSPECTIVE, "Perspective-Correct Textures", TABSTOP | 3, [7, 70, w - 14, 9]);
+    add(Class::Button, DEPTH_BUFFER, "Depth Buffer", TABSTOP | 3, [7, 82, w - 14, 9]);
     // the shadows (`shadows`) and the tone mapping curve (`tonemap`; a list's height is part
     // of its combo's)
-    add(Class::Static, SHADOWS_LABEL, "Shadows", 0, [7, 88, 66, 8]);
-    add(Class::ComboBox, SHADOWS, "", TABSTOP | 3, [76, 86, w - 83, 60]);
+    add(Class::Static, SHADOWS_LABEL, "Shadows", 0, [7, 100, 66, 8]);
+    add(Class::ComboBox, SHADOWS, "", TABSTOP | 3, [76, 98, w - 83, 60]);
     // the map's quality only while the map is offered; the rows below move up without it
     let up = if crate::platform::shadows::MAP_OFFERED {
-        add(Class::Static, SHADOW_QUALITY_LABEL, "Shadow Quality", 0, [7, 102, 66, 8]);
-        add(Class::ComboBox, SHADOW_QUALITY, "", TABSTOP | 3, [76, 100, w - 83, 70]);
+        add(Class::Static, SHADOW_QUALITY_LABEL, "Shadow Quality", 0, [7, 114, 66, 8]);
+        add(Class::ComboBox, SHADOW_QUALITY, "", TABSTOP | 3, [76, 112, w - 83, 70]);
         0
     } else {
         14
     };
-    add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 116 - up, 66, 8]);
-    add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 114 - up, w - 83, 70]);
+    add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 128 - up, 66, 8]);
+    add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 126 - up, w - 83, 70]);
     // OK (1, the default) and Cancel (2), bottom right
-    add(Class::Button, 1, "OK", TABSTOP | 1, [w - 116, 134 - up, 50, 14]);
-    add(Class::Button, 2, "Cancel", TABSTOP, [w - 57, 134 - up, 50, 14]);
-    Template { style: 0x00c0_0000, title: "Advanced Graphics".into(), rect: [0, 0, w, 154 - up], font: None, items }
+    add(Class::Button, 1, "OK", TABSTOP | 1, [w - 116, 146 - up, 50, 14]);
+    add(Class::Button, 2, "Cancel", TABSTOP, [w - 57, 146 - up, 50, 14]);
+    Template { style: 0x00c0_0000, title: "Advanced Graphics".into(), rect: [0, 0, w, 166 - up], font: None, items }
 }
 
 fn renderer() -> String {
@@ -409,6 +412,9 @@ pub fn init(d: &mut Dialog) {
         }
         if let Some(c) = d.control(BLOOM) {
             c.check = crate::platform::bloom::enabled() as u32;
+        }
+        if let Some(c) = d.control(DEPTH_BUFFER) {
+            c.check = crate::platform::zbuffer::enabled() as u32;
         }
         if let Some(c) = d.control(PERSPECTIVE) {
             c.check = crate::platform::glide::perspective() as u32;
@@ -679,6 +685,9 @@ pub fn ok(d: &mut Dialog) {
         }
         if let Some(on) = d.control(BLOOM).map(|c| c.check != 0) {
             crate::platform::bloom::set_enabled(on);
+        }
+        if let Some(on) = d.control(DEPTH_BUFFER).map(|c| c.check != 0) {
+            crate::platform::zbuffer::set_enabled(on);
         }
         if let Some(on) = d.control(PERSPECTIVE).map(|c| c.check != 0) {
             crate::platform::glide::set_perspective(on);

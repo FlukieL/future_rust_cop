@@ -112,7 +112,7 @@ pub fn terrain_vertex(c: &mut Cpu) {
     // {x, y, z / 16} (s16) for the ambient occlusion's depth
     if super::ao::depth_wanted() {
         let m = mem();
-        super::ao::point(m.rd16(out) as i16 as i32, m.rd16(out + 2) as i16 as i32, m.rd16(out + 4) as i16);
+        super::ao::point(m.rd16(out) as i16 as i32, m.rd16(out + 2) as i16 as i32, m.rd16(out + 4) as i16, true);
     }
 }
 
@@ -194,7 +194,7 @@ pub fn points(c: &mut Cpu) {
                 } else {
                     ((1280.0 + (x as f32 - 1280.0) / z).round() as i32, (960.0 + (y as f32 - 960.0) / z).round() as i32)
                 };
-                super::ao::point(x, y, m.rd16(a + 4) as i16);
+                super::ao::point(x, y, m.rd16(a + 4) as i16, false);
             }
         }
     }

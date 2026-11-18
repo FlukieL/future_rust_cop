@@ -16,8 +16,10 @@
 //! (`walker.rs` after the 3D picture, `glide::post_3d`) the passes here run: AO at half
 //! resolution (12 samples on a disc of `RADIUS` around each point, normals from the depth's
 //! neighbours, occlusion = how far each sample rises above the surface's plane, within the
-//! radius), a depth-aware blur in two passes, then the 3D picture times the AO, with depth-aware
-//! upsampling, inside the view's clip window (split screen: each view its own).
+//! radius; the screen-space sun's shadow in a second channel), a blur in two passes along each
+//! pixel's surface (each channel its own width), then the 3D picture times both, with
+//! depth-aware upsampling (no values across an edge), inside the view's clip window (split
+//! screen: each view its own).
 //! The camera: sx = 1280 + x * 4096 / z (2560x1920 units, widescreen narrowed by k before), so a
 //! target pixel is 4096 * height / 1920 pixels per unit at z = 1, in both directions.
 //!
@@ -37,9 +39,9 @@ pub fn enabled() -> bool {
     SETTING.get()
 }
 
-/// Something needs the depth (AO, dynamic lights, shadows or the heat shimmer).
+/// Something needs the depth (AO, dynamic lights, shadows, the heat shimmer, the depth buffer).
 pub fn depth_wanted() -> bool {
-    enabled() || super::lights::enabled() || super::shadows::enabled() || super::heat::enabled() || super::bloom::enabled() || super::glide::perspective()
+    enabled() || super::zbuffer::enabled() || super::lights::enabled() || super::shadows::enabled() || super::heat::enabled() || super::bloom::enabled() || super::glide::perspective()
 }
 
 /// The Advanced Graphics dialog's OK: saved, and used from the next frame on.
@@ -91,8 +93,9 @@ const CELL: f32 = 160.0;
 #[derive(Default)]
 struct Frame {
     /// screen position (x | y << 32, 2560x1920 units; the shadows' ring's points lie up to
-    /// several screens off, beyond s16) -> up to two z (0: none)
-    points: KeyMap<[i16; 2]>,
+    /// several screens off, beyond s16) -> up to two z (0: none) and whether each is the
+    /// terrain's (a ground vertex and a model's can meet at one place)
+    points: KeyMap<([i16; 2], [bool; 2])>,
     /// sprites: their rectangle (x0, y0, x1, y1 in 2560x1920 units) and z; their corners are
     /// not projected points
     sprites: Vec<([i16; 4], i16)>,
@@ -100,7 +103,7 @@ struct Frame {
     cells: KeyMap<Vec<(i32, i32, i16)>>,
     cells_made: bool,
     /// `depths`' scratch
-    found: Vec<[i16; 2]>,
+    found: Vec<([i16; 2], [bool; 2])>,
     sure: Vec<i16>,
 }
 
@@ -120,18 +123,18 @@ fn cell_key((cx, cy): (i32, i32)) -> u64 {
     key(cx, cy)
 }
 
-/// A point the game projected to (x, y) at depth z.
-pub fn point(x: i32, y: i32, z: i16) {
+/// A point the game projected to (x, y) at depth z (`terrain`: a ground vertex).
+pub fn point(x: i32, y: i32, z: i16, terrain: bool) {
     if z <= 0 {
         return;
     }
     let _t = super::fps::timer(super::fps::Phase::Points);
     FRAME.with_borrow_mut(|f| {
-        let e = f.points.entry(key(x, y)).or_insert([0, 0]);
-        if e[0] == 0 || e[0] == z {
-            e[0] = z;
-        } else if e[1] == 0 {
-            e[1] = z;
+        let (z2, t2) = f.points.entry(key(x, y)).or_insert(([0, 0], [false; 2]));
+        if z2[0] == 0 || z2[0] == z {
+            (z2[0], t2[0]) = (z, terrain);
+        } else if z2[1] == 0 {
+            (z2[1], t2[1]) = (z, terrain);
         }
         f.cells_made = false;
     });
@@ -164,7 +167,7 @@ pub fn depth_near(x: f32, y: f32, reach: f32) -> Option<f32> {
         if !f.cells_made {
             let Frame { points, cells, .. } = f;
             cells.values_mut().for_each(Vec::clear);
-            for (&k, z) in points.iter() {
+            for (&k, (z, _)) in points.iter() {
                 let (px, py) = (k as u32 as i32, (k >> 32) as u32 as i32);
                 cells.entry(cell_key(cell_of(px as f32, py as f32))).or_default().push((px, py, z[0]));
             }
@@ -200,12 +203,19 @@ pub fn depths(verts: impl ExactSizeIterator<Item = (f32, f32)> + Clone, out: &mu
     FRAME.with_borrow_mut(|f| {
         let Frame { points, sprites, found, sure, .. } = f;
         found.clear();
-        found.extend(verts.clone().map(|(x, y)| points.get(&key(x.round() as i32, y.round() as i32)).copied().unwrap_or([0, 0])));
+        found.extend(verts.clone().map(|(x, y)| points.get(&key(x.round() as i32, y.round() as i32)).copied().unwrap_or(([0, 0], [false; 2]))));
         // a reference: the vertices with one candidate (their median), else any candidate
         sure.clear();
-        sure.extend(found.iter().filter(|f| f[0] != 0 && f[1] == 0).map(|f| f[0]));
+        sure.extend(found.iter().filter(|f| f.0[0] != 0 && f.0[1] == 0).map(|f| f.0[0]));
+        // and what they are: a ground tile's corner where a model's point lies too is the
+        // ground's (the nearer one by the reference tipped a tile over a pickup box)
+        let (mut ground, mut model) = (0, 0);
+        for f in found.iter().filter(|f| f.0[0] != 0 && f.0[1] == 0) {
+            if f.1[0] { ground += 1 } else { model += 1 }
+        }
+        let kind = (ground != model).then_some(ground > model);
         sure.sort_unstable();
-        let reference = sure.get(sure.len() / 2).copied().or_else(|| found.iter().find(|f| f[0] != 0).map(|f| f[0]));
+        let reference = sure.get(sure.len() / 2).copied().or_else(|| found.iter().find(|f| f.0[0] != 0).map(|f| f.0[0]));
         // none of its corners is a projected point: a sprite's, by its centre
         let reference = reference.or_else(|| {
             let k = n.max(1) as f32;
@@ -216,18 +226,28 @@ pub fn depths(verts: impl ExactSizeIterator<Item = (f32, f32)> + Clone, out: &mu
             out.resize(n, 0.0);
             return false;
         };
-        out.extend(found.iter().map(|f| match *f {
+        out.extend(found.iter().map(|&(z, t)| match z {
             [0, _] => r,
             [a, 0] => a,
-            [a, b] => if (a - r).abs() <= (b - r).abs() { a } else { b },
+            [a, b] => match kind {
+                Some(k) if t[0] != t[1] => if t[0] == k { a } else { b },
+                _ => if (a - r).abs() <= (b - r).abs() { a } else { b },
+            },
         } as f32));
-        found.iter().all(|f| f[0] != 0)
+        found.iter().all(|f| f.0[0] != 0)
     })
 }
 
 /// The occlusion's reach in object units, and how strong it darkens (0...1).
 const RADIUS: f32 = 400.0;
 const STRENGTH: f32 = 1.0;
+
+/// A rise above a point's surface smaller than this (object units, plus 0.4% of the depth) does
+/// not occlude it (`FCOP_AO_STEP` for tests).
+fn step() -> f32 {
+    static S: OnceLock<f32> = OnceLock::new();
+    *S.get_or_init(|| std::env::var("FCOP_AO_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(8.0))
+}
 
 pub(super) const VS: &str = r#"
 void main() {
@@ -250,13 +270,29 @@ vec2 G(ivec2 q) {
 vec3 P(vec2 q, float z) {
     return vec3((q - vec2(size) * 0.5) * z / focal, z);
 }
-// the normal at q (depth z, place p) from the neighbours s pixels away on the side nearer in
-// depth (not across an edge), facing the camera
+// one axis of the surface at q along e: from the side whose two pixels (e, 2e away) continue
+// to q best (1/z is linear across a plane, so a line through them predicts q; not across an
+// edge, also beside a second one); where q fits neither side (a pixel off the surface by a
+// little, as decals' rims) but both sides fit each other, from both neighbours
+vec3 T(ivec2 q, float z, vec3 p, ivec2 e) {
+    float za = G(q + e).r, zb = G(q - e).r;
+    float za2 = G(q + 2 * e).r, zb2 = G(q - 2 * e).r;
+    if (za <= 0.0 && zb <= 0.0) return P(vec2(q + e), z) - p;
+    if (zb <= 0.0) return P(vec2(q + e), za) - p;
+    if (za <= 0.0) return p - P(vec2(q - e), zb);
+    float iz = 1.0 / z;
+    // q's 1/z as each side predicts it (one pixel only where the second has none)
+    float pa = za2 > 0.0 ? 2.0 / za - 1.0 / za2 : 1.0 / za;
+    float pb = zb2 > 0.0 ? 2.0 / zb - 1.0 / zb2 : 1.0 / zb;
+    float ea = abs(pa - iz), eb = abs(pb - iz);
+    if (min(ea, eb) > 0.002 * iz && abs(pa - pb) < 0.5 * min(ea, eb))
+        return 0.5 * (P(vec2(q + e), za) - P(vec2(q - e), zb));
+    return ea < eb ? P(vec2(q + e), za) - p : p - P(vec2(q - e), zb);
+}
+// the normal at q (depth z, place p) from the neighbours s pixels away, facing the camera
 vec3 N(ivec2 q, float z, vec3 p, int s) {
-    float zr = G(q + ivec2(s, 0)).r, zl = G(q - ivec2(s, 0)).r;
-    float zu = G(q + ivec2(0, s)).r, zd = G(q - ivec2(0, s)).r;
-    vec3 dx = (zl <= 0.0 || zr > 0.0 && abs(zr - z) < abs(z - zl)) ? P(vec2(q + ivec2(s, 0)), zr > 0.0 ? zr : z) - p : p - P(vec2(q - ivec2(s, 0)), zl);
-    vec3 dy = (zd <= 0.0 || zu > 0.0 && abs(zu - z) < abs(z - zd)) ? P(vec2(q + ivec2(0, s)), zu > 0.0 ? zu : z) - p : p - P(vec2(q - ivec2(0, s)), zd);
+    vec3 dx = T(q, z, p, ivec2(s, 0));
+    vec3 dy = T(q, z, p, ivec2(0, s));
     vec3 n = cross(dx, dy);
     n = length(n) > 0.0 ? normalize(n) : vec3(0.0, 0.0, -1.0);
     return dot(n, p) > 0.0 ? -n : n;
@@ -273,9 +309,12 @@ uniform float sun_len;
 uniform float sun_k;
 out vec4 o;
 const int SAMPLES = 12;
+uniform float STEP;
+uniform sampler2D near_z;
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy) * 2;
     float z = G(q).r;
+    // r the AO, g the sun's light (blurred apart)
     if (z <= 0.0) { o = vec4(1.0); return; }
     vec3 p = P(vec2(q), z);
     vec3 n = N(q, z, p, 2);
@@ -284,21 +323,44 @@ void main() {
     float lit = sun_mode == 1 ? 1.0 - sun_k * shadow(p, n, sun, sun_len, ign, 16, 0.6)
               : sun_mode == 2 ? 1.0 - sun_k * sun_shadow(p, n) : 1.0;
     float rpx = min(radius * focal / z, max_px);
-    if (use_ao == 0 || rpx < 2.0) { o = vec4(lit); return; }
+    if (use_ao == 0 || rpx < 2.0) { o = vec4(1.0, lit, 0.0, 1.0); return; }
     float a = 6.2831853 * ign;
     float occ = 0.0;
+    float step_h = STEP + 0.004 * z;
     for (int i = 0; i < SAMPLES; i++) {
         float t = (float(i) + 0.5) / float(SAMPLES);
         float ang = a + float(i) * 2.3999632;
         vec2 s = vec2(q) + vec2(cos(ang), sin(ang)) * t * rpx;
-        float zs = G(ivec2(s)).r;
+        // the occluders from the nearest of 4x4 pixels: thin things and keyed holes (lattices,
+        // fences) were hit or missed by turns as they moved past the samples: they flickered
+        float zs = texelFetch(near_z, ivec2(s) / 4, 0).r;
         if (zs <= 0.0) continue;
         vec3 v = P(s, zs) - p;
         float d = length(v);
         if (d < 1e-3) continue;
-        occ += max(dot(v / d, n) - 0.05, 0.0) * (1.0 - smoothstep(0.5 * radius, radius, d));
+        // a step of a few units (the depth is rough) is no occluder
+        occ += max((dot(v, n) - step_h) / d - 0.05, 0.0) * (1.0 - smoothstep(0.5 * radius, radius, d));
     }
-    o = vec4(pow(clamp(1.0 - 4.0 * occ / float(SAMPLES), 0.0, 1.0), 2.0) * lit);
+    o = vec4(pow(clamp(1.0 - 4.0 * occ / float(SAMPLES), 0.0, 1.0), 2.0), lit, 0.0, 1.0);
+}
+"#;
+
+/// The half-resolution values blurred along `dir`, the AO (r) and the sun's light (g) each with
+/// its own width. Neighbours count by how well they lie on the centre's surface: 1/z is linear
+/// across a plane on the screen, so its slope (from the nearer neighbour) predicts theirs; a
+/// plain depth difference left grazing ground unblurred.
+/// The nearest depth of each 4x4 pixels (none: 0), the AO's occluders.
+const NEAR_FS: &str = r#"
+out vec4 o;
+void main() {
+    ivec2 b = ivec2(gl_FragCoord.xy) * 4;
+    float m = 1e30;
+    for (int j = 0; j < 4; j++)
+        for (int i = 0; i < 4; i++) {
+            float z = G(b + ivec2(i, j)).r;
+            if (z > 0.0) m = min(m, z);
+        }
+    o = vec4(m < 1e30 ? m : 0.0);
 }
 "#;
 
@@ -306,20 +368,31 @@ const BLUR_FS: &str = r#"
 uniform sampler2D ao;
 uniform ivec2 dir;
 out vec4 o;
+float Z(ivec2 h) { return G(h * 2).r; }
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
     ivec2 hs = textureSize(ao, 0);
-    float z = G(p * 2).r;
-    float sum = 0.0, wsum = 0.0;
-    for (int k = -4; k <= 4; k++) {
-        ivec2 s = clamp(p + dir * k, ivec2(0), hs - 1);
-        float zs = G(s * 2).r;
-        float w = exp(-float(k * k) / 10.0);
-        if (z > 0.0) w *= max(1.0 - abs(zs - z) / (0.04 * z), 0.0);
-        sum += texelFetch(ao, s, 0).r * w;
+    vec2 c = texelFetch(ao, p, 0).rg;
+    float z = Z(p);
+    if (z <= 0.0) { o = vec4(c, 0.0, 1.0); return; }
+    float iz = 1.0 / z;
+    float za = Z(clamp(p + dir, ivec2(0), hs - 1)), zb = Z(clamp(p - dir, ivec2(0), hs - 1));
+    float ga = za > 0.0 ? 1.0 / za - iz : 1e9, gb = zb > 0.0 ? iz - 1.0 / zb : 1e9;
+    float g = abs(ga) < abs(gb) ? ga : gb;
+    if (abs(g) > 1e8) g = 0.0;
+    vec2 sum = c, wsum = vec2(1.0);
+    for (int k = -6; k <= 6; k++) {
+        ivec2 s = p + dir * k;
+        if (k == 0 || any(lessThan(s, ivec2(0))) || any(greaterThanEqual(s, hs))) continue;
+        float zs = Z(s);
+        if (zs <= 0.0) continue;
+        float e = abs(1.0 / zs - (iz + g * float(k))) / iz;
+        float kk = float(k * k);
+        vec2 w = vec2(exp(-kk / 10.0), exp(-kk / 18.0)) * max(1.0 - e / 0.04, 0.0);
+        sum += texelFetch(ao, s, 0).rg * w;
         wsum += w;
     }
-    o = vec4(wsum > 0.0 ? sum / wsum : 1.0);
+    o = vec4(sum / wsum, 0.0, 1.0);
 }
 "#;
 
@@ -338,22 +411,43 @@ void main() {
     if (show == 1) { o = vec4(vec3(z > 0.0 ? exp(-z / 6000.0) : 0.0), 1.0); return; }
     float v = 1.0;
     if (z > 0.0 && use_half != 0) {
-        // the four nearest half-resolution values, weighed by how near their depth is
+        // the four nearest half-resolution values, weighed by how near their depth is (the
+        // tolerance grows with the depth's slope here: grazing ground)
+        float zr = G(q + ivec2(1, 0)).r, zl = G(q - ivec2(1, 0)).r;
+        float zu = G(q + ivec2(0, 1)).r, zd = G(q - ivec2(0, 1)).r;
+        float dr = zr > 0.0 ? abs(zr - z) : 1e9, dl = zl > 0.0 ? abs(zl - z) : 1e9;
+        float du = zu > 0.0 ? abs(zu - z) : 1e9, dd = zd > 0.0 ? abs(zd - z) : 1e9;
+        float tol = 0.02 * z + 2.0 * min(min(dr, dl) + min(du, dd), 0.1 * z);
         ivec2 hs = textureSize(ao, 0);
         vec2 h = (vec2(q) + 0.5) * 0.5 - 0.5;
         ivec2 b = ivec2(floor(h));
         vec2 f = h - floor(h);
-        float sum = 0.0, wsum = 0.0;
+        vec2 sum = vec2(0.0);
+        float wsum = 0.0;
         for (int k = 0; k < 4; k++) {
             ivec2 o2 = ivec2(k & 1, k >> 1);
             ivec2 c = clamp(b + o2, ivec2(0), hs - 1);
             float zc = G(c * 2).r;
             float w = (o2.x == 1 ? f.x : 1.0 - f.x) * (o2.y == 1 ? f.y : 1.0 - f.y);
-            w *= max(1.0 - abs(zc - z) / (0.04 * z), 0.001);
-            sum += texelFetch(ao, c, 0).r * w;
+            w *= zc > 0.0 ? max(1.0 - abs(zc - z) / tol, 0.0) : 0.0;
+            sum += texelFetch(ao, c, 0).rg * w;
             wsum += w;
         }
-        v = sum / wsum;
+        vec2 a = sum / max(wsum, 1e-6);
+        if (wsum < 1e-4) {
+            // none on this surface (a thin thing, an edge): the nearest in depth around,
+            // not a mix across the edge
+            float best = 1e30;
+            for (int j = -1; j <= 2; j++)
+                for (int i = -1; i <= 2; i++) {
+                    ivec2 c = clamp(b + ivec2(i, j), ivec2(0), hs - 1);
+                    float zc = G(c * 2).r;
+                    float d = zc > 0.0 ? abs(zc - z) : 1e29;
+                    if (d < best) { best = d; a = texelFetch(ao, c, 0).rg; }
+                }
+            if (best >= 1e29) a = vec2(1.0);
+        }
+        v = a.r * a.g;
     }
     if (z > 0.0 && use_sun != 0) {
         vec3 p = P(vec2(q), z);
@@ -380,17 +474,19 @@ type Half = (glow::Texture, glow::Framebuffer);
 /// The passes' programs (single-sampled and multisampled depth), their half-resolution
 /// textures and framebuffers.
 pub struct Ssao {
-    progs: [[glow::Program; 2]; 3],
+    progs: [[glow::Program; 2]; 4],
     vao: glow::VertexArray,
     half: Option<((i32, i32), [Half; 2])>,
+    /// `NEAR_FS`'s target (R32F, a quarter of the size)
+    near: Option<((i32, i32), Half)>,
 }
 
 impl Ssao {
     pub fn new(gl: &glow::Context) -> Ssao {
         let prog = |fs: &str, ms: bool| compile(gl, VS, &format!("{}{COMMON}{}{}{fs}", if ms { "#define MS\n" } else { "" }, super::shadows::GLSL, super::shadows::SUN_GLSL));
-        let progs = [AO_FS, BLUR_FS, APPLY_FS].map(|fs| [prog(fs, false), prog(fs, true)]);
+        let progs = [AO_FS, BLUR_FS, APPLY_FS, NEAR_FS].map(|fs| [prog(fs, false), prog(fs, true)]);
         let vao = unsafe { gl.create_vertex_array().expect("GL vertex array") };
-        Ssao { progs, vao, half: None }
+        Ssao { progs, vao, half: None, near: None }
     }
 
     pub fn delete(&mut self, gl: &glow::Context) {
@@ -404,8 +500,9 @@ impl Ssao {
     }
 
     fn drop_half(&mut self, gl: &glow::Context) {
+        let near = self.near.take().map(|n| n.1);
         if let Some((_, h)) = self.half.take() {
-            for (t, f) in h {
+            for (t, f) in h.into_iter().chain(near) {
                 unsafe {
                     gl.delete_framebuffer(f);
                     gl.delete_texture(t);
@@ -421,7 +518,7 @@ impl Ssao {
         self.drop_half(gl);
         let make = || unsafe {
             let t = super::gl::texture(gl, false);
-            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::R8 as i32, size.0, size.1, 0, glow::RED, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
+            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RG8 as i32, size.0, size.1, 0, glow::RG, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
             let f = gl.create_framebuffer().expect("GL framebuffer");
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
             gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(t), 0);
@@ -430,6 +527,31 @@ impl Ssao {
         let h = [make(), make()];
         self.half = Some((size, h));
         h
+    }
+
+    /// The quarter-size nearest depth's texture and framebuffer.
+    fn near(&mut self, gl: &glow::Context, size: (i32, i32)) -> Half {
+        if let Some((s, n)) = self.near
+            && s == size
+        {
+            return n;
+        }
+        if let Some((_, (t, f))) = self.near.take() {
+            unsafe {
+                gl.delete_framebuffer(f);
+                gl.delete_texture(t);
+            }
+        }
+        let n = unsafe {
+            let t = super::gl::texture(gl, false);
+            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::R32F as i32, size.0, size.1, 0, glow::RED, glow::FLOAT, glow::PixelUnpackData::Slice(None));
+            let f = gl.create_framebuffer().expect("GL framebuffer");
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(t), 0);
+            (t, f)
+        };
+        self.near = Some((size, n));
+        n
     }
 
     /// The passes over the 3D picture: `depth` the attachment (multisampled or not), `target`
@@ -470,6 +592,8 @@ impl Ssao {
         let (w, h) = (target.0 as i32, target.1 as i32);
         let hs = ((w + 1) / 2, (h + 1) / 2);
         let half = self.half(gl, hs);
+        let qs = ((w + 3) / 4, (h + 3) / 4);
+        let near = self.near(gl, qs);
         let focal = 4096.0 * h as f32 / 1920.0;
         let v = ms as usize;
         unsafe {
@@ -487,14 +611,26 @@ impl Ssao {
                 gl.uniform_1_i32(u("smap").as_ref(), 2);
                 gl.uniform_2_i32(u("size").as_ref(), w, h);
                 gl.uniform_1_f32(u("focal").as_ref(), focal);
+                gl.uniform_1_i32(u("near_z").as_ref(), 3);
                 u
             };
+            if ao {
+                // the occluders' nearest depth, on unit 3
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(near.1));
+                gl.viewport(0, 0, qs.0, qs.1);
+                let _ = common(self.progs[3][v]);
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                gl.active_texture(glow::TEXTURE3);
+                gl.bind_texture(glow::TEXTURE_2D, Some(near.0));
+                gl.active_texture(glow::TEXTURE0);
+            }
             if half_pass {
                 // the AO (and the sun's shadow) at half resolution
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(half[0].1));
                 gl.viewport(0, 0, hs.0, hs.1);
                 let u = common(self.progs[0][v]);
                 gl.uniform_1_f32(u("radius").as_ref(), RADIUS);
+                gl.uniform_1_f32(u("STEP").as_ref(), step());
                 gl.uniform_1_f32(u("max_px").as_ref(), h as f32 / 4.0);
                 gl.uniform_1_i32(u("use_ao").as_ref(), ao as i32);
                 gl.uniform_1_i32(u("sun_mode").as_ref(), sun_half);

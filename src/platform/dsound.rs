@@ -220,6 +220,44 @@ pub fn buffers() -> Vec<u32> {
     mixer().voices.keys().copied().collect()
 }
 
+/// A savestate's sound buffers: object, data, size, rate, channels, bits, frequency, looping,
+/// volume, pan, primary, references (what they play is not kept).
+pub fn voice_table() -> Vec<[u32; 12]> {
+    mixer()
+        .voices
+        .iter()
+        .map(|(&o, v)| [o, v.data, v.bytes, v.fmt.rate, v.fmt.channels, v.fmt.bits, v.freq, v.looping as u32, v.volume as u32, v.pan as u32, v.primary as u32, v.refs])
+        .collect()
+}
+
+/// A savestate loaded: its sound buffers (`voice_table`), or with none (an older savestate)
+/// this run's whose object and data are blocks of the loaded heap (`alive`); all silent.
+pub fn set_voice_table(table: Option<&[[u32; 12]]>, alive: impl Fn(u32) -> bool) {
+    let mut mx = mixer();
+    match table {
+        Some(t) => {
+            mx.voices = t
+                .iter()
+                .map(|e| {
+                    let fmt = Format { rate: e[3], channels: e[4], bits: e[5] };
+                    let v = Voice { data: e[1], bytes: e[2], fmt, freq: e[6], pos: 0.0, playing: false, looping: e[7] != 0, volume: e[8] as i32, pan: e[9] as i32, primary: e[10] != 0, refs: e[11] };
+                    (e[0], v)
+                })
+                .collect();
+        }
+        None => mx.voices.retain(|&o, v| alive(o) && (v.data == 0 || alive(v.data))),
+    }
+    let mut refs = BTreeMap::new();
+    for v in mx.voices.values_mut() {
+        v.playing = false;
+        v.pos = 0.0;
+        if v.data != 0 {
+            *refs.entry(v.data).or_default() += 1;
+        }
+    }
+    mx.data_refs = refs;
+}
+
 fn mixer() -> MutexGuard<'static, Mixer> {
     let mut m = MIX.lock().unwrap_or_else(|e| e.into_inner());
     if !m.started {

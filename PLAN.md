@@ -587,6 +587,51 @@ small gains are measured with timers in the code, not by fps.
       state ~57 µs a picture (unchanged state sent again), the game's own code ~15-20% (the kit's
       fixed memory base and x87 work).
 
+#### Depth buffer and AO noise (2026-11-17, in progress, branch feat/depth-buffer)
+
+- [x] AO: AO and the screen-space sun in two channels (RG8), each blurred along its surface
+      (1/z predicted by its slope), upsampled without mixing across depth edges; normals from
+      the side whose two pixels continue best (decals' rims gave a dark ring); occluders read
+      from a quarter-size nearest-depth map (lattices flickered). The user: still noisy "vorne
+      am Gebäude" (the building's front) in motion; not seen in our stills. Next idea: temporal
+      accumulation with reprojection (camera [0x511f48] matrix and position per view).
+- [x] `zbuffer.rs`: a real GPU depth test (REG_DWORD `DepthBuffer`, default on, Advanced
+      Graphics, `FCOP_ZBUFFER`), terrain records drawn first (`walker.rs`), writers' depth
+      0.1% farther (`FCOP_ZSLACK`). Fixed the decal wedge in the user's savestate (oil stain,
+      `savestate.bin` 2026-11-17 21:55, the first mission's start area; test: fresh start
+      "8000:click@484,303 16000:load 17000:Up*2500", FCOP_NO_VIDEO=1).
+- [ ] **The user still sees Z-fighting** (2026-11-17, not located yet: ask for the place or a
+      savestate there). Suspects: coplanar model faces (writers, LEQUAL with slack), test-only
+      primitives with borrowed depth, terrain records drawn first now covering things the
+      game drew under them on purpose, MSAA sample depth vs. the depth-only pass.
+- [x] Found one (2026-11-17, savestate turning right): the pipe into the green pool was cut
+      at the liquid. Semi-transparent terrain tiles (alpha 0x80 = 0.502) passed the depth-only
+      pass's alpha >= 0.5 and wrote depth; the pipe's end lies 1-5% of its depth below the
+      surface. Threshold now 0.75: translucent surfaces only test.
+- [x] Second (2026-11-17, savestate beside the pickup box, only at high frame rates): a ground
+      vertex and a box vertex projected to the same 2560x1920 unit; `ao::depths` gave the ground
+      triangle the box's z (nearer the reference), it tipped forward and painted over the box's
+      front for a picture. Points now carry ground/model; the primitive's sure corners decide.
+- [x] Third: the fog by the pool turned the picture dark walking toward it (green mean 76
+      instead of 82). Not the depth test (off per blend: no change) but terrain first: the
+      game draws the fog's semi-transparent layers before the near ground, which painted over
+      them; moved behind all the ground they lay over it. Semi-transparent records (type bit
+      3) now keep their place among the terrain's (81.8). Vertex alpha says nothing: nearly
+      every primitive has some below 255.
+- [x] Fourth: that made oil on the ground flicker (a decal of semi-transparent records, 0xac,
+      painted over by the ground the buckets put after it). The real cause of the dark fog:
+      `effects::record_of` looked only 16 records ahead; with the terrain moved first the
+      fog's smoke records lay farther and were not found, so Lit Smoke left them unlit (with
+      lights or lit smoke off the order made no difference). Now a sorted index finds the
+      first ahead; everything but the terrain goes after it again (fog 85.3 as without the
+      depth buffer, oil whole in every picture).
+- [x] Savestates load however the mission was started (FCOPSAV3: object kinds and sound
+      buffer table; files and events adopt the saved handles; FCOPSAV2 still loads).
+- [ ] First person (`FCOP_CAMERA=first`): the user expects the depth buffer to fix its drawing
+      problems; one short run did not crash. Still off the camera key.
+- Tried and dropped: ground tiles sorted by their farthest corner (`terrain.rs`): "richtige
+  Z-Probleme" (the user).
+
 #### Ideas after these (the user: "more to come")
 
 Tone mapping (with step 9's HDR target), FXAA/SMAA as an alternative to MSAA, colour grading,

@@ -200,7 +200,7 @@ fn project(m: &Memory, out: u32, x: i32, y: i32, z: i32, k: f32, split: bool, ao
     let wrapped = sx != sx as i16 as i32 || sy != sy as i16 as i32;
     m.wr8(out + 7, xc & yc | if wrapped && ours() { WRAPPED } else { 0 });
     if ao && !wrapped {
-        super::ao::point(sx, sy, (z >> 4) as i16);
+        super::ao::point(sx, sy, (z >> 4) as i16, true);
     }
 }
 
@@ -325,6 +325,22 @@ fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32) {
     }
 }
 
+thread_local! {
+    /// The display list records the terrain made for the picture being drawn (`walker.rs` draws
+    /// them first with the depth buffer on: the ground under all that lies on it).
+    static RECORDS: std::cell::RefCell<std::collections::HashSet<u32>> = Default::default();
+}
+
+/// Record `r` is a terrain tile of this picture.
+pub fn is_terrain(r: u32) -> bool {
+    RECORDS.with_borrow(|s| s.contains(&r))
+}
+
+/// The picture is drawn: its records are made anew.
+pub fn forget_records() {
+    RECORDS.with_borrow_mut(|s| s.clear());
+}
+
 /// A projected point's outcode bit of ours: it left s16 (`project`).
 const WRAPPED: u8 = 0x80;
 
@@ -361,6 +377,9 @@ fn tile(m: &Memory, vbase: u32, t: u32, sect: u32, cell: u32, cast: bool, hidden
     let r = m.rd32(LIST_END.at());
     m.wr32(LIST_END.at(), r.wrapping_add(0x38));
     m.wr32(r, depth as u32);
+    if super::zbuffer::enabled() {
+        RECORDS.with_borrow_mut(|s| s.insert(r));
+    }
     for (i, &p) in v.iter().enumerate() {
         m.wr32(r + 0x28 + 4 * i as u32, m.rd32(p));
     }
