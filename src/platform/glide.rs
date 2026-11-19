@@ -1351,8 +1351,8 @@ impl Glide {
         // the display list record it comes from (`effects.rs`), in the 3D picture
         // (and whether it is a model's light)
         let (rec, model_light) = match (self.gbuf, verts.first()) {
-            // (the ring's records are not in the effects' list)
-            (Some(_), Some(_)) if ring => (None, false),
+            // (records that only cast are no effects; the ring's are not in their list)
+            (Some(_), Some(_)) if self.cast_only != 0 => (None, false),
             (Some(dx), Some(&v)) => super::effects::record_of(xy(v).0 - dx, xy(v).1).map_or((None, false), |(r, l)| (Some(r), l)),
             _ => (None, false),
         };

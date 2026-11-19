@@ -360,9 +360,9 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   colours each kind; `FCOP_EFFECT_LOG=1` logs blended records and writes their texture
   rectangles to `Textures/effects/`.
 - `shadows.rs`: shadows (PLAN.md 2a step 3; REG_DWORD `Shadows` 0 off (default), 1
-  screen-space (the ray march below, at half resolution blurred with the AO), 2 shadow map (not
-  offered for now, `shadows::MAP_OFFERED` false: the combo lists Off / Screen-Space, no quality
-  combo, a stored 2 is Off; only `FCOP_SHADOWS=2` turns it on),
+  screen-space (the ray march below, at half resolution blurred with the AO), 2 shadow map (offered
+  again since 2026-11-19 for testing, `shadows::MAP_OFFERED`; false: the combo lists Off /
+  Screen-Space, no quality combo, a stored 2 is Off, only `FCOP_SHADOWS=2` turns it on),
   `FCOP_SHADOWS=0/1/2`; REG_DWORD `ShadowQuality` 0...3 Low / Medium (default) / High / Ultra,
   `FCOP_SHADOW_QUALITY=low|mid|high|ultra` (`look`, as nuclear_rust_strike's: map 1024 / 2048 /
   4096 / 4096, PCF 3x3 / 5x5 / 5x5 / 5x5 taps 1 / 1.5 / 1.5 / 1 texels apart, Low looked up in
@@ -371,7 +371,7 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   picture's triangles that write depth (gmode 1, every corner with a depth) as casters (batched
   vertices, chroma key in the constant colour's place); `post_3d` draws them from the sun
   (orthographic, 4096², view space rebuilt from screen position and depth as `ao::COMMON`'s P;
-  casters past `FAR` 12000 units left out, `FCOP_SHADOW_FAR`; keyed texels cut), the AO's last
+  casters past `FAR` 40000 units left out (12000 faded the upper half of the usual view: shadows faded in when walking forward), `FCOP_SHADOW_FAR`; keyed texels cut), the AO's last
   pass looks every pixel up (hardware PCF, `SUN_GLSL`; full resolution, also with the AO
   off; faces the sun grazes faded in). Only what is on screen casts. Models' faces turned away
   from the camera (the game leaves them out: winding test 0x428c10, hooked `nclip`) are kept
@@ -409,7 +409,17 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   draws the objects of 2 cells more on every side and those of the window the game left out,
   with model_draw 0x4280a0 alone (0x42fe20 also advances animations and marks cells seen:
   logic), at their place of the last draw; `=all` takes the seen ones too (checked: shadows
-  the same but for edge noise). `FCOP_SHADOW_STATIC=0` off. Ring cost at the M2C start with
+  the same but for edge noise). `FCOP_SHADOW_STATIC=0` off. Step 3, the terrain (`terrain::ring`, hook of
+  render_terrain 0x453360): groups of the 5x5 block window the game left out (entries of blocks
+  without a group seen are stale: place from a seen one + 16 steps a block, block from the map
+  [0x4a31ac]), not flat, whose sphere (real heights, swept by its height / the sun's rise)
+  `wide::casts_into_view` passes, then each of its cells the same: those cells' tiles go
+  through our terrain pass as cast-only tiles; `FCOP_SHADOW_TERRAIN=0` off, `=all` every group
+  (a test). Flat ground-layer tiles never cast (`terrain::ground`). Cast-only records are not
+  culled by the screen's box in `walk.rs` (before 2026-11-19 they were: every off-screen caster
+  was lost, shadows vanished at the edge), and the walker draws them after the rest (among them
+  their state changes split batches: 250 -> 350 fps); the caster buffer keeps its storage
+  (`ShadowMap::cap`). Terrain ring ~110 records, ~410 -> ~400 fps. Ring cost at the M2C start with
   the sun test: ~10 records, 617 -> 600 fps (Ultra, 1920x1080; without it ~1800 records, 400
   fps). The sun (world direction
   `SUN`, y up) in view space by the camera's matrix [0x511f48] + 0x58 (3x3 i32 16.16, rows

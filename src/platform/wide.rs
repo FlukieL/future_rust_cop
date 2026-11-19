@@ -217,6 +217,41 @@ pub fn terrain_visible(c: &mut Cpu) {
     m.wr32(p, x);
 }
 
+/// The shadows' ring: may the sphere at camera-space {x, y, z} with radius r (object units)
+/// cast a shadow into the view? The sphere swept away from the sun by `reach` (its shadow:
+/// things high above the ground, flying enemies, bridges, throw theirs far) tested against the
+/// real view as the game does, the segment clipped by the view's planes. `shown`: a thing the
+/// game tried itself, false when the sphere is in the view (the game drew it).
+pub fn casts_into_view(x: f32, y: f32, z: f32, r: f32, reach: f32, shown: bool) -> bool {
+    let s = super::shadows::sun_view();
+    let (xk, sx) = (x * k(), s[0] * k());
+    // each plane: g0 - g1 * t >= 0 along the point P - s * t, t in [0, reach]
+    let planes = [
+        (z + r - 1029.0 / 16.0, s[2]),
+        (0.3125 * z + 1.05 * r - xk, 0.3125 * s[2] - sx),
+        (0.3125 * z + 1.05 * r + xk, 0.3125 * s[2] + sx),
+        (0.234 * z + 1.03 * r - y, 0.234 * s[2] - s[1]),
+        (0.234 * z + 1.03 * r + y, 0.234 * s[2] + s[1]),
+    ];
+    // the sphere itself in the view: the game drew it (things it tried itself)
+    if shown && planes.iter().all(|&(g0, _)| g0 >= 0.0) {
+        return false;
+    }
+    let (mut lo, mut hi) = (0.0f32, reach);
+    for (g0, g1) in planes {
+        if g1.abs() < 1e-6 {
+            if g0 < 0.0 {
+                return false;
+            }
+        } else if g1 > 0.0 {
+            hi = hi.min(g0 / g1);
+        } else {
+            lo = lo.max(g0 / g1);
+        }
+    }
+    lo <= hi
+}
+
 /// 0x4572a0(p, r): the same test for objects, p {x, y, z} s16, r in z * 16's units: 1 when
 /// the sphere is not beyond the near plane (z * 16 + r <= 0x405), 0 beside the view (|x| <=
 /// 0.3125 z plus a bit of r: the 4:3 view's sides; y alike), else 2. Only 2 is drawn.
@@ -227,42 +262,12 @@ pub fn object_visible(c: &mut Cpu) {
     let m = mem();
     let p = m.rd32(c.r[ESP] + 4);
     if zoom() != 1.0 {
-        // the shadows' ring: what casts a shadow into the view. The sphere swept away from the
-        // sun (its shadow, up to `shadows::ring_reach` beyond it: things high above the
-        // ground, flying enemies, bridges, throw theirs far) tested against the real view as
-        // the game does, the segment clipped by the view's planes; the zoom keeps the projected
-        // points inside s16 (`points` leaves out the rest). As if it returned.
+        // the shadows' ring: what casts a shadow into the view (`casts_into_view`); the zoom
+        // keeps the projected points inside s16 (`points` leaves out the rest). As if it
+        // returned.
         let (x, y, z) = (m.rd16(p) as i16 as f32, m.rd16(p + 2) as i16 as f32, m.rd16(p + 4) as i16 as f32);
         let r = m.rd32(c.r[ESP] + 8) as i32 as f32 / 16.0;
-        let s = super::shadows::sun_view();
-        let swept = || {
-            let (xk, sx) = (x * k(), s[0] * k());
-            // each plane: g0 - g1 * t >= 0 along the point P - s * t, t in [0, reach]
-            let planes = [
-                (z + r - 1029.0 / 16.0, s[2]),
-                (0.3125 * z + 1.05 * r - xk, 0.3125 * s[2] - sx),
-                (0.3125 * z + 1.05 * r + xk, 0.3125 * s[2] + sx),
-                (0.234 * z + 1.03 * r - y, 0.234 * s[2] - s[1]),
-                (0.234 * z + 1.03 * r + y, 0.234 * s[2] + s[1]),
-            ];
-            // the sphere itself in the view: the game drew it (things it tried itself)
-            if super::shadows::ring_shown() && planes.iter().all(|&(g0, _)| g0 >= 0.0) {
-                return false;
-            }
-            let (mut lo, mut hi) = (0.0f32, super::shadows::ring_reach() + 2.3 * r);
-            for (g0, g1) in planes {
-                if g1.abs() < 1e-6 {
-                    if g0 < 0.0 {
-                        return false;
-                    }
-                } else if g1 > 0.0 {
-                    hi = hi.min(g0 / g1);
-                } else {
-                    lo = lo.max(g0 / g1);
-                }
-            }
-            lo <= hi
-        };
+        let swept = || casts_into_view(x, y, z, r, super::shadows::ring_reach() + 2.3 * r, super::shadows::ring_shown());
         let near = z * 16.0 + r * 16.0 <= 1029.0;
         c.r[crate::rt::EAX] = (c.r[crate::rt::EAX] & !0xff)
             | if !near && (super::shadows::ring_wide() || swept()) {

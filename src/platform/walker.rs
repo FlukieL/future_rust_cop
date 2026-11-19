@@ -149,6 +149,11 @@ pub fn draw_glide(c: &mut Cpu) {
             if pass == 0 && !text && super::zbuffer::enabled() {
                 order.sort_by_key(|r| !super::terrain::is_terrain(r.at));
             }
+            // records that only cast shadows last: among the drawn ones each of their state
+            // changes split the batches (more draw calls)
+            if pass == 0 && !text && super::shadows::has_cast() {
+                order.sort_by_key(|r| super::shadows::cast_kind(r.at) != 0);
+            }
             let mut sel = order.iter();
             let Some(first) = sel.next() else { continue };
             let mut last = first.at;
