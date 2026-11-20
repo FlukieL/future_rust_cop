@@ -750,6 +750,7 @@ pub const HOOKS: &[(crate::ver::Us, crate::rt::Hook)] = &[
     (wide::TERRAIN_VERTEX, wide::terrain_vertex),
     (terrain::BLOCK_VERTICES, terrain::block_vertices),
     (terrain::GROUP_TILES, terrain::group_tiles),
+    (terrain::RENDER_TERRAIN, terrain::render_terrain),
     (wide::SPRITE, wide::sprite),
     (wide::POINTS, wide::points),
     (wide::TERRAIN_VISIBLE, wide::terrain_visible),

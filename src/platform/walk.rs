@@ -234,7 +234,8 @@ fn walk(m: &Memory, s: u32, list: u32, full: bool) {
                             y1 = y;
                         }
                     }
-                    if y1 < 0 || y0 >= 0x780 || x1 < 0 || x0 >= 0xa00 {
+                    // (records that only cast are off the screen by design: the sun sees them)
+                    if cast_only == 0 && (y1 < 0 || y0 >= 0x780 || x1 < 0 || x0 >= 0xa00) {
                         break 'record;
                     }
                     if n > 2 && (y0 >= y1 || x0 >= x1) {

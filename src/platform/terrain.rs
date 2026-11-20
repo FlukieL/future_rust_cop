@@ -54,13 +54,13 @@ pub fn block_vertices(c: &mut Cpu) {
     match mode() {
         Mode::Game => call_original(c, BLOCK_VERTICES.at()),
         Mode::Rust => {
-            project_block(m, sect, vbuf, pos, mask, view, true);
+            project_block(m, sect, vbuf, read3(m, pos), mask, view, true);
             // as its ret leaves it
             c.r[ESP] = sp + 4;
         }
         Mode::Check => {
             let before: Vec<u8> = (0..VBUF_LEN).map(|k| m.rd8(vbuf + k)).collect();
-            project_block(m, sect, vbuf, pos, mask, view, false);
+            project_block(m, sect, vbuf, read3(m, pos), mask, view, false);
             let ours: Vec<u8> = (0..VBUF_LEN).map(|k| m.rd8(vbuf + k)).collect();
             for (k, &b) in before.iter().enumerate() {
                 m.wr8(vbuf + k as u32, b);
@@ -94,11 +94,11 @@ fn compare(m: &Memory, vbuf: u32, ours: &[u8]) {
 
 /// 0x4534f0: the block's points, rows 0..16, columns left to right, layers 0..2. With `ao`, each
 /// projected vertex goes to the ambient occlusion's points (as the hook on 0x453740 did).
-fn project_block(m: &Memory, sect: u32, vbuf: u32, pos: u32, mask: u32, view: u32, ao: bool) {
+fn project_block(m: &Memory, sect: u32, vbuf: u32, pos: [i32; 3], mask: u32, view: u32, ao: bool) {
     let rd = |a: u32| m.rd32(a) as i32;
     let (u, cs) = ([rd(view + 0xc), rd(view + 0x10), rd(view + 0x14)], [rd(view + 0x18), rd(view + 0x1c), rd(view + 0x20)]);
     let step = [rd(view), rd(view + 4), rd(view + 8)];
-    let mut row = [rd(pos), rd(pos + 4), rd(pos + 8)];
+    let mut row = pos;
     let k = wide::k();
     let split = m.rd8(SPLIT.at()) != 0;
     let ao = ao && super::ao::depth_wanted();
@@ -180,6 +180,10 @@ fn project_block(m: &Memory, sect: u32, vbuf: u32, pos: u32, mask: u32, view: u3
     }
 }
 
+fn read3(m: &Memory, a: u32) -> [i32; 3] {
+    [m.rd32(a) as i32, m.rd32(a + 4) as i32, m.rd32(a + 8) as i32]
+}
+
 /// 0x453740(out, x, y, z), z >= 0x600: screen x, y in 2560x1920 units (1280 wide in split
 /// screen), z >> 4 and the outcode. Widescreen scales x first (`wide::terrain_vertex`).
 #[allow(clippy::too_many_arguments)]
@@ -227,7 +231,7 @@ pub fn group_tiles(c: &mut Cpu) {
     match mode() {
         Mode::Game => call_original(c, GROUP_TILES.at()),
         Mode::Rust => {
-            tiles(m, sect, vbuf, ca, cb, gofs);
+            tiles(m, sect, vbuf, ca, cb, gofs, 0);
             c.r[ESP] = sp + 4;
         }
         Mode::Check => {
@@ -236,7 +240,7 @@ pub fn group_tiles(c: &mut Cpu) {
             // the records' memory as it was (the game leaves some bytes as they are)
             let span = 0x38 * 256;
             let before: Vec<u8> = (0..span).map(|k| m.rd8(end0 + k)).collect();
-            tiles(m, sect, vbuf, ca, cb, gofs);
+            tiles(m, sect, vbuf, ca, cb, gofs, 0);
             let end1 = m.rd32(LIST_END.at());
             let ours: Vec<u8> = (0..end1 - end0).map(|k| m.rd8(end0 + k)).collect();
             for (k, &b) in before.iter().enumerate() {
@@ -271,10 +275,181 @@ fn compare_records(ours: &[u8], game: &[u8]) {
     }
 }
 
+/// render_terrain(row, column, entries, view) 0x453360: the view's 5x5 window of blocks
+/// (entries of 0x14 bytes: +0 the mask of the block's 4x4-cell groups seen, bit 15 the first
+/// (top left), +4 the block (sect), +8 its first point in camera space; written by 0x452a20
+/// only for blocks with a group seen), each block's points (0x4534f0) and its groups' tiles
+/// (0x4537f0). `view` holds the steps in camera space: +0 a row's, +0xc a height unit's (<< 8),
+/// +0x18 a column's.
+pub const RENDER_TERRAIN: Us = Us(0x453360);
+/// The window's first row and column (bytes, [0x4a3b00 + 2 * view] and + 1) and its entries
+/// (0x50dc80 + 0x1f4 * view).
+const WINDOW: Us = Us(0x4a3b00);
+const ENTRIES: Us = Us(0x50dc80);
+/// The vertex buffer, the map ([+4] blocks a row, cells from +0x24: (block index << 2)) and its
+/// blocks.
+const VBUF: Us = Us(0x50dc4c);
+const MAP: Us = Us(0x4a31ac);
+const BLOCKS: Us = Us(0x4a3060);
+
+/// Hook of render_terrain: after it, the shadows' terrain ring (`ring`).
+pub fn render_terrain(c: &mut Cpu) {
+    let m = mem();
+    let sp = c.r[ESP];
+    let (entries, view) = (m.rd32(sp + 12), m.rd32(sp + 16));
+    call_original(c, RENDER_TERRAIN.at());
+    static ON: OnceLock<bool> = OnceLock::new();
+    let on = *ON.get_or_init(|| std::env::var("FCOP_SHADOW_TERRAIN").map_or(true, |v| v != "0"));
+    if on && ours() && m.rd8(SPLIT.at()) == 0 && super::shadows::keep_hidden() && super::walker::precise() {
+        ring(m, entries, view);
+    }
+}
+
+/// The shadows' terrain ring: the groups of the window the game left out (off the screen) whose
+/// shadow may reach into the view (`wide::casts_into_view`: the group's sphere swept away from
+/// the sun) are projected and kept as casters only (`shadows::note_hidden`), as tiles off the
+/// screen in the groups seen are. The cut at the screen's edge moved with the camera: walls just
+/// beyond its top lost their shadows when walking back. Their points stay in s16 (else left
+/// out, `WRAPPED`). Blocks without a group seen have stale entries: their place follows from
+/// one seen (+16 rows or columns a block), their block from the map. `FCOP_SHADOW_TERRAIN=0` off.
+fn ring(m: &Memory, entries: u32, view: u32) {
+    let off = entries.wrapping_sub(ENTRIES.at());
+    if off % 0x1f4 != 0 || off / 0x1f4 > 3 {
+        return;
+    }
+    let v = off / 0x1f4;
+    let Some(seen) = (0..25u32).find(|&k| m.rd32(entries + 0x14 * k) & 0xffff != 0) else { return };
+    let (si, sj) = ((seen / 5) as i32, (seen % 5) as i32);
+    let base = read3(m, entries + 0x14 * seen + 8);
+    let (step, up, cs) = (read3(m, view), read3(m, view + 0xc), read3(m, view + 0x18));
+    let len = |a: [i32; 3]| (a.iter().map(|&c| (c as f32) * (c as f32)).sum::<f32>()).sqrt();
+    let (cell, hu) = (len(step).max(len(cs)), len(up) / 256.0);
+    // `FCOP_SHADOW_TERRAIN=all` (a test): every group of the window casts
+    static ALL: OnceLock<bool> = OnceLock::new();
+    let all = *ALL.get_or_init(|| std::env::var("FCOP_SHADOW_TERRAIN").is_ok_and(|v| v == "all"));
+    let (map, blocks) = (m.rd32(MAP.at()), m.rd32(BLOCKS.at()));
+    let width = m.rd32(map + 4) as i32;
+    let (w0, w1) = (m.rd8(WINDOW.at() + 2 * v) as i8 as i32, m.rd8(WINDOW.at() + 2 * v + 1) as i8 as i32);
+    let vbuf = m.rd32(VBUF.at());
+    // the groups left out, with their lowest and highest point
+    let mut groups: Vec<(u32, u32, u32, i32, i32)> = Vec::new();
+    for k in 0..25u32 {
+        let (i, j) = ((k / 5) as i32, (k % 5) as i32);
+        let e = entries + 0x14 * k;
+        let mask = m.rd32(e) & 0xffff;
+        let sect = if mask != 0 {
+            m.rd32(e + 4)
+        } else {
+            if !(0..width).contains(&(w0 + j)) || w1 + i < 0 {
+                continue;
+            }
+            let cell = m.rd32(map + 0x24 + 4 * (width * (w1 + i) + w0 + j) as u32);
+            m.rd32(blocks + 4 * ((cell >> 2) & 0x3fff))
+        };
+        if sect == 0 {
+            continue;
+        }
+        for g in 0..16u32 {
+            if mask & (0x8000 >> g) != 0 {
+                continue;
+            }
+            let (gr, gc) = (g / 4, g % 4);
+            // the heights of its points (s8, -128 none; the steps of `up` are << 8)
+            let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+            for pr in 4 * gr..=4 * gr + 4 {
+                for pc in 4 * gc..=4 * gc + 4 {
+                    for l in 0..3 {
+                        let h = m.rd8(sect + 0xc + 3 * (17 * pr + pc) + l) as i8 as i32;
+                        if h != -128 {
+                            lo = lo.min(h);
+                            hi = hi.max(h);
+                        }
+                    }
+                }
+            }
+            // flat (one height at every point): its shadow is the one the step or wall beside it
+            // throws, and that is in a group with more than one height (shared border points)
+            if lo < hi {
+                groups.push((k, sect, g, lo, hi));
+            }
+        }
+    }
+    // toward the sun (unit) rises this much (world y): a point h above the ground throws its
+    // shadow h / rise along the sun's ray
+    let s = super::shadows::SUN;
+    let rise = s[1] / (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
+    let mut cast = [0u32; 25];
+    let mut cells = vec![0u16; groups.len()];
+    for (n, &(k, sect, g, lo, hi)) in groups.iter().enumerate() {
+        let (i, j) = ((k / 5) as i32, (k % 5) as i32);
+        let (gr, gc) = ((g / 4) as i32, (g % 4) as i32);
+        let at = |di: i32, dj: i32| -> [i32; 3] { std::array::from_fn(|c| base[c].wrapping_add(di.wrapping_mul(step[c])).wrapping_add(dj.wrapping_mul(cs[c]))) };
+        // the group's sphere (object units: camera space / 16): its 4x4 cells and heights
+        let mid = (lo + hi) / 2;
+        let p = at(16 * (i - si) + 4 * gr + 2, 16 * (j - sj) + 4 * gc + 2);
+        let p: [f32; 3] = std::array::from_fn(|c| (p[c] as f32 + up[c] as f32 * mid as f32 / 256.0) / 16.0);
+        let r = (2.0 * std::f32::consts::SQRT_2 * cell + (hi - lo) as f32 / 2.0 * hu) / 16.0;
+        // its shadow reaches as far as its top stands above its lowest point (the border
+        // points are its neighbours' too: a step down beside it counts)
+        let reach = (hi - lo) as f32 * hu / 16.0 / rise;
+        if !(all || wide::casts_into_view(p[0], p[1], p[2], r, reach, false)) {
+            continue;
+        }
+        // then each of its cells: the group's sphere is coarse (~2000 units across), and at the
+        // screen's edge most of its cells cast nowhere into the view
+        for cr in 0..4u32 {
+            for cc in 0..4u32 {
+                let (row, col) = (4 * gr as u32 + cr, 4 * gc as u32 + cc);
+                let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+                for pr in row..=row + 1 {
+                    for pc in col..=col + 1 {
+                        for l in 0..3 {
+                            let h = m.rd8(sect + 0xc + 3 * (17 * pr + pc) + l) as i8 as i32;
+                            if h != -128 {
+                                lo = lo.min(h);
+                                hi = hi.max(h);
+                            }
+                        }
+                    }
+                }
+                if lo > hi {
+                    continue;
+                }
+                let (di, dj) = ((16 * (i - si)) as f32 + row as f32 + 0.5, (16 * (j - sj)) as f32 + col as f32 + 0.5);
+                let mid = (lo + hi) as f32 / 2.0;
+                let p: [f32; 3] = std::array::from_fn(|c| (base[c] as f32 + di * step[c] as f32 + dj * cs[c] as f32 + up[c] as f32 * mid / 256.0) / 16.0);
+                let r = (std::f32::consts::FRAC_1_SQRT_2 * cell + (hi - lo) as f32 / 2.0 * hu) / 16.0;
+                let reach = (hi - lo) as f32 * hu / 16.0 / rise;
+                if all || wide::casts_into_view(p[0], p[1], p[2], r, reach, false) {
+                    cells[n] |= 1 << (4 * cr + cc);
+                }
+            }
+        }
+        if cells[n] != 0 {
+            cast[k as usize] |= 0x8000 >> g;
+        }
+    }
+    for (n, &(k, sect, g, _, _)) in groups.iter().enumerate() {
+        let c = cast[k as usize];
+        if cells[n] == 0 {
+            continue;
+        }
+        // the block's points once, at its first group cast
+        if c & !(0xffff >> g) == 0 {
+            let (i, j) = ((k / 5) as i32, (k % 5) as i32);
+            let pos: [i32; 3] = std::array::from_fn(|c| base[c].wrapping_add((16 * (i - si)).wrapping_mul(step[c])).wrapping_add((16 * (j - sj)).wrapping_mul(cs[c])));
+            project_block(m, sect, vbuf, pos, c << 16, view, true);
+        }
+        tiles(m, sect, vbuf, 0, 0, (g / 4) * 0x40 + (g % 4) * 4, cells[n]);
+    }
+}
+
 /// 0x4537f0: the group's tiles as one run from its top-left cell's first, cell ends marked by
 /// bit 0, cells row by row. Walls (shape kinds 1..4) only when seen from a side they show
 /// (bit 11 positive, bit 12 negative distance of the camera to the wall's plane).
-fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32) {
+/// `ring`: the terrain ring's cells of the group (bit = cell, row by row), only casting; 0 not
+/// the ring.
+fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32, ring: u16) {
     // the shadow map's sun sees tiles turned away from the camera: kept, only casting
     let cast = super::shadows::keep_hidden();
     let mut tp = sect + 0x5d0 + (m.rd16(sect + 0x3cc + 2 * gofs) as u32 >> 4);
@@ -285,7 +460,7 @@ fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32) {
         let mut t = m.rd32(tp);
         tp += 4;
         let kind = m.rd8(KIND.at() + ((t >> 15) & 0x7f)) & 7;
-        let cell = ci;
+        let (cell, local) = (ci, c);
         if t & 1 != 0 {
             t &= !1;
             c += 1;
@@ -316,8 +491,8 @@ fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32) {
                 pos && neg
             }
         };
-        if draw || cast {
-            tile(m, vbuf + 24 * (cell + (cell >> 4)), t, sect, cell, cast, !draw);
+        if (draw || cast) && (ring == 0 || ring & 1 << local != 0) {
+            tile(m, vbuf + 24 * (cell + (cell >> 4)), t, sect, cell, cast, !draw || ring != 0);
         }
         if c >= 16 {
             break;
@@ -364,6 +539,9 @@ fn tile(m: &Memory, vbase: u32, t: u32, sect: u32, cell: u32, cast: bool, hidden
     // off the screen (all corners beyond one edge), or turned away: only a caster
     let off = or & 2 == 0 && and != 0;
     let hidden = off || hidden || t & 1 != 0 && back_facing(m.rd32(v[0]), m.rd32(v[1]), m.rd32(v[2]));
+    if hidden && ground(m, k, sect, cell, shape) {
+        return;
+    }
     if hidden && !(cast && !wrapped && super::shadows::note_hidden()) {
         return;
     }
@@ -467,6 +645,19 @@ fn tile(m: &Memory, vbase: u32, t: u32, sect: u32, cell: u32, cast: bool, hidden
             m.wr8(r + 0x24, light(1, 0));
         }
     }
+}
+
+/// A flat tile of the ground layer (layer 0, every corner one height, not a wall): it never
+/// stands between a surface and the sun (a ray from below would have entered the ground through
+/// a wall or a slope first), so not worth casting: ~a quarter of the terrain ring's tiles.
+fn ground(m: &Memory, k: u32, sect: u32, cell: u32, shape: u32) -> bool {
+    if m.rd8(KIND.at() + shape) & 7 != 0 {
+        return false;
+    }
+    // corners: vertex indices from the cell's first (3 layers a point)
+    let ci: [u32; 4] = std::array::from_fn(|i| m.rd8(k + i as u32) as u32);
+    let h = |c: u32| m.rd8(sect + 0xc + 3 * (cell + (cell >> 4)) + c);
+    ci.iter().all(|&c| c % 3 == 0 && h(c) == h(ci[0]))
 }
 
 /// 0x453e90: whether three screen points {x, y} (s16 pairs) turn the other way on screen (the

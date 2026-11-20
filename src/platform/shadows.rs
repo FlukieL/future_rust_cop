@@ -52,9 +52,10 @@ pub enum Mode {
     Map = 2,
 }
 
-/// The shadow map is offered in Advanced Graphics (off for now, 2026-11-16: not finished;
-/// `FCOP_SHADOWS=2` still turns it on, for tests).
-pub const MAP_OFFERED: bool = false;
+/// The shadow map is offered in Advanced Graphics (off 2026-11-16 as not finished, offered
+/// again 2026-11-19 for testing;
+/// `FCOP_SHADOWS=2` turns it on as well).
+pub const MAP_OFFERED: bool = true;
 
 /// The modes as Advanced Graphics lists them (the map only with `MAP_OFFERED`).
 pub const MODES: &[(Mode, &str)] = if MAP_OFFERED {
@@ -161,12 +162,15 @@ const CAMERA: Us = Us(0x511f48);
 const MATRIX: u32 = 0x58;
 
 /// Toward the sun in the world (y up): high, from the right and behind the start's view.
-const SUN: [f32; 3] = [0.45, 1.0, -0.3];
+pub const SUN: [f32; 3] = [0.45, 1.0, -0.3];
 /// How dark the sun's shadow is (0...1); how far the screen-space one reaches (object units).
 pub const SUN_STRENGTH: f32 = 0.45;
 pub const SUN_LENGTH: f32 = 900.0;
-/// How far from the camera the shadow map's casters count (object units).
-const FAR: f32 = 12000.0;
+/// How far from the camera the shadow map's casters count (object units). Beyond the game's
+/// own drawing in its usual view from above (casters there reach ~20000, half of them past
+/// 8000): 12000 cut a sixth of them and faded the shadow out from 9600, the upper half of the
+/// picture, so shadows faded in as the camera came nearer (walking forward).
+const FAR: f32 = 40000.0;
 
 /// The cameras of this frame's views, in the order they were first projected with: the
 /// camera's address and the sun in its view space.
@@ -661,6 +665,9 @@ pub struct ShadowMap {
     fbo: glow::Framebuffer,
     /// the texture's size (made anew when the quality changes it)
     size: i32,
+    /// the caster buffer's size in bytes (kept: made anew each picture, ~1 MB with the rings,
+    /// it cost the driver an allocation each time)
+    cap: usize,
 }
 
 /// The depth texture's storage, on the texture bound.
@@ -699,7 +706,7 @@ impl ShadowMap {
             gl.draw_buffers(&[]);
             gl.read_buffer(glow::NONE);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            ShadowMap { prog, vao, vbo, tex, fbo, size }
+            ShadowMap { prog, vao, vbo, tex, fbo, size, cap: 0 }
         }
     }
 
@@ -786,7 +793,11 @@ impl ShadowMap {
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             let bytes = std::slice::from_raw_parts(casters.as_ptr() as *const u8, casters.len() * 4);
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
+            if bytes.len() > self.cap {
+                self.cap = bytes.len().next_power_of_two();
+                gl.buffer_data_size(glow::ARRAY_BUFFER, self.cap as i32, glow::STREAM_DRAW);
+            }
+            gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes);
             gl.draw_arrays(glow::TRIANGLES, 0, (casters.len() / VERTEX) as i32);
             gl.bind_vertex_array(None);
             gl.disable(glow::DEPTH_TEST);
