@@ -221,7 +221,7 @@ pub fn terrain_visible(c: &mut Cpu) {
 /// cast a shadow into the view? The sphere swept away from the sun by `reach` (its shadow:
 /// things high above the ground, flying enemies, bridges, throw theirs far) tested against the
 /// real view as the game does, the segment clipped by the view's planes. `shown`: a thing the
-/// game tried itself, false when the sphere is in the view (the game drew it).
+/// game tried itself, false when the sphere is wholly in the view (the game drew it).
 pub fn casts_into_view(x: f32, y: f32, z: f32, r: f32, reach: f32, shown: bool) -> bool {
     let s = super::shadows::sun_view();
     let (xk, sx) = (x * k(), s[0] * k());
@@ -233,8 +233,17 @@ pub fn casts_into_view(x: f32, y: f32, z: f32, r: f32, reach: f32, shown: bool) 
         (0.234 * z + 1.03 * r - y, 0.234 * s[2] - s[1]),
         (0.234 * z + 1.03 * r + y, 0.234 * s[2] + s[1]),
     ];
-    // the sphere itself in the view: the game drew it (things it tried itself)
-    if shown && planes.iter().all(|&(g0, _)| g0 >= 0.0) {
+    // the sphere wholly in the view: the game drew all of it (things it tried itself). One
+    // across the screen's edge is drawn again: the game left out its faces off the screen (a
+    // lattice shed's roof above the picture threw no shadow until walked toward)
+    let inside = [
+        z - r - 1029.0 / 16.0,
+        0.3125 * z - 1.05 * r - xk,
+        0.3125 * z - 1.05 * r + xk,
+        0.234 * z - 1.03 * r - y,
+        0.234 * z - 1.03 * r + y,
+    ];
+    if shown && inside.iter().all(|&g| g >= 0.0) {
         return false;
     }
     let (mut lo, mut hi) = (0.0f32, reach);

@@ -388,8 +388,9 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   ours: 2 when the sphere swept away from the sun (`shadows::sun_view`, `ring_reach` 2000 units
   plus 2.3 radii, `FCOP_SHADOW_REACH`; the segment clipped by the view's planes) reaches the real
   view, never before the near plane; things the game tried itself (its visible actors, objects of a
-  cell part seen: lists by cells) are drawn too unless their sphere is in the view (the game's view
-  test left those out and their shadows came with them, `shadows::ring_shown`); and `wide::points` sets every projected
+  cell part seen: lists by cells) are drawn too unless their sphere is wholly in the view (the game's view
+  test left those out and their shadows came with them, `shadows::ring_shown`; one across the
+  screen's edge lost its faces off the screen: a lattice shed's roof above the picture cast nothing); and `wide::points` sets every projected
   point's flag to 0xc0 (0x40 x on the screen, 0x80 y; a face is drawn only when its points'
   flags or'ed are 0xc0: a zoom alone left out near enemies below or beside the view), 1 for
   points whose real place (zoomed place / zoom) would leave s16 (cut to its ends they met
