@@ -369,6 +369,31 @@ sort, the camera [0x511f48] (`fps.rs`, up to +0x88), the actors (0x50e428).
       faces with a point beside the camera at x / z > ~15 (s16), and objects at or behind
       the near plane.
       Next step maybe: effects/objects_draw 0x42dd90 (things in flight) in the ring.
+- [x] 2026-11-19: `FAR` 12000 -> 40000 (the fade covered the upper half of the usual view:
+      shadows faded in walking forward); cast-only records were culled by the screen's box in
+      `walk.rs` (no off-screen caster ever reached the map); terrain ring (`terrain::ring`,
+      cells of groups left out); cast-only records drawn last, caster buffer kept (~250 -> ~400
+      fps with the map, Ultra, the user's savestate).
+- [ ] Shadow map, open (2026-11-19, the user wants them noted; 1 and 2 first, together, both
+      in `ShadowMap::render`, compared with the user's savestate before/after):
+  1. [x] Edges crawled while moving (2026-11-20): the rect was fitted to the casters' bounds
+     every picture. Now a square in steps of 2^(1/4), its corner on whole texels of a grid
+     fixed in the world (the view's translation, camera +0x4c, taken out; camera space is
+     20.12, object units / 16) and its axes fixed in the world (made in world space, taken
+     into view space by the camera's matrix, x / k for widescreen): moving and turning alike.
+  2. [x] Blurrier than needed (2026-11-20): x/y fitted to the casters' corners on the screen
+     (the receivers), depth from every caster. On the user's savestate texels 2.8 instead of
+     ~4.4 x 4.9 units; the far top of the picture still spans ~11600 units: cascades would
+     be the next step.
+  3. Nothing at or before the near plane casts (not projected); seldom with the camera from
+     above (tall things close to it).
+  4. The rings stop at 3/4 of the display list (`shadows::room`): in large scenes casters go
+     missing unseen. A list of our own for the casters would end that.
+  5. Faster: the cast-only records still go record -> walker -> `glide::add` -> depth lookup;
+     the terrain ring knows the camera-space places exactly and could write its triangles
+     straight into the casters (~0.05 ms now, small gain).
+  Risk to watch: flat ground-layer tiles never cast (`terrain::ground`); where a step has no
+  wall tile a shadow could have a hole.
 - [ ] The sun's strength and direction: the user cannot judge them without seeing the
       differences. Planned: a comparison sheet, the same scene (shadow map, Ultra) rendered
       with several strengths (`SUN_STRENGTH` now 0.45) and sun directions (`SUN` now

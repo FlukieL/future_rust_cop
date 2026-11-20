@@ -160,6 +160,8 @@ pub fn look() -> Look {
 const CAMERA: Us = Us(0x511f48);
 /// The camera's matrix (rows: right, up, forward in the world; 16.16).
 const MATRIX: u32 = 0x58;
+/// The view's translation (-(matrix * position), 20.12; 0x4346d0 sets it).
+const TRANSLATION: u32 = 0x4c;
 
 /// Toward the sun in the world (y up): high, from the right and behind the start's view.
 pub const SUN: [f32; 3] = [0.45, 1.0, -0.3];
@@ -173,8 +175,23 @@ pub const SUN_LENGTH: f32 = 900.0;
 const FAR: f32 = 40000.0;
 
 /// The cameras of this frame's views, in the order they were first projected with: the
-/// camera's address and the sun in its view space.
-static VIEWS: Mutex<Vec<(u32, [f32; 3])>> = Mutex::new(Vec::new());
+/// camera's address, the sun in its view space and the view's translation (object units).
+static VIEWS: Mutex<Vec<Camera>> = Mutex::new(Vec::new());
+
+struct Camera {
+    cam: u32,
+    sun: [f32; 3],
+    t: [f32; 3],
+    /// the shadow map's x and y axes (world-fixed) in view space
+    axes: [[f32; 3]; 2],
+}
+
+/// Two axes across the direction `az` (unit): right and up of a view along it.
+fn sun_axes(az: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let up = if az[1].abs() > 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let ax = unit(cross(up, az));
+    (ax, cross(az, ax))
+}
 /// The views' post passes so far this frame.
 static DONE: Mutex<usize> = Mutex::new(0);
 
@@ -186,13 +203,21 @@ pub fn camera() {
         return;
     }
     let mut v = VIEWS.lock().unwrap();
-    if v.iter().any(|l| l.0 == cam) || v.len() >= 4 {
+    if v.iter().any(|l| l.cam == cam) || v.len() >= 4 {
         return;
     }
     let row = |r: u32| (0..3).map(|c| m.rd32(cam + MATRIX + 12 * r + 4 * c) as i32 as f32 / 65536.0).collect::<Vec<_>>();
     let s = unit(SUN);
-    let d = [0, 1, 2].map(|r| row(r).iter().zip(s).map(|(a, b)| a * b).sum::<f32>());
-    v.push((cam, d));
+    let rows = [row(0), row(1), row(2)];
+    let view = |w: [f32; 3]| [0, 1, 2].map(|r| rows[r].iter().zip(w).map(|(a, b)| a * b).sum::<f32>());
+    let d = view(s);
+    // the shadow map's axes across the sun, fixed in the world (its texels do not turn with
+    // the camera), in view space
+    let (ax, ay) = sun_axes(s.map(|c| -c));
+    let axes = [view(ax), view(ay)];
+    // the view's translation: -(matrix * position), 20.12 = camera space; object units / 16
+    let t = [0, 1, 2].map(|i| m.rd32(cam + TRANSLATION + 4 * i) as i32 as f32 / 16.0);
+    v.push(Camera { cam, sun: d, t, axes });
 }
 
 /// Toward the sun (unit) in the view space of the camera in use (x right, y up, z ahead: the
@@ -213,13 +238,30 @@ pub fn clear() {
     *DONE.lock().unwrap() = 0;
 }
 
-/// The post passes of the next view: toward the sun in its view space (the shaders').
-pub fn next_view() -> [f32; 3] {
+/// The post passes of the next view, in its view space (the shaders': x times widescreen's k):
+/// toward the sun, the view's translation, and the shadow map's x and y axes, fixed in the
+/// world: a point p's dot(p, axis) less dot(translation, axis) is the world point's own,
+/// whether the camera moves or turns.
+pub struct NextView {
+    pub sun: [f32; 3],
+    pub origin: [f32; 3],
+    pub axes: [[f32; 3]; 2],
+}
+
+pub fn next_view() -> NextView {
     let mut done = DONE.lock().unwrap();
     let v = VIEWS.lock().unwrap();
-    let d = v.get(*done).or(v.last()).map_or([0.0, 1.0, 0.0], |l| l.1);
+    let l = v.get(*done).or(v.last());
     *done += 1;
-    unit([d[0] * super::wide::k(), d[1], d[2]])
+    let k = super::wide::k();
+    let Some(l) = l else {
+        let (ax, ay) = sun_axes([0.0, -1.0, 0.0]);
+        return NextView { sun: [0.0, 1.0, 0.0], origin: [0.0; 3], axes: [ax, ay] };
+    };
+    let (d, t) = (l.sun, l.t);
+    // x / k on the axes: dot(K p, K^-1 a) = dot(p, a)
+    let a = l.axes.map(|a| [a[0] / k, a[1], a[2]]);
+    NextView { sun: unit([d[0] * k, d[1], d[2]]), origin: [t[0] * k, t[1], t[2]], axes: a }
 }
 
 /// A model face's winding test (called by 0x428690, model_face_draw, for its triangles and
@@ -723,18 +765,17 @@ impl ShadowMap {
     /// Draw the casters (`glide`'s batched vertices, triangles; x, y in `space` units) from
     /// the sun `sun` (view space, toward it); `target` the picture's size in pixels,
     /// `textures` the texture arrays (colour, alpha). None: nothing casts.
-    pub fn render(&mut self, gl: &glow::Context, casters: &[u32], sun: [f32; 3], target: (u32, u32), space: (f32, f32), textures: (glow::Texture, glow::Texture)) -> Option<View> {
+    pub fn render(&mut self, gl: &glow::Context, casters: &[u32], next: &NextView, target: (u32, u32), space: (f32, f32), textures: (glow::Texture, glow::Texture)) -> Option<View> {
         use super::glide::VERTEX;
         let (tw, th) = (target.0 as f32, target.1 as f32);
         let focal = 4096.0 * th / 1920.0;
-        // the sun's axes: away from it, and two across
-        let az = sun.map(|c| -c);
-        let up = if az[1].abs() > 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-        let ax = unit(cross(up, az));
-        let ay = cross(az, ax);
-        // the bounds in the sun's space of the casters nearer than `far`
-        let mut lo = [f32::MAX; 3];
-        let mut hi = [f32::MIN; 3];
+        // the sun's axes: away from it, and two across (fixed in the world)
+        let (az, [ax, ay], origin) = (next.sun.map(|c| -c), next.axes, next.origin);
+        // the map spans what is seen (the casters' corners on the screen: the receivers; a caster
+        // beside that span along the sun's rays cannot shade it), its depth every caster nearer
+        // than `far` (those before the receivers)
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        let (mut slo, mut shi) = ([f32::MAX; 2], [f32::MIN; 2]);
         let far = far();
         for v in casters.chunks_exact(VERTEX) {
             let (x, y, z) = (f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[20]));
@@ -748,9 +789,18 @@ impl ShadowMap {
                 lo[i] = lo[i].min(l[i]);
                 hi[i] = hi[i].max(l[i]);
             }
+            if (0.0..=tw).contains(&q.0) && (0.0..=th).contains(&q.1) {
+                for i in 0..2 {
+                    slo[i] = slo[i].min(l[i]);
+                    shi[i] = shi[i].max(l[i]);
+                }
+            }
         }
         if lo[0] > hi[0] {
             return None;
+        }
+        if slo[0] > shi[0] {
+            (slo, shi) = ([lo[0], lo[1]], [hi[0], hi[1]]);
         }
         let size = look().size;
         if size != self.size {
@@ -759,9 +809,19 @@ impl ShadowMap {
             storage(gl, size);
             unsafe { gl.bind_texture(glow::TEXTURE_2D, None) };
         }
-        let pad = |a: f32, b: f32| (b - a).max(1.0) * 0.01;
-        let rect = [lo[0] - pad(lo[0], hi[0]), lo[1] - pad(lo[1], hi[1]), hi[0] + pad(lo[0], hi[0]), hi[1] + pad(lo[1], hi[1])];
-        let depth = [lo[2] - pad(lo[2], hi[2]), hi[2] + pad(lo[2], hi[2])];
+        // a square in steps of 2^(1/4) (a span changing by a little leaves the texels as they
+        // are), its corner on whole texels of a grid fixed in the world (the view's translation
+        // taken out, the axes fixed in the world): edges do not crawl while the camera moves or
+        // turns
+        let span = ((shi[0] - slo[0]).max(shi[1] - slo[1]) * 1.02).max(64.0);
+        let side = 2f32.powf((span.log2() * 4.0).ceil() / 4.0);
+        let texel = side / size as f32;
+        let o = [dot(origin, ax), dot(origin, ay)];
+        let corner = |i: usize| ((0.5 * (slo[i] + shi[i] - side) - o[i]) / texel).floor() * texel + o[i];
+        let (x0, y0) = (corner(0), corner(1));
+        let rect = [x0, y0, x0 + side, y0 + side];
+        let pad = (hi[2] - lo[2]).max(1.0) * 0.01;
+        let depth = [lo[2] - pad, hi[2] + pad];
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
             gl.viewport(0, 0, size, size);

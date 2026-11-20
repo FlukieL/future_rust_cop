@@ -1846,12 +1846,13 @@ pub fn post_3d() {
         let clip = g.scissor_box(g.state.clip);
         let target = g.target;
         // the sun's shadow: screen-space, or the shadow map of this view's casters
-        let dir = super::shadows::next_view();
+        let next = super::shadows::next_view();
+        let dir = next.sun;
         let casters = std::mem::take(&mut g.casters);
         let map = match super::shadows::map() {
             true => {
                 let (textures, space) = ((g.array, g.alpha), (g.space.0 as f32, g.space.1 as f32));
-                g.shadow_map.get_or_insert_with(|| super::shadows::ShadowMap::new(gl)).render(gl, &casters, dir, target, space, textures)
+                g.shadow_map.get_or_insert_with(|| super::shadows::ShadowMap::new(gl)).render(gl, &casters, &next, target, space, textures)
             }
             false => None,
         };

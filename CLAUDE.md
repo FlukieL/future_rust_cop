@@ -371,7 +371,7 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   picture's triangles that write depth (gmode 1, every corner with a depth) as casters (batched
   vertices, chroma key in the constant colour's place); `post_3d` draws them from the sun
   (orthographic, 4096², view space rebuilt from screen position and depth as `ao::COMMON`'s P;
-  casters past `FAR` 40000 units left out (12000 faded the upper half of the usual view: shadows faded in when walking forward), `FCOP_SHADOW_FAR`; keyed texels cut), the AO's last
+  the map's square fitted to the casters' corners on the screen (the receivers; depth from all casters), its side in steps of 2^(1/4), its corner on texels of a grid fixed in the world and its axes fixed in the world (`next_view` gives the view's translation, camera +0x4c / 16, and the axes made in world space in view space, x / k: edges do not crawl while moving or turning); casters past `FAR` 40000 units left out (12000 faded the upper half of the usual view: shadows faded in when walking forward), `FCOP_SHADOW_FAR`; keyed texels cut), the AO's last
   pass looks every pixel up (hardware PCF, `SUN_GLSL`; full resolution, also with the AO
   off; faces the sun grazes faded in). Only what is on screen casts. Models' faces turned away
   from the camera (the game leaves them out: winding test 0x428c10, hooked `nclip`) are kept
