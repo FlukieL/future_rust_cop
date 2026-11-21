@@ -376,7 +376,7 @@ fn ring(m: &Memory, entries: u32, view: u32) {
     }
     // toward the sun (unit) rises this much (world y): a point h above the ground throws its
     // shadow h / rise along the sun's ray
-    let s = super::shadows::SUN;
+    let s = super::shadows::sun();
     let rise = s[1] / (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
     let mut cast = [0u32; 25];
     let mut cells = vec![0u16; groups.len()];

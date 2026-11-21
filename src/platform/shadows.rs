@@ -33,7 +33,8 @@
 //! lights' pass. REG_DWORD `Shadows` 0 off (default), 1 screen-space, 2 shadow map,
 //! `FCOP_SHADOWS=0/1/2`; REG_DWORD `ShadowQuality` 0...3 Low / Medium (default) / High / Ultra
 //! (`look`), `FCOP_SHADOW_QUALITY=low|mid|high|ultra`; combos in the Advanced Graphics dialog. `FCOP_GBUFFER=shadows` shows the sun's shadow alone;
-//! `FCOP_SHADOW_FAR` (object units) for tests.
+//! `FCOP_SHADOW_FAR` (object units) for tests; the cheats `sun` / `sun_strength` (Shift+F11 / F12) step through
+//! `SUNS` / `STRENGTHS` while playing.
 
 use super::advapi32;
 use super::mem;
@@ -164,9 +165,10 @@ const MATRIX: u32 = 0x58;
 const TRANSLATION: u32 = 0x4c;
 
 /// Toward the sun in the world (y up): high, from the right and behind the start's view.
-pub const SUN: [f32; 3] = [0.45, 1.0, -0.3];
-/// How dark the sun's shadow is (0...1); how far the screen-space one reaches (object units).
-pub const SUN_STRENGTH: f32 = 0.45;
+const SUN: [f32; 3] = [0.45, 1.0, -0.3];
+/// How dark the sun's shadow is (0...1).
+const SUN_STRENGTH: f32 = 0.45;
+/// How far the screen-space shadow reaches (object units).
 pub const SUN_LENGTH: f32 = 900.0;
 /// How far from the camera the shadow map's casters count (object units). Beyond the game's
 /// own drawing in its usual view from above (casters there reach ~20000, half of them past
@@ -207,7 +209,7 @@ pub fn camera() {
         return;
     }
     let row = |r: u32| (0..3).map(|c| m.rd32(cam + MATRIX + 12 * r + 4 * c) as i32 as f32 / 65536.0).collect::<Vec<_>>();
-    let s = unit(SUN);
+    let s = unit(sun());
     let rows = [row(0), row(1), row(2)];
     let view = |w: [f32; 3]| [0, 1, 2].map(|r| rows[r].iter().zip(w).map(|(a, b)| a * b).sum::<f32>());
     let d = view(s);
@@ -228,7 +230,7 @@ pub fn sun_view() -> [f32; 3] {
     if cam == 0 {
         return [0.0, 1.0, 0.0];
     }
-    let s = unit(SUN);
+    let s = unit(sun());
     [0, 1, 2].map(|r| (0..3).map(|c| m.rd32(cam + MATRIX + 12 * r + 4 * c) as i32 as f32 / 65536.0 * s[c as usize]).sum::<f32>())
 }
 
@@ -562,6 +564,76 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 fn unit(a: [f32; 3]) -> [f32; 3] {
     let n = dot(a, a).sqrt().max(1e-9);
     a.map(|c| c / n)
+}
+
+/// Sun directions to compare (Shift+F11 with the `sun` cheat): the first is `SUN`.
+const SUNS: &[(&str, [f32; 3])] = &[
+    ("default: high, right, behind", SUN),
+    ("steep: nearly overhead", [0.15, 1.0, -0.1]),
+    ("low: right, behind", [0.9, 0.6, -0.6]),
+    ("from the left, behind", [-0.45, 1.0, -0.3]),
+    ("from the front, right", [0.45, 1.0, 0.5]),
+    ("very low: evening", [1.0, 0.35, -0.4]),
+];
+/// Shadow strengths to compare (Shift+F12 with the `sun_strength` cheat).
+const STRENGTHS: &[f32] = &[SUN_STRENGTH, 0.3, 0.6, 0.75, 0.9];
+
+/// Each Crime War level's sun (mission file, index in `SUNS`, index in `STRENGTHS`), as the
+/// user chose them with the cheats (2026-11-21). The order is the game's (table 0x488254;
+/// Lax2 is the second part of level 7, loaded at 0x40a6ae once Lax1 is won). Other missions
+/// (Precinct Assault) have `SUN` / `SUN_STRENGTH`.
+const LEVEL_SUNS: &[(&str, usize, usize)] = &[
+    ("m2c", 4, 3),  // 1
+    ("m3a", 2, 2),  // 2
+    ("m3b", 2, 2),  // 3
+    ("ov", 3, 0),   // 4
+    ("m1a1", 0, 3), // 5
+    ("un", 2, 0),   // 6
+    ("lax1", 3, 0), // 7
+    ("lax2", 4, 1), // 8
+    ("m4a1", 4, 2), // 9
+];
+
+/// The sun now: the mission it is for (file name, lower case), the choice in `SUNS` /
+/// `STRENGTHS`; a new mission starts with its own from `LEVEL_SUNS`, the cheats step on.
+static SUN_NOW: Mutex<(String, usize, usize)> = Mutex::new((String::new(), 0, 0));
+
+fn sun_now() -> ([f32; 3], f32) {
+    let mut s = SUN_NOW.lock().unwrap();
+    let path = super::kernel32::LAST_MISSION.lock().unwrap();
+    let file = path.rsplit(['\\', '/']).next().unwrap_or("");
+    if s.0 != file {
+        let (d, k) = LEVEL_SUNS.iter().find(|l| l.0 == file).map_or((0, 0), |l| (l.1, l.2));
+        *s = (file.to_string(), d, k);
+    }
+    (SUNS[s.1].1, STRENGTHS[s.2])
+}
+
+/// Toward the sun in the world (y up, not unit).
+pub fn sun() -> [f32; 3] {
+    sun_now().0
+}
+
+/// How dark the sun's shadow is (0...1).
+pub fn sun_strength() -> f32 {
+    sun_now().1
+}
+
+/// The next of `SUNS` (a debug cheat; until the next mission).
+pub fn next_sun() {
+    sun_now();
+    let mut s = SUN_NOW.lock().unwrap();
+    s.1 = (s.1 + 1) % SUNS.len();
+    let (name, d) = SUNS[s.1];
+    super::log!("sun {}/{}: {name} ({}, {}, {})", s.1 + 1, SUNS.len(), d[0], d[1], d[2]);
+}
+
+/// The next of `STRENGTHS` (a debug cheat; until the next mission).
+pub fn next_strength() {
+    sun_now();
+    let mut s = SUN_NOW.lock().unwrap();
+    s.2 = (s.2 + 1) % STRENGTHS.len();
+    super::log!("sun strength {}/{}: {}", s.2 + 1, STRENGTHS.len(), STRENGTHS[s.2]);
 }
 
 /// The far end of the casters (`FCOP_SHADOW_FAR` for tests).

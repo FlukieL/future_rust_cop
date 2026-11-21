@@ -779,7 +779,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    // Shift+F<n>: a debug cheat with FCOP_CHEATS (the game does not see the key)
+                    // Shift+F<n>: a debug cheat in a `--features cheats` build (the game does not see the key)
                     let f = FN.iter().position(|&k| k == code).map(|i| i as u8 + 1);
                     if let Some(k) = f.filter(|_| self.shift).and_then(super::cheats::by_key) {
                         if down && !event.repeat {
