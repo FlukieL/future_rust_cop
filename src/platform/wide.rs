@@ -143,6 +143,7 @@ pub fn sprite(c: &mut Cpu) {
 
 /// 0x457340(points, flags, n): n points {x, y, z, _} (s16, 8 bytes each), projected in place.
 pub fn points(c: &mut Cpu) {
+    super::scene::check(mem().rd32(c.r[ESP] + 4), mem().rd32(c.r[ESP] + 12));
     let z = zoom();
     if k() != 1.0 || z != 1.0 {
         let m = mem();

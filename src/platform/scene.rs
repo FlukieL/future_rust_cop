@@ -7,8 +7,14 @@
 //! whose +4 points at the `4DVL` count (8-byte vertices x y z pad behind it), +0x24 at the
 //! `3DQL` count (12-byte faces behind it), +0x28 the `3DTL` entries.
 //!
-//! First stage: `FCOP_SCENE_LOG=1` logs each model the first time it is drawn and, for
-//! comparison, the counts of the mission file's `Cobj` resources.
+//! The game's transform (0x4347c0, 0x4580b0, 0x4588e0; row vectors): camera space =
+//! (v * R + p / 16 - c / 16) * C, R the record's matrix (16.16), p its position (20.12), c the
+//! camera's position (camera [0x511f48] +0x7c, 20.12), C its matrix (+0x28, 16.16). So world
+//! space in model units is v * R + p / 16.
+//!
+//! `FCOP_SCENE_LOG=1` logs each model the first time it is drawn, the mission file's `Cobj`
+//! counts for comparison, and every 2 s how far our camera-space points are from the game's
+//! (models not in parts, checked in project_points 0x457340: `check`).
 
 use crate::rt::{Cpu, ESP, call_original};
 use crate::ver::Us;
@@ -27,7 +33,13 @@ struct Model {
 thread_local! {
     static MODELS: RefCell<HashMap<u32, Model>> = RefCell::new(HashMap::new());
     static MISSION: RefCell<String> = const { RefCell::new(String::new()) };
+    /// the record model_draw draws now
+    static CURRENT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// points checked, their largest and summed distance (model units), since the last log
+    static STATS: std::cell::Cell<(u64, f64, f64, std::option::Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0.0, 0.0, None)) };
 }
+
+const CAMERA: Us = Us(0x511f48);
 
 fn log_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -38,8 +50,50 @@ fn log_on() -> bool {
 pub fn model_draw(c: &mut Cpu) {
     if log_on() {
         note(c);
+        CURRENT.set(super::mem().rd32(c.r[ESP] + 4));
     }
     call_original(c, MODEL_DRAW.at());
+    CURRENT.set(0);
+}
+
+/// project_points 0x457340 gets `n` camera-space points at `p` (before widescreen scales them):
+/// compared with ours when they are a whole model's (not in parts).
+pub fn check(p: u32, n: u32) {
+    let record = CURRENT.get();
+    if record == 0 {
+        return;
+    }
+    let m = super::mem();
+    let model = m.rd32(record);
+    let vl = m.rd32(m.rd32(model + 0x1c) + 4);
+    if m.rd32(model + 0xc) & 0x2000000 != 0 || m.rd32(vl) != n {
+        return;
+    }
+    let rd = |a: u32| m.rd32(a) as i32 as f64;
+    let r: Vec<f64> = (0..9).map(|k| rd(record + 4 + 4 * k) / 65536.0).collect();
+    let pos: Vec<f64> = (0..3).map(|k| rd(record + 0x28 + 4 * k) / 16.0).collect();
+    let cam = m.rd32(CAMERA.at());
+    let cm: Vec<f64> = (0..9).map(|k| rd(cam + 0x28 + 4 * k) / 65536.0).collect();
+    let cp: Vec<f64> = (0..3).map(|k| rd(cam + 0x7c + 4 * k) / 16.0).collect();
+    let (mut count, mut max, mut sum, mut since) = STATS.get();
+    for k in 0..n {
+        let v: Vec<f64> = (0..3).map(|i| m.rd16(vl + 4 + 8 * k + 2 * i) as i16 as f64).collect();
+        let w: Vec<f64> = (0..3).map(|j| (0..3).map(|i| v[i] * r[3 * i + j]).sum::<f64>() + pos[j] - cp[j]).collect();
+        let ours: Vec<f64> = (0..3).map(|j| (0..3).map(|i| w[i] * cm[3 * i + j]).sum()).collect();
+        let game: Vec<f64> = (0..3).map(|i| m.rd16(p + 8 * k + 2 * i) as i16 as f64).collect();
+        let d = (0..3).map(|i| (ours[i] - game[i]).abs()).fold(0.0, f64::max);
+        count += 1;
+        sum += d;
+        max = max.max(d);
+    }
+    let now = std::time::Instant::now();
+    let since = *since.get_or_insert(now);
+    if now - since >= std::time::Duration::from_secs(2) {
+        super::log!("scene: {count} points checked, distance to the game's mean {:.2} max {:.2} (model units)", sum / count as f64, max);
+        STATS.set((0, 0.0, 0.0, Some(now)));
+    } else {
+        STATS.set((count, max, sum, Some(since)));
+    }
 }
 
 fn note(c: &mut Cpu) {

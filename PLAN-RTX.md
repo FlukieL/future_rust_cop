@@ -71,6 +71,13 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
         behind, +0x28 `3DTL`, +0x34 bounding spheres. Checked: all 37 models drawn at the first
         mission's start match a `Cobj` of the mission file in vertex and face count
         (`FCOP_SCENE_LOG=1`). BLAS can be built from guest memory, keyed by the model pointer.
+      - [x] World space checked numerically (2026-11-21): world = v * R + p / 16 (row vectors,
+        model units), camera space = (world - c / 16) * C with the camera [0x511f48] position
+        c at +0x7c (20.12) and matrix C at +0x28 (16.16). Against the game's camera-space
+        points in project_points (models not in parts, ~1 million points per 2 s while
+        walking): mean 1.35, max 2.5 model units, the game's integer rounding.
+      - [ ] Models in parts (flags 0x2000000: robot, animated things): per part 0x428380
+        (part record 0x14 bytes, [+0x14] list, +7 & 0x80 last) with the frame +0x48.
       - The whole level is needed, not only the visible part: shadows and reflections come
         from things off screen too. The ring of `shadows.rs` shows how to reach them.
 - [ ] Each instance gets a stable key (actor or object address plus model), so its last
