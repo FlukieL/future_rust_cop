@@ -140,20 +140,24 @@ pub fn draw_glide(c: &mut Cpu) {
     'passes: for pass in 0..4 {
         glide::set_view(if wide { hud_view(pass) } else { View::Full });
         for text in [false, true] {
-            let mut order: Vec<&Record> = recs.iter().filter(|r| r.pass == pass && r.text == text).collect();
             // with the depth buffer the terrain comes first (its order kept, then the rest's):
             // what lies on the ground (decals) is never painted over by a ground tile the
             // game's depth buckets put after it; what the ground hides the depth test hides
             // (semi-transparent decals too: oil on the ground flickered while they kept their
-            // place among the tiles)
-            if pass == 0 && !text && super::zbuffer::enabled() {
-                order.sort_by_key(|r| !super::terrain::is_terrain(r.at));
+            // place among the tiles). Records that only cast shadows last: among the drawn
+            // ones each of their state changes split the batches (more draw calls). Each
+            // record's kind is looked up once (in the sort's key it cost ~10% of the frame).
+            let (zfirst, cast) = (pass == 0 && !text && super::zbuffer::enabled(), pass == 0 && !text && super::shadows::has_cast());
+            let mut order: Vec<(u8, bool, &Record)> = recs
+                .iter()
+                .filter(|r| r.pass == pass && r.text == text)
+                .map(|r| (if cast { super::shadows::cast_kind(r.at) } else { 0 }, zfirst && !super::terrain::is_terrain(r.at), r))
+                .collect();
+            if zfirst || cast {
+                order.sort_by_key(|&(k, later, _)| (k != 0, later));
             }
-            // records that only cast shadows last: among the drawn ones each of their state
-            // changes split the batches (more draw calls)
-            if pass == 0 && !text && super::shadows::has_cast() {
-                order.sort_by_key(|r| super::shadows::cast_kind(r.at) != 0);
-            }
+            let kinds: Vec<u8> = order.iter().map(|o| o.0).collect();
+            let order: Vec<&Record> = order.into_iter().map(|o| o.2).collect();
             let mut sel = order.iter();
             let Some(first) = sel.next() else { continue };
             let mut last = first.at;
@@ -178,7 +182,7 @@ pub fn draw_glide(c: &mut Cpu) {
             glide::set_space(Some(if text { (gw, gh) } else { (2560, 1920) }));
             // the records the 3D picture's primitives come from (before `light` changes them)
             if pass == 0 && !text && super::effects::wanted() {
-                super::effects::begin(order.iter().filter(|r| super::shadows::cast_kind(r.at) != 2).map(|r| r.at));
+                super::effects::begin(order.iter().zip(&kinds).filter(|o| *o.1 != 2).map(|o| o.0.at));
             }
             // the 3D picture in PlayStation lighting (the HUD as the game draws it)
             let lit = (pass == 0 && !text).then(|| light::begin(order.iter().map(|r| (r.at, if r.kind >= 5 { 4 } else { r.kind as u32 }))));

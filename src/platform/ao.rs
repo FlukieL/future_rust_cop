@@ -64,7 +64,7 @@ pub(super) fn debug_view() -> i32 {
 
 /// A fast hash for the points' keys (std's SipHash cost most of the time spent here).
 #[derive(Default, Clone, Copy)]
-struct KeyHash(u64);
+pub(crate) struct KeyHash(u64);
 
 impl std::hash::Hasher for KeyHash {
     fn finish(&self) -> u64 {
@@ -84,6 +84,9 @@ impl std::hash::Hasher for KeyHash {
 }
 
 type KeyMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<KeyHash>>;
+
+/// A set of display list record addresses (looked up for every record each picture).
+pub(crate) type RecordSet = std::collections::HashSet<u32, std::hash::BuildHasherDefault<KeyHash>>;
 
 /// The cells `depth_near` looks in: this many units square.
 const CELL: f32 = 160.0;

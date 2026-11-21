@@ -503,7 +503,7 @@ fn tiles(m: &Memory, sect: u32, vbuf: u32, ca: i32, cb: i32, gofs: u32, ring: u1
 thread_local! {
     /// The display list records the terrain made for the picture being drawn (`walker.rs` draws
     /// them first with the depth buffer on: the ground under all that lies on it).
-    static RECORDS: std::cell::RefCell<std::collections::HashSet<u32>> = Default::default();
+    static RECORDS: std::cell::RefCell<super::ao::RecordSet> = Default::default();
 }
 
 /// Record `r` is a terrain tile of this picture.

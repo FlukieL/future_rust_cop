@@ -224,7 +224,7 @@ impl Gl {
             gl.use_program(Some(self.blit));
             gl.bind_vertex_array(Some(self.vao));
             gl.active_texture(glow::TEXTURE0);
-            let u = |n: &str| gl.get_uniform_location(self.blit, n);
+            let u = |n: &'static str| uniform(gl, self.blit, n);
             gl.uniform_4_f32(u("rect").as_ref(), x0 as f32, y1 as f32, x1 as f32, y0 as f32);
             gl.uniform_1_i32(u("tex").as_ref(), 0);
             gl.disable(glow::BLEND);
@@ -304,7 +304,7 @@ impl Gl {
             gl.use_program(Some(self.blit));
             gl.bind_vertex_array(Some(self.vao));
             gl.active_texture(glow::TEXTURE0);
-            let u = |n: &str| gl.get_uniform_location(self.blit, n);
+            let u = |n: &'static str| uniform(gl, self.blit, n);
             gl.uniform_4_f32(u("rect").as_ref(), x0, y1, x1, y0);
             gl.uniform_1_i32(u("tex").as_ref(), 0);
             gl.uniform_1_i32(u("words").as_ref(), 1);
