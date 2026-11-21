@@ -33,6 +33,10 @@ pub struct Gl {
     /// what is shown: a texture, its size, whether its pixels are 0RGB/ARGB words (2D frames:
     /// the bytes are B G R A), and the gamma to show it with
     pub shown: (glow::Texture, u32, u32, bool, f32),
+    /// Vulkan presents the pictures (`vk.rs`, FCOP_VULKAN=1); GL's context is then on a hidden
+    /// window of its own
+    vk: Option<super::vk::Vk>,
+    _gl_window: Option<Window>,
 }
 
 thread_local! {
@@ -134,6 +138,29 @@ fn swap_interval(vsync: bool) -> SwapInterval {
 }
 
 impl Gl {
+    /// Create the game's window: shown by Vulkan with FCOP_VULKAN=1 when it can, else by GL.
+    pub fn new_window(el: &ActiveEventLoop, attrs: WindowAttributes) -> (Window, Gl) {
+        if super::vk::wanted() {
+            match Self::with_vulkan(el, attrs.clone()) {
+                Ok(r) => return r,
+                Err(e) => super::log!("vulkan: {e}; OpenGL shows the window"),
+            }
+        }
+        Self::new(el, attrs)
+    }
+
+    /// The window for Vulkan, GL on a hidden one.
+    fn with_vulkan(el: &ActiveEventLoop, attrs: WindowAttributes) -> Result<(Window, Gl), String> {
+        let hidden = Window::default_attributes().with_visible(false).with_inner_size(winit::dpi::PhysicalSize::new(64, 64));
+        let (gl_window, mut g) = Self::new(el, hidden);
+        let win = el.create_window(attrs).map_err(|e| format!("window: {e}"))?;
+        let display = g.context.display();
+        let v = super::vk::Vk::new(&win, &g.gl, &|s| display.get_proc_address(s))?;
+        g.vk = Some(v);
+        g._gl_window = Some(gl_window);
+        Ok((win, g))
+    }
+
     /// Create the window with an OpenGL 3.3 context.
     pub fn new(el: &ActiveEventLoop, attrs: WindowAttributes) -> (Window, Gl) {
         let template = glutin::config::ConfigTemplateBuilder::new().with_alpha_size(8);
@@ -165,7 +192,7 @@ impl Gl {
         upload(&gl, frame, &vec![0; 640 * 480], 640, 480);
         let overlay = texture(&gl, true);
         let video = texture(&gl, true);
-        let g = Gl { gl, surface, context, blit, vao, frame, overlay, has_overlay: false, stats: None, video, video_size: None, shown: (frame, 640, 480, true, 1.0) };
+        let g = Gl { gl, surface, context, blit, vao, frame, overlay, has_overlay: false, stats: None, video, video_size: None, shown: (frame, 640, 480, true, 1.0), vk: None, _gl_window: None };
         (win, g)
     }
 
@@ -192,12 +219,18 @@ impl Gl {
 
     /// V-Sync: the swap waits for the screen's next refresh.
     pub fn set_vsync(&self, on: bool) {
+        if let Some(v) = &self.vk {
+            return v.set_vsync(on);
+        }
         if let Err(e) = self.surface.set_swap_interval(&self.context, swap_interval(on)) {
             super::log!("warn: V-Sync {}: {e}", if on { "on" } else { "off" });
         }
     }
 
     pub fn resize(&self, w: u32, h: u32) {
+        if let Some(v) = &self.vk {
+            return v.resized();
+        }
         if let (Some(w), Some(h)) = (NonZeroU32::new(w), NonZeroU32::new(h)) {
             self.surface.resize(&self.context, w, h);
         }
@@ -207,13 +240,18 @@ impl Gl {
     /// read back the picture's area as 0RGB pixels.
     pub fn draw(&mut self, w: u32, h: u32, shot: bool) -> Option<(Vec<u32>, u32, u32)> {
         let stats = super::stats::on().then(super::stats::pixels);
+        // with Vulkan: into the image it presents, the window's size
+        let target = match &mut self.vk {
+            Some(v) => Some(v.begin(&self.gl, w, h)?),
+            None => None,
+        };
         let gl = &self.gl;
         let (tex, fw, fh, words, gamma) = self.shown;
         let (ox, oy, s) = super::window::fit(fw, fh, w, h);
         let (x0, y0) = (ox / w as f64 * 2.0 - 1.0, 1.0 - oy / h as f64 * 2.0);
         let (x1, y1) = (x0 + fw as f64 * s / w as f64 * 2.0, y0 - fh as f64 * s / h as f64 * 2.0);
         unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, target);
             gl.viewport(0, 0, w as i32, h as i32);
             gl.disable(glow::SCISSOR_TEST);
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
@@ -284,7 +322,12 @@ impl Gl {
         if let Some(new) = stats {
             self.draw_stats(new, w, h);
         }
-        let _ = self.surface.swap_buffers(&self.context);
+        match &mut self.vk {
+            Some(v) => v.end(&self.gl),
+            None => {
+                let _ = self.surface.swap_buffers(&self.context);
+            }
+        }
         out
     }
 

@@ -168,6 +168,13 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   with FCOP_INPUT "4000:click@160,162 5000:click@317,120 6000:click@300,146 7000:click@232,386",
   the other "6000:click@160,192 7000:click@317,73 8000:click@300,99 10000:click@320,125
   11000:click@232,435", then START (484,303) on both),
+  `vk.rs` (PLAN-RTX.md step 1, `FCOP_VULKAN=1`: Vulkan (ash, loaded at run time) presents;
+  GL draws the window's picture into an image both share (GL_EXT_memory_object / _semaphore,
+  Win32 handles; the memory handle may be closed only after glTexStorageMem2DEXT, else
+  NVIDIA's GL draws into memory of its own: black), its context on a hidden window
+  (`Gl::new_window`, window events of other windows ignored); Vulkan copies it flipped into the
+  swapchain (FIFO with V-Sync, else IMMEDIATE/MAILBOX). No usable device: GL as before.
+  `FCOP_VK_VALIDATE=1` logs the validation layer's messages),
   `window.rs` (winit window and input; main thread only, other threads' frames are shown
   at the next pump), `gl.rs` (the OpenGL 3.3 context: shows a 2D frame or a rendered texture,
   letterboxed, with the dialog overlay on top; alpha is not written to the window, as Wayland

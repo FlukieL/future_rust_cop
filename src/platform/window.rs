@@ -653,7 +653,7 @@ impl App {
             Some((w, h)) => attrs.with_inner_size(winit::dpi::PhysicalSize::new(w, h)),
             None => attrs.with_inner_size(LogicalSize::new(1280.0, 960.0)),
         };
-        let (win, gl) = Gl::new(el, attrs);
+        let (win, gl) = Gl::new_window(el, attrs);
         // to the front, while our start window still has the foreground (Windows lets only the
         // foreground's process bring a window forward)
         win.focus_window();
@@ -711,7 +711,11 @@ impl ApplicationHandler for App {
         self.create(el);
     }
 
-    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, e: WindowEvent) {
+    fn window_event(&mut self, _: &ActiveEventLoop, id: WindowId, e: WindowEvent) {
+        // only the game's window (with Vulkan GL has a hidden one of its own)
+        if self.window.as_ref().is_some_and(|w| w.id() != id) {
+            return;
+        }
         match e {
             WindowEvent::CloseRequested => self.push(Input::Close),
             WindowEvent::Focused(f) => {

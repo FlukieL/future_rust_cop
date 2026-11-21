@@ -23,16 +23,25 @@ Hardware here: RTX 4090 (Ada). It supports DLSS Super Resolution, DLAA, Frame Ge
 
 ## Step 1: Vulkan base, present through Vulkan
 
-- [ ] `ash` instance and device on the winit window (surface from raw-window-handle).
+- [x] `ash` instance and device on the winit window (surface from raw-window-handle).
       The RT extensions (`VK_KHR_acceleration_structure`, `VK_KHR_ray_query`,
       `VK_KHR_ray_tracing_pipeline`) are enabled when present, never required.
-- [ ] Swapchain: FIFO for V-Sync, MAILBOX or IMMEDIATE without. It is made again on
+- [x] Swapchain: FIFO for V-Sync, MAILBOX or IMMEDIATE without. It is made again on
       resize, on fullscreen (Alt+Enter) and when the window is minimized.
-- [ ] GL interop: GL renders the finished picture (HUD and dialog overlay included) into an
+- [x] GL interop: GL renders the finished picture (HUD and dialog overlay included) into an
       image that both APIs share (`GL_EXT_memory_object_win32` / `_fd`,
       `GL_EXT_semaphore`). Vulkan copies it into the swapchain image and presents it.
-- [ ] The GL context then needs no window of its own: a hidden window on Windows,
-      surfaceless EGL on Linux. The Linux splash (`fcop --splash`) keeps `gl.rs`.
+- [x] The GL context then lives on a hidden window of its own (Windows tested; Linux not
+      yet). The Linux splash (`fcop --splash`) keeps `gl.rs`.
+- [x] Pitfall found (2026-11-21): NVIDIA's GL takes imported memory by its Win32 handle only
+      at glTexStorageMem2DEXT. Closed right after the import, GL silently drew into memory of
+      its own: a black window at ~40 fps, no GL error, validation clean. The handle is closed
+      after the texture storage now; the two semaphore handles stay open.
+- [ ] Speed: first mission start, 1280x960, V-Sync off: ~435 fps with Vulkan against ~557
+      with GL. ~13% of the game thread waits inside nvoglv64 (a GL call per picture, likely
+      glWaitSemaphoreEXT on the last copy). Next try: a ring of 2-3 shared images, so GL never
+      waits for the copy of the picture before.
+- [ ] Linux (EXT_memory_object_fd, the hidden window under Wayland/X11) in the CachyOS VM.
 - [ ] Check: same picture as GL (`FCOP_SHOT`, compared pixel by pixel), frame times with
       `FCOP_FRAMELOG` and CapFrameX, V-Sync pacing as in `fps.rs` (memory: losses at 480 Hz
       were inside SwapBuffers; measure present the same way).
