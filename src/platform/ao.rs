@@ -409,6 +409,21 @@ uniform float sun_k;
 uniform sampler2D rmask; // traced: G 1 where the ray toward the sun is blocked
 uniform vec3 rsun;       // traced: toward the sun, view space
 out vec4 o;
+// traced: the share of rays blocked, filtered over 5x5 pixels on this surface (each pixel turns
+// its rays into the sun disc otherwise: noise); its depth is rmask's R
+float traced(ivec2 q, float z) {
+    ivec2 size = textureSize(rmask, 0);
+    float tol = 0.02 * z + 4.0;
+    float sum = 0.0, wsum = 0.0;
+    for (int j = -2; j <= 2; j++)
+        for (int i = -2; i <= 2; i++) {
+            vec2 m = texelFetch(rmask, clamp(q + ivec2(i, j), ivec2(0), size - 1), 0).rg;
+            float w = m.r > 0.0 ? max(1.0 - abs(m.r - z) / tol, 0.0) : 0.0;
+            sum += m.g * w;
+            wsum += w;
+        }
+    return wsum > 1e-4 ? sum / wsum : texelFetch(rmask, q, 0).g;
+}
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
     vec2 g = G(q);
@@ -458,7 +473,7 @@ void main() {
         vec3 p = P(vec2(q), z);
         vec3 n = N(q, z, p, 1);
         // traced: faces turned away and those the sun grazes are the game's own shading, as the map's
-        float s = use_sun == 2 ? texelFetch(rmask, q, 0).g * smoothstep(0.02, 0.15, dot(n, normalize(rsun))) : sun_shadow(p, n);
+        float s = use_sun == 2 ? traced(q, z) * smoothstep(0.02, 0.15, dot(n, normalize(rsun))) : sun_shadow(p, n);
         v *= 1.0 - sun_k * s;
     }
     if (show == 2) { o = vec4(vec3(v), 1.0); return; }

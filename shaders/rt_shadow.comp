@@ -1,7 +1,9 @@
 #version 460
 // The sun's shadow by rays (PLAN-RTX.md step 5, REG_DWORD `Shadows` 3): per pixel the place the
 // game's depth gives (R of the shared G-buffer copy, view-space z), one ray toward the sun
-// against the scene's TLAS; G = 1 where it is blocked. Compiled to rt_shadow.spv by
+// against the scene's TLAS; G = the share of rays blocked: a few rays into the sun disc give soft
+// edges (penumbras grow with the distance to what casts), their noise is filtered in the AO's
+// last pass. Compiled to rt_shadow.spv by
 // glslc --target-env=vulkan1.2 -O shaders/rt_shadow.comp -o shaders/rt_shadow.spv
 #extension GL_EXT_ray_query : require
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -20,7 +22,35 @@ layout(push_constant) uniform View {
     vec4 lens;
     // toward the sun in camera space (unscaled x)
     vec4 sun;
+    // x tan of the sun disc's radius, y rays a pixel
+    vec4 soft;
 } v;
+
+// whether a ray from o along d meets something that covers (keyed texels let it through)
+bool blocked(vec3 o, vec3 d) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0xff, o, 1.0, d, 1.0e5);
+    while (rayQueryProceedEXT(rq)) {
+        // a triangle with keyed texels: blocks where its texel is not keyed out (black)
+        int base = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false) & 0x7fffff;
+        bool hit = true;
+        if (base > 0) {
+            uvec2 m = mats[base - 1 + rayQueryGetIntersectionPrimitiveIndexEXT(rq, false)];
+            uint page = m.y >> 16;
+            if (page != 0xffffu) {
+                vec2 b = rayQueryGetIntersectionBarycentricsEXT(rq, false);
+                vec2 t0 = vec2(m.x & 255u, (m.x >> 8) & 255u);
+                vec2 t1 = vec2((m.x >> 16) & 255u, m.x >> 24);
+                vec2 t2 = vec2(m.y & 255u, (m.y >> 8) & 255u);
+                uvec2 t = uvec2(clamp(t0 * (1.0 - b.x - b.y) + t1 * b.x + t2 * b.y, 0.0, 255.0));
+                uint i = page * 65536u + t.y * 256u + t.x;
+                if ((i >> 5) < uint(covered.length())) hit = ((covered[i >> 5] >> (i & 31u)) & 1u) != 0u;
+            }
+        }
+        if (hit) rayQueryConfirmIntersectionEXT(rq);
+    }
+    return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
 
 void main() {
     ivec2 q = ivec2(gl_GlobalInvocationID.xy);
@@ -37,28 +67,24 @@ void main() {
         // the surface must not shadow itself
         vec3 o = p - normalize(mat3(v.axes) * c) * (2.0 + 0.002 * z);
         vec3 d = normalize(mat3(v.axes) * v.sun.xyz);
-        rayQueryEXT rq;
-        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0xff, o, 1.0, d, 1.0e5);
-        while (rayQueryProceedEXT(rq)) {
-            // a triangle with keyed texels: blocks where its texel is not keyed out (black)
-            int base = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false) & 0x7fffff;
-            bool hit = true;
-            if (base > 0) {
-                uvec2 m = mats[base - 1 + rayQueryGetIntersectionPrimitiveIndexEXT(rq, false)];
-                uint page = m.y >> 16;
-                if (page != 0xffffu) {
-                    vec2 b = rayQueryGetIntersectionBarycentricsEXT(rq, false);
-                    vec2 t0 = vec2(m.x & 255u, (m.x >> 8) & 255u);
-                    vec2 t1 = vec2((m.x >> 16) & 255u, m.x >> 24);
-                    vec2 t2 = vec2(m.y & 255u, (m.y >> 8) & 255u);
-                    uvec2 t = uvec2(clamp(t0 * (1.0 - b.x - b.y) + t1 * b.x + t2 * b.y, 0.0, 255.0));
-                    uint i = page * 65536u + t.y * 256u + t.x;
-                    if ((i >> 5) < uint(covered.length())) hit = ((covered[i >> 5] >> (i & 31u)) & 1u) != 0u;
-                }
+        int n = int(v.soft.y);
+        if (v.soft.x == 0.0) {
+            shade = blocked(o, d) ? 1.0 : 0.0;
+        } else {
+            // n points on the disc in rings of equal area, turned and shifted per pixel by
+            // interleaved gradient noise: neighbours sample other points, the filter afterwards
+            // averages them (one ray a pixel is enough for it)
+            vec3 t = normalize(cross(d, abs(d.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+            vec3 u = cross(d, t);
+            float turn = 6.2831853 * fract(52.9829189 * fract(dot(vec2(q), vec2(0.06711056, 0.00583715))));
+            float shift = fract(52.9829189 * fract(dot(vec2(q) + vec2(47.0, 17.0), vec2(0.00583715, 0.06711056))));
+            for (int i = 0; i < n; i++) {
+                float a = float(i) * 2.3999632 + turn;
+                float r = sqrt((float(i) + shift) / float(n)) * v.soft.x;
+                if (blocked(o, normalize(d + r * (cos(a) * t + sin(a) * u)))) shade += 1.0;
             }
-            if (hit) rayQueryConfirmIntersectionEXT(rq);
+            shade /= float(n);
         }
-        if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) shade = 1.0;
     }
     imageStore(gbuf, q, vec4(z, shade, 0.0, 0.0));
 }

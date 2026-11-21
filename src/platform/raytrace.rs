@@ -78,6 +78,8 @@ pub struct Rt {
     sets: [(vk::DescriptorSet, Option<(u64, vk::ImageView, vk::Buffer, vk::Buffer)>); 2],
     /// the picture rays are shot into (storage image), its size
     image: Option<(vk::Image, vk::DeviceMemory, vk::ImageView, u32, u32)>,
+    /// `FCOP_RT_TIME=1` (a test): GPU time of the sun's rays, logged every 2 s
+    timing: Option<Timing>,
 }
 
 fn err(what: &str) -> impl Fn(vk::Result) -> String + '_ {
@@ -120,6 +122,14 @@ impl Rt {
             let pool = device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(2).pool_sizes(&sizes), None).map_err(err("descriptor pool"))?;
             let both = [set_layout, set_layout];
             let sets = device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&both)).map_err(err("descriptor set"))?;
+            let timing = match std::env::var("FCOP_RT_TIME").is_ok_and(|v| v == "1") {
+                true => {
+                    let pool = device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(3), None).map_err(err("query pool"))?;
+                    let period = instance.get_physical_device_properties(phys).limits.timestamp_period as f64;
+                    Some(Timing { pool, period, pending: false, sum: [0.0; 2], count: 0, since: std::time::Instant::now() })
+                }
+                false => None,
+            };
             super::log!("raytrace: ready");
             Ok(Rt {
                 device: device.clone(),
@@ -140,6 +150,7 @@ impl Rt {
                 shadow,
                 sets: [(sets[0], None), (sets[1], None)],
                 image: None,
+                timing,
             })
         }
     }
@@ -419,16 +430,28 @@ impl Rt {
     /// camera space with x narrowed by widescreen's k, as the GL passes have it) is blocked.
     /// Recorded into `cmd`; the one recorded before is done.
     pub fn shadow(&mut self, cmd: vk::CommandBuffer, view: vk::ImageView, w: u32, h: u32, frame: &Frame, sun: [f32; 3]) -> Result<(), String> {
+        if let Some(t) = &mut self.timing {
+            unsafe { t.begin(&self.device, cmd) };
+        }
         self.scene(cmd, 2, frame)?;
+        if let Some(t) = &self.timing {
+            unsafe { self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_COMMANDS, t.pool, 1) };
+        }
         let set = self.set(1, view);
         let mut push = camera_push(frame, h);
         push[24..27].copy_from_slice(&[sun[0] / frame.k, sun[1], sun[2]]);
+        let (radius, rays) = soft();
+        push[28] = radius.to_radians().tan();
+        push[29] = rays as f32;
         unsafe {
             let d = &self.device;
             d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.shadow);
             d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[set], &[]);
             d.cmd_push_constants(cmd, self.layout, vk::ShaderStageFlags::COMPUTE, 0, std::slice::from_raw_parts(push.as_ptr() as *const u8, PUSH as usize));
             d.cmd_dispatch(cmd, w.div_ceil(8), h.div_ceil(8), 1);
+            if let Some(t) = &self.timing {
+                d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, t.pool, 2);
+            }
         }
         Ok(())
     }
@@ -548,6 +571,60 @@ fn instance(t: [f32; 12], kind: u32, blas: u64) -> vk::AccelerationStructureInst
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: blas },
     }
 }
+
+/// GPU timestamps around the sun's rays (`FCOP_RT_TIME=1`): the scene's build, the rays.
+struct Timing {
+    pool: vk::QueryPool,
+    /// ns a tick
+    period: f64,
+    /// timestamps written by the last recording (done when the next one starts: `sun_rays` waits)
+    pending: bool,
+    sum: [f64; 2],
+    count: u32,
+    since: std::time::Instant,
+}
+
+impl Timing {
+    /// Takes the last recording's times and starts this one's.
+    unsafe fn begin(&mut self, d: &ash::Device, cmd: vk::CommandBuffer) {
+        unsafe {
+            if self.pending {
+                let mut t = [0u64; 3];
+                if d.get_query_pool_results(self.pool, 0, &mut t, vk::QueryResultFlags::TYPE_64).is_ok() {
+                    self.sum[0] += (t[1] - t[0]) as f64 * self.period;
+                    self.sum[1] += (t[2] - t[1]) as f64 * self.period;
+                    self.count += 1;
+                }
+            }
+            if self.since.elapsed().as_secs_f64() >= 2.0 && self.count > 0 {
+                let n = self.count as f64 * 1000.0;
+                super::log!("raytrace: µs a view: scene {:.0}, sun's rays {:.0}", self.sum[0] / n, self.sum[1] / n);
+                (self.sum, self.count, self.since) = ([0.0; 2], 0, std::time::Instant::now());
+            }
+            d.cmd_reset_query_pool(cmd, self.pool, 0, 3);
+            d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, self.pool, 0);
+            self.pending = true;
+        }
+    }
+}
+
+/// Soft edges of the sun's shadow: the sun disc's radius in degrees (`FCOP_RT_SOFT`, 0 hard)
+/// and the rays a pixel shoots into it (`FCOP_RT_RAYS`, 1...16); tests, the defaults are the
+/// setting.
+fn soft() -> (f32, u32) {
+    static S: std::sync::OnceLock<(f32, u32)> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        let var = |n: &str| std::env::var(n).ok().and_then(|v| v.parse::<f32>().ok());
+        let radius = var("FCOP_RT_SOFT").unwrap_or(SUN_RADIUS).max(0.0);
+        let rays = if radius == 0.0 { 1 } else { var("FCOP_RT_RAYS").map_or(SUN_RAYS, |n| n as u32).clamp(1, 16) };
+        (radius, rays)
+    })
+}
+
+/// The sun disc's radius in degrees (the real sun's is 0.27: shadows nearly as hard as one ray's)
+/// and the rays into it; the noise between them is filtered in the AO's last pass.
+const SUN_RADIUS: f32 = 1.0;
+const SUN_RAYS: u32 = 4;
 
 /// `FCOP_RT_HIGH=<model units>` (a test): the rays' picture from that high above the camera.
 fn high() -> Option<f32> {

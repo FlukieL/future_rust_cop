@@ -308,7 +308,12 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   (without OPAQUE: candidates); the instance's custom index is bit 23 model | its first keyed
   material + 1, the shader confirms a candidate where the barycentric texel covers (all
   non-opaque BLAS halved the frame rate; split: no cost seen). First mission start,
-  1280x960, MSAA 8, AO on: ~530 fps against the shadow map's ~320.
+  1280x960, MSAA 8, AO on: ~530 fps against the shadow map's ~320. Soft edges: 4 rays a pixel
+  into a sun disc of 1° radius (`raytrace::SUN_RADIUS` / `SUN_RAYS`; equal-area rings turned
+  and shifted per pixel by interleaved gradient noise), G = share blocked, filtered over 5x5
+  pixels of like depth in the AO's last pass (`traced`); `FCOP_RT_SOFT=<degrees>` (0 hard),
+  `FCOP_RT_RAYS=<n>`. `FCOP_RT_TIME=1` logs GPU timestamps every 2 s: scene build ~98 µs a
+  view, rays ~42 µs a ray.
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
   path 0x4397cd, so vertices arrive in 2560x1920 units; text (type 6, game pixels) is drawn in

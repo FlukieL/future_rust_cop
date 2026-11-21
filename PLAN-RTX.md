@@ -28,12 +28,20 @@ Sun shadows by ray query work (2026-11-21, `Shadows` 3 "Ray Traced", step 5's fi
   (models' `3DTL`, terrain's texture words), the mission's pages as coverage bits; only
   triangles whose texel box has a black texel are tested (a geometry of their own in each
   BLAS: making whole BLAS non-opaque halved the frame rate, ~540 -> ~280; split ~540).
+- Soft edges (2026-11-22): 4 rays a pixel into a sun disc of 1° radius (points on rings of equal
+  area, turned and shifted per pixel by interleaved gradient noise), G = the share blocked,
+  filtered over 5x5 pixels of the same depth in the AO's last pass. Penumbras grow with the
+  distance to the caster; 1° keeps a lattice's stripes, 2° washes them out; 1 ray was blotchy.
+  `FCOP_RT_SOFT=<degrees>` (0 hard), `FCOP_RT_RAYS=<n>` to compare.
+- GPU times (`FCOP_RT_TIME=1`, timestamps, first mission start 1280x960): the scene's build
+  (TLAS, instances) ~98 µs a view, the rays ~42 µs a ray a pixel (hard 47, 4 rays 170).
 
 Next:
 - Alpha test open points: scrolled terrain textures (tw & 0x800) are tested unscrolled;
   semi-transparent faces (glass, PS1 STP) still cast fully; HD replacement textures' coverage
   is not used (the original page's).
-- Soft edges: a few jittered rays toward a sun disc, or one ray and a blur along the surface.
+- The scene's build (~98 µs a view) is now more than one ray: TLAS update instead of rebuild,
+  instances kept between pictures.
 - Compare in more levels and at night/evening suns (`sun` cheat); the two dark lines at block
   borders seen from above (step 2) may show as thin shadow lines.
 
@@ -188,7 +196,7 @@ In this order, each with its own setting, each compared against the current effe
 - [x] Sun shadows by ray query: per pixel the world position from the depth, one ray to the
       sun against the TLAS (2026-11-21, `Shadows` 3, see "Where we stand").
 - [x] Keyed texels by an alpha test in the ray query (2026-11-21).
-- [ ] Soft edges.
+- [x] Soft edges (2026-11-22).
 - [ ] Replace the shadow map and its ring once the rays look as good everywhere.
 - [ ] Shadows of the dynamic lights (`lights.rs`) by rays instead of the screen ray march.
 - [ ] RT ambient occlusion instead of SSAO.
