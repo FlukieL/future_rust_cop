@@ -30,8 +30,8 @@
 //! The sun's shadow map is looked up in the AO's last pass (`SUN_GLSL`, also with the AO off),
 //! at Low quality in its half-resolution pass, blurred with it; the screen-space one (the ray
 //! march, `Mode::ScreenSpace`, the older way) there too. The lights' shadows go into the
-//! lights' pass. REG_DWORD `Shadows` 0 off (default), 1 screen-space, 2 shadow map,
-//! `FCOP_SHADOWS=0/1/2`; REG_DWORD `ShadowQuality` 0...3 Low / Medium (default) / High / Ultra
+//! lights' pass. REG_DWORD `Shadows` 0 off (default), 1 screen-space, 2 shadow map, 3 ray
+//! traced (`Mode::Rays`, only with Vulkan: "Ray Traced" is listed then), `FCOP_SHADOWS=0/1/2/3`; REG_DWORD `ShadowQuality` 0...3 Low / Medium (default) / High / Ultra
 //! (`look`), `FCOP_SHADOW_QUALITY=low|mid|high|ultra`; combos in the Advanced Graphics dialog. `FCOP_GBUFFER=shadows` shows the sun's shadow alone;
 //! `FCOP_SHADOW_FAR` (object units) for tests; the cheats `sun` / `sun_strength` (Shift+F11 / F12) step through
 //! `SUNS` / `STRENGTHS` while playing.
@@ -51,6 +51,9 @@ pub enum Mode {
     ScreenSpace = 1,
     /// the shadow map (`ShadowMap`)
     Map = 2,
+    /// a ray per pixel toward the sun against our scene (`raytrace.rs`, PLAN-RTX.md step 5;
+    /// only with `FCOP_VULKAN=1` and a device with ray queries, else none)
+    Rays = 3,
 }
 
 /// The shadow map is offered in Advanced Graphics (off 2026-11-16 as not finished, offered
@@ -60,7 +63,7 @@ pub const MAP_OFFERED: bool = true;
 
 /// The modes as Advanced Graphics lists them (the map only with `MAP_OFFERED`).
 pub const MODES: &[(Mode, &str)] = if MAP_OFFERED {
-    &[(Mode::Off, "Off"), (Mode::ScreenSpace, "Screen-Space"), (Mode::Map, "Shadow Map")]
+    &[(Mode::Off, "Off"), (Mode::ScreenSpace, "Screen-Space"), (Mode::Map, "Shadow Map"), (Mode::Rays, "Ray Traced")]
 } else {
     &[(Mode::Off, "Off"), (Mode::ScreenSpace, "Screen-Space")]
 };
@@ -105,13 +108,14 @@ impl Choice {
     }
 }
 
-static MODE: Choice = Choice { v: AtomicU32::new(u32::MAX), value: "Shadows", env: "FCOP_SHADOWS", names: &["off", "screen", "map"], default: 0 };
+static MODE: Choice = Choice { v: AtomicU32::new(u32::MAX), value: "Shadows", env: "FCOP_SHADOWS", names: &["off", "screen", "map", "rays"], default: 0 };
 static QUALITY: Choice = Choice { v: AtomicU32::new(u32::MAX), value: "ShadowQuality", env: "FCOP_SHADOW_QUALITY", names: &["low", "mid", "high", "ultra"], default: 1 };
 
 pub fn mode() -> Mode {
     match MODE.get() {
         1 => Mode::ScreenSpace,
         2 if MAP_OFFERED || std::env::var_os("FCOP_SHADOWS").is_some() => Mode::Map,
+        3 => Mode::Rays,
         _ => Mode::Off,
     }
 }

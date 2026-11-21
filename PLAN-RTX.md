@@ -15,18 +15,24 @@ Step 1 done (Vulkan presents, GL draws into shared images). Step 2: the scene in
 (models, animated parts, terrain, the whole level) and the first BLAS/TLAS with a ray query
 debug picture (`FCOP_VULKAN=1 FCOP_GBUFFER=rt`, `FCOP_RT_HIGH=<units>` from above).
 
-Next: sun shadows by ray query (step 5's first item, moved forward). Plan:
-- Share the depth with Vulkan: the G-buffer's RG32F colour attachment (R = depth as 1/z
-  interpolated, `ao.rs`; resolved when MSAA) as a shared image like the present's (memory
-  handle closed only after glTexStorageMem2DEXT).
-- A compute pass on the Vulkan device: per pixel the world position from depth and the view's
-  camera (focal 4096 * h / 1920, widescreen k on x, view space as `ao::COMMON`'s P), one ray
-  toward the sun (`shadows::sun()`, world y up) against the TLAS, the result into a shared R8
-  mask.
-- GL uses the mask where the shadow map's lookup is now (`SUN_GLSL` in the AO's last pass),
-  as a third `Shadows` mode; compare with the shadow map.
-- Sync: the mask is for the picture GL draws next (one picture late) or GL waits for it
-  (semaphore pair as in the present); first try one late.
+Sun shadows by ray query work (2026-11-21, `Shadows` 3 "Ray Traced", step 5's first item):
+- Synchronous, not one picture late: per view in `glide::post_3d` GL copies the depth into a
+  shared RG32F image (R), signals; Vulkan builds the scene and traces (G = blocked), signals
+  back; GL waits on the GPU and the AO's last pass uses G. One image for both ways, two
+  semaphores. No lag when turning; cheaper than feared.
+- Looks like the shadow map (compared at the first mission's start), without its ring and with
+  the whole level casting. ~530 fps against the map's ~320 (1280x960, MSAA 8, AO on).
+- Validation clean.
+
+Next:
+- Alpha test: keyed texels (railings, lattices, trees) cast solid shadows now. Needs materials
+  per triangle (texture layer and UVs, `3DTL` / terrain textures) and an any-hit check in the
+  ray query (non-opaque geometry, `rayQueryConfirmIntersectionEXT` where the texel is kept).
+  Textures: the Glide texture array is GL's; share it, or upload pages to Vulkan from guest
+  memory / the mission's `Cbmp`.
+- Soft edges: a few jittered rays toward a sun disc, or one ray and a blur along the surface.
+- Compare in more levels and at night/evening suns (`sun` cheat); the two dark lines at block
+  borders seen from above (step 2) may show as thin shadow lines.
 
 ## Principles
 
@@ -176,9 +182,10 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
 
 In this order, each with its own setting, each compared against the current effect:
 
-- [ ] Sun shadows by ray query: per pixel the world position from the depth, one ray to the
-      sun against the TLAS. Replaces the shadow map and its ring. Keyed texels by an
-      any-hit / alpha test (or opacity micromaps).
+- [x] Sun shadows by ray query: per pixel the world position from the depth, one ray to the
+      sun against the TLAS (2026-11-21, `Shadows` 3, see "Where we stand").
+- [ ] Keyed texels by an any-hit / alpha test (or opacity micromaps). Soft edges.
+- [ ] Replace the shadow map and its ring once the rays look as good everywhere.
 - [ ] Shadows of the dynamic lights (`lights.rs`) by rays instead of the screen ray march.
 - [ ] RT ambient occlusion instead of SSAO.
 - [ ] Reflections (wet streets, water surfaces, if the levels have them).

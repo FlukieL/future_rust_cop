@@ -394,8 +394,10 @@ pub fn init(d: &mut Dialog) {
         }
         if let Some(c) = d.control(SHADOWS) {
             if let Kind::Combo { items, sel, .. } = &mut c.kind {
-                *items = crate::platform::shadows::MODES.iter().map(|&(k, name)| (name.into(), k as u32)).collect();
-                *sel = crate::platform::shadows::mode() as i32;
+                // ray traced only with Vulkan presenting
+                let modes = crate::platform::shadows::MODES.iter().filter(|m| m.0 != crate::platform::shadows::Mode::Rays || crate::platform::vk::wanted());
+                *items = modes.map(|&(k, name)| (name.into(), k as u32)).collect();
+                *sel = items.iter().position(|i| i.1 == crate::platform::shadows::mode() as u32).unwrap_or(0) as i32;
             }
         }
         if let Some(c) = d.control(SHADOW_QUALITY) {
@@ -671,7 +673,7 @@ pub fn ok(d: &mut Dialog) {
                 _ => None,
             })
         };
-        if let Some(&(m, _)) = chosen(SHADOWS).and_then(|v| crate::platform::shadows::MODES.get(v as usize)) {
+        if let Some(&(m, _)) = chosen(SHADOWS).and_then(|v| crate::platform::shadows::MODES.iter().find(|m| m.0 as u32 == v)) {
             crate::platform::shadows::set_mode(m);
         }
         if let Some(&(q, _)) = chosen(SHADOW_QUALITY).and_then(|v| crate::platform::shadows::QUALITIES.get(v as usize)) {

@@ -5,6 +5,10 @@
 //! shader (`shaders/rt_debug.comp`, ray query) shoots one ray per pixel from the game's camera
 //! and shades what it hits (terrain yellow, models green, faces in varying brightness); the
 //! present shows that picture instead of the game's.
+//!
+//! The sun's shadow (`shadows::Mode::Rays`, PLAN-RTX.md step 5): `shadow` traces one ray per
+//! pixel of a view toward the sun (`shaders/rt_shadow.comp`) from the place the game's depth
+//! gives, in an RG32F image GL shares (`vk::Vk::sun_rays`).
 
 use super::scene::{Frame, Instance};
 use ash::{khr, vk};
@@ -13,7 +17,10 @@ use std::collections::HashMap;
 /// The device extensions ray tracing needs (enabled by `vk.rs` when present).
 pub const EXTENSIONS: [&std::ffi::CStr; 3] = [khr::acceleration_structure::NAME, khr::ray_query::NAME, khr::deferred_host_operations::NAME];
 
-const SHADER: &[u8] = include_bytes!("../../shaders/rt_debug.spv");
+const DEBUG_SPV: &[u8] = include_bytes!("../../shaders/rt_debug.spv");
+const SHADOW_SPV: &[u8] = include_bytes!("../../shaders/rt_shadow.spv");
+/// The shaders' push constants (bytes).
+const PUSH: u32 = 128;
 
 /// A buffer with its memory and device address (mapped when host visible).
 struct Buffer {
@@ -44,18 +51,22 @@ pub struct Rt {
     memory: vk::PhysicalDeviceMemoryProperties,
     blas: HashMap<Key, Option<Accel>>,
     generation: u32,
-    /// instance buffers, one per picture in flight, and their capacity
-    instances: [Option<(Buffer, usize)>; 2],
+    /// instance buffers, one per picture in flight (the debug picture's two, the sun's one),
+    /// and their capacity
+    instances: [Option<(Buffer, usize)>; 3],
     /// the TLAS, its scratch and its capacity in instances
     tlas: Option<(Accel, Buffer, usize)>,
+    /// counts the TLAS made anew (descriptor sets name it)
+    tlas_made: u64,
     _set_layout: vk::DescriptorSetLayout,
     layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-    set: vk::DescriptorSet,
+    debug: vk::Pipeline,
+    shadow: vk::Pipeline,
+    /// the debug picture's and the sun's descriptor sets, and what each was written with (TLAS,
+    /// storage image)
+    sets: [(vk::DescriptorSet, Option<(u64, vk::ImageView)>); 2],
     /// the picture rays are shot into (storage image), its size
     image: Option<(vk::Image, vk::DeviceMemory, vk::ImageView, u32, u32)>,
-    /// the descriptor set needs writing (TLAS or image made anew)
-    stale: bool,
 }
 
 fn err(what: &str) -> impl Fn(vk::Result) -> String + '_ {
@@ -76,22 +87,25 @@ impl Rt {
                 vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
             ];
             let set_layout = device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None).map_err(err("descriptor set layout"))?;
-            let ranges = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).size(96)];
+            let ranges = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).size(PUSH)];
             let layouts = [set_layout];
             let layout = device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts).push_constant_ranges(&ranges), None).map_err(err("pipeline layout"))?;
-            let code = ash::util::read_spv(&mut std::io::Cursor::new(SHADER)).map_err(|e| format!("shader: {e}"))?;
-            let module = device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&code), None).map_err(err("shader module"))?;
-            let stage = vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(module).name(c"main");
-            let pipeline = device
-                .create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(stage).layout(layout)], None)
-                .map_err(|e| format!("compute pipeline: {}", e.1))?[0];
-            device.destroy_shader_module(module, None);
+            let pipeline = |spv: &[u8]| -> Result<vk::Pipeline, String> {
+                let code = ash::util::read_spv(&mut std::io::Cursor::new(spv)).map_err(|e| format!("shader: {e}"))?;
+                let module = device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&code), None).map_err(err("shader module"))?;
+                let stage = vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(module).name(c"main");
+                let p = device.create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(stage).layout(layout)], None);
+                device.destroy_shader_module(module, None);
+                Ok(p.map_err(|e| format!("compute pipeline: {}", e.1))?[0])
+            };
+            let (debug, shadow) = (pipeline(DEBUG_SPV)?, pipeline(SHADOW_SPV)?);
             let sizes = [
-                vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 1 },
-                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 1 },
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 2 },
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 2 },
             ];
-            let pool = device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None).map_err(err("descriptor pool"))?;
-            let set = device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&layouts)).map_err(err("descriptor set"))?[0];
+            let pool = device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(2).pool_sizes(&sizes), None).map_err(err("descriptor pool"))?;
+            let both = [set_layout, set_layout];
+            let sets = device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&both)).map_err(err("descriptor set"))?;
             super::log!("raytrace: ready");
             Ok(Rt {
                 device: device.clone(),
@@ -99,14 +113,15 @@ impl Rt {
                 memory,
                 blas: HashMap::new(),
                 generation: u32::MAX,
-                instances: [None, None],
+                instances: [None, None, None],
                 tlas: None,
+                tlas_made: 0,
                 _set_layout: set_layout,
                 layout,
-                pipeline,
-                set,
+                debug,
+                shadow,
+                sets: [(sets[0], None), (sets[1], None)],
                 image: None,
-                stale: true,
             })
         }
     }
@@ -209,9 +224,10 @@ impl Rt {
         unsafe { self.device.cmd_pipeline_barrier(cmd, src.0, dst.0, vk::DependencyFlags::empty(), &b, &[], &[]) };
     }
 
-    /// The picture of `frame` into an image of w x h, recorded into `cmd` (picture in flight
-    /// `slot`); the image is left in TRANSFER_SRC_OPTIMAL for the present to copy.
-    pub fn record(&mut self, cmd: vk::CommandBuffer, slot: usize, w: u32, h: u32, frame: &Frame) -> Result<vk::Image, String> {
+    /// The acceleration structures of `frame` built (BLAS of what is new, the TLAS anew), recorded
+    /// into `cmd` with the instances in buffer `slot` (free: its last use is done), ready for
+    /// compute shaders.
+    fn scene(&mut self, cmd: vk::CommandBuffer, slot: usize, frame: &Frame) -> Result<(), String> {
         let build = vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR;
         let (aw, ar) = (vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR, vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
         let compute = vk::PipelineStageFlags::COMPUTE_SHADER;
@@ -296,40 +312,63 @@ impl Rt {
                 let mut tlas = self.build(cmd, top, geometry, n, cap as u32, vec![])?;
                 let scratch = tlas.bufs.pop().unwrap();
                 self.tlas = Some((tlas, scratch, cap));
-                self.stale = true;
+                self.tlas_made += 1;
             }
         }
         self.barrier(cmd, (build, aw), (compute, ar));
+        Ok(())
+    }
 
-        if self.image.as_ref().is_none_or(|i| (i.3, i.4) != (w, h)) {
-            self.make_image(w, h)?;
-        }
-        let (image, _, view, _, _) = *self.image.as_ref().unwrap();
-        if self.stale {
+    /// Descriptor set `k` (0 the debug picture's, 1 the sun's) for the TLAS and storage image
+    /// `view`, written when either changed.
+    fn set(&mut self, k: usize, view: vk::ImageView) -> vk::DescriptorSet {
+        let (set, bound) = self.sets[k];
+        if bound != Some((self.tlas_made, view)) {
             let accels = [self.tlas.as_ref().unwrap().0.accel];
             let mut write_as = vk::WriteDescriptorSetAccelerationStructureKHR::default().acceleration_structures(&accels);
             let images = [vk::DescriptorImageInfo::default().image_view(view).image_layout(vk::ImageLayout::GENERAL)];
             let writes = [
-                vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(0).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1).push_next(&mut write_as),
-                vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&images),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1).push_next(&mut write_as),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&images),
             ];
             unsafe { self.device.update_descriptor_sets(&writes, &[]) };
-            self.stale = false;
+            self.sets[k].1 = Some((self.tlas_made, view));
         }
+        set
+    }
+
+    /// The sun's shadow of a view (`frame`) into `view`, an RG32F storage image of w x h in
+    /// GENERAL layout holding the view's depth (R): G = 1 where the ray toward the sun (`sun`,
+    /// camera space with x narrowed by widescreen's k, as the GL passes have it) is blocked.
+    /// Recorded into `cmd`; the one recorded before is done.
+    pub fn shadow(&mut self, cmd: vk::CommandBuffer, view: vk::ImageView, w: u32, h: u32, frame: &Frame, sun: [f32; 3]) -> Result<(), String> {
+        self.scene(cmd, 2, frame)?;
+        let set = self.set(1, view);
+        let mut push = camera_push(frame, h);
+        push[24..27].copy_from_slice(&[sun[0] / frame.k, sun[1], sun[2]]);
+        unsafe {
+            let d = &self.device;
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.shadow);
+            d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[set], &[]);
+            d.cmd_push_constants(cmd, self.layout, vk::ShaderStageFlags::COMPUTE, 0, std::slice::from_raw_parts(push.as_ptr() as *const u8, PUSH as usize));
+            d.cmd_dispatch(cmd, w.div_ceil(8), h.div_ceil(8), 1);
+        }
+        Ok(())
+    }
+
+    /// The picture of `frame` into an image of w x h, recorded into `cmd` (picture in flight
+    /// `slot`); the image is left in TRANSFER_SRC_OPTIMAL for the present to copy.
+    pub fn record(&mut self, cmd: vk::CommandBuffer, slot: usize, w: u32, h: u32, frame: &Frame) -> Result<vk::Image, String> {
+        let compute = vk::PipelineStageFlags::COMPUTE_SHADER;
+        self.scene(cmd, slot, frame)?;
+        if self.image.as_ref().is_none_or(|i| (i.3, i.4) != (w, h)) {
+            self.make_image(w, h)?;
+        }
+        let (image, _, view, _, _) = *self.image.as_ref().unwrap();
+        let set = self.set(0, view);
         let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
         let to = |old, new, src, dst| [vk::ImageMemoryBarrier::default().image(image).old_layout(old).new_layout(new).src_access_mask(src).dst_access_mask(dst).subresource_range(range)];
-        let (c, cp) = frame.camera;
-        let mut push = [0f32; 24];
-        for i in 0..3 {
-            for j in 0..3 {
-                // column i of the camera-to-world matrix: row j of C, element i
-                push[4 * i + j] = c[3 * j + i] as f32;
-            }
-        }
-        push[15] = 1.0;
-        push[16..19].copy_from_slice(&cp.map(|x| x as f32));
-        push[20] = 4096.0 * h as f32 / 1920.0;
-        push[21] = frame.k;
+        let mut push = camera_push(frame, h);
         // the debug shading's fog: darker with distance
         push[22] = 30000.0;
         // FCOP_RT_HIGH=<model units> (a test): seen from that high above, straight down (camera
@@ -342,9 +381,9 @@ impl Rt {
         unsafe {
             let d = &self.device;
             d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, compute, vk::DependencyFlags::empty(), &[], &[], &to(vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE));
-            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-            d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[self.set], &[]);
-            let bytes = std::slice::from_raw_parts(push.as_ptr() as *const u8, 96);
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.debug);
+            d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[set], &[]);
+            let bytes = std::slice::from_raw_parts(push.as_ptr() as *const u8, PUSH as usize);
             d.cmd_push_constants(cmd, self.layout, vk::ShaderStageFlags::COMPUTE, 0, bytes);
             d.cmd_dispatch(cmd, w.div_ceil(8), h.div_ceil(8), 1);
             d.cmd_pipeline_barrier(
@@ -390,10 +429,28 @@ impl Rt {
                 .create_image_view(&vk::ImageViewCreateInfo::default().image(image).view_type(vk::ImageViewType::TYPE_2D).format(vk::Format::R8G8B8A8_UNORM).subresource_range(range), None)
                 .map_err(err("ray picture view"))?;
             self.image = Some((image, mem, view, w, h));
-            self.stale = true;
             Ok(())
         }
     }
+}
+
+/// The shaders' push constants for the camera of `frame` and a picture h pixels high: camera
+/// space to world (mat4 of columns), the camera's place, focal length and widescreen's k; the
+/// rest (from 22) is each shader's own.
+fn camera_push(frame: &Frame, h: u32) -> [f32; 32] {
+    let (c, cp) = frame.camera;
+    let mut push = [0f32; 32];
+    for i in 0..3 {
+        for j in 0..3 {
+            // column i of the camera-to-world matrix: row j of C, element i
+            push[4 * i + j] = c[3 * j + i] as f32;
+        }
+    }
+    push[15] = 1.0;
+    push[16..19].copy_from_slice(&cp.map(|x| x as f32));
+    push[20] = 4096.0 * h as f32 / 1920.0;
+    push[21] = frame.k;
+    push
 }
 
 /// A model instance's transform for Vulkan (3x4, rows, column vectors): world = v * R + offset

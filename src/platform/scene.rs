@@ -123,7 +123,7 @@ struct MapFrame {
 /// render_terrain drew map block (`row`, `column`), its first point at camera-space `at`, with
 /// these steps (terrain units; `height` << 8): the map's place in the world.
 pub fn terrain_map(row: i32, column: i32, at: [i32; 3], rows: [i32; 3], columns: [i32; 3], height: [i32; 3]) {
-    if !rt_on() {
+    if !rays() {
         return;
     }
     let (c, cp) = camera();
@@ -251,9 +251,14 @@ pub fn rt_on() -> bool {
     *ON.get_or_init(|| std::env::var("FCOP_GBUFFER").is_ok_and(|v| v == "rt"))
 }
 
+/// The rays need the whole level's scene: their debug picture, or the sun's shadow by rays.
+pub fn rays() -> bool {
+    rt_on() || (super::shadows::mode() == super::shadows::Mode::Rays && super::vk::wanted())
+}
+
 /// Instances are collected (for the log, the overlay or the rays).
 fn wanted() -> bool {
-    log_on() || overlay_on() || rt_on()
+    log_on() || overlay_on() || rays()
 }
 
 /// A view's scene as `raytrace.rs` takes it: the camera (matrix C, position c / 16), widescreen's
@@ -267,7 +272,8 @@ pub struct Frame {
     pub generation: u32,
 }
 
-/// The last view's scene (taken by the Vulkan present).
+/// The last view's scene (taken by the sun's rays in `glide::post_3d`, else by the Vulkan
+/// present's debug picture).
 pub fn take_frame() -> Option<Frame> {
     LAST.with_borrow_mut(|l| l.take())
 }
@@ -366,7 +372,7 @@ pub fn model_draw(c: &mut Cpu) {
     if wanted() {
         let record = super::mem().rd32(c.r[ESP] + 4);
         CURRENT.set(record);
-        if rt_on() {
+        if rays() {
             DRAWN.with_borrow_mut(|d| d.insert(record));
         }
     }
@@ -539,7 +545,7 @@ pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f3
     use glow::HasContext;
     let instances = PICTURE.with_borrow_mut(std::mem::take);
     let camera = VIEW_CAMERA.take();
-    if rt_on() {
+    if rays() {
         let drawn = DRAWN.with_borrow_mut(std::mem::take);
         let projected: Vec<(u32, Block)> = BLOCKS.with_borrow_mut(std::mem::take).into_iter().collect();
         TILES.with_borrow_mut(|t| t.clear());

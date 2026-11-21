@@ -1,0 +1,41 @@
+#version 460
+// The sun's shadow by rays (PLAN-RTX.md step 5, REG_DWORD `Shadows` 3): per pixel the place the
+// game's depth gives (R of the shared G-buffer copy, view-space z), one ray toward the sun
+// against the scene's TLAS; G = 1 where it is blocked. Compiled to rt_shadow.spv by
+// glslc --target-env=vulkan1.2 -O shaders/rt_shadow.comp -o shaders/rt_shadow.spv
+#extension GL_EXT_ray_query : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform accelerationStructureEXT tlas;
+layout(binding = 1, rg32f) uniform image2D gbuf;
+layout(push_constant) uniform View {
+    // camera space to world space (columns), the camera's place (model units)
+    mat4 axes;
+    vec4 origin;
+    // x focal length in pixels, y widescreen's x scale
+    vec4 lens;
+    // toward the sun in camera space (unscaled x)
+    vec4 sun;
+} v;
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(gbuf);
+    if (any(greaterThanEqual(q, size))) return;
+    float z = imageLoad(gbuf, q).r;
+    float shade = 0.0;
+    if (z > 0.0) {
+        // GL's first row is the bottom: camera space has y up
+        vec2 s = (vec2(q) + 0.5 - vec2(size) * 0.5) * z / v.lens.x;
+        vec3 c = vec3(s.x / v.lens.y, s.y, z);
+        vec3 p = mat3(v.axes) * c + v.origin.xyz;
+        // a little toward the camera: our triangles lie within the game's rounding of its own,
+        // the surface must not shadow itself
+        vec3 o = p - normalize(mat3(v.axes) * c) * (2.0 + 0.002 * z);
+        vec3 d = normalize(mat3(v.axes) * v.sun.xyz);
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xff, o, 1.0, d, 1.0e5);
+        while (rayQueryProceedEXT(rq)) {}
+        if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) shade = 1.0;
+    }
+    imageStore(gbuf, q, vec4(z, shade, 0.0, 0.0));
+}

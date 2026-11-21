@@ -1831,7 +1831,18 @@ pub fn set_gbuffer(on: Option<f32>) {
 /// The 3D picture of a view is drawn (the HUD comes next): the ambient occlusion and the
 /// dynamic lights over it, inside the clip window.
 pub fn post_3d() {
-    with(|g, gl| {
+    GLIDE.with(|g| {
+        let mut g = g.borrow_mut();
+        let Some(g) = g.as_mut() else { return };
+        super::window::with_gl(|w| {
+            let (gl, vk) = w.parts();
+            post_3d_with(g, gl, vk)
+        });
+    });
+}
+
+fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk>) {
+    {
         g.flush(gl);
         // FCOP_GBUFFER=scene: our scene's models as lines over the picture (PLAN-RTX.md step 2)
         super::scene::overlay(gl, g.draw_fbo(), g.target.0, g.target.1, super::wide::k());
@@ -1862,9 +1873,15 @@ pub fn post_3d() {
         };
         g.casters = casters;
         g.casters.clear();
-        let sun = match (super::shadows::mode(), &map) {
-            (super::shadows::Mode::ScreenSpace, _) => super::ao::Sun::Ray(dir),
-            (super::shadows::Mode::Map, Some(v)) => super::ao::Sun::Map(v),
+        // ray traced: the view's scene (`scene::overlay` above made it) against our depth
+        let rays = match (super::shadows::mode(), vk) {
+            (super::shadows::Mode::Rays, Some(vk)) => super::scene::take_frame().and_then(|frame| vk.sun_rays(gl, tex, ms, target, &frame, dir)),
+            _ => None,
+        };
+        let sun = match (super::shadows::mode(), &map, rays) {
+            (super::shadows::Mode::ScreenSpace, _, _) => super::ao::Sun::Ray(dir),
+            (super::shadows::Mode::Map, Some(v), _) => super::ao::Sun::Map(v),
+            (super::shadows::Mode::Rays, _, Some(t)) => super::ao::Sun::Traced(t, dir),
             _ => super::ao::Sun::None,
         };
         // FCOP_GBUFFER=shadows: the sun's shadow alone
@@ -1891,7 +1908,7 @@ pub fn post_3d() {
         if g.target_hdr {
             g.tonemap.get_or_insert_with(|| super::tonemap::Pass::new(gl)).run(gl, target, colour, clip, super::tonemap::curve());
         }
-    });
+    }
 }
 
 /// Where the vertices that follow go in the frame.

@@ -218,6 +218,11 @@ impl Gl {
     }
 
     /// V-Sync: the swap waits for the screen's next refresh.
+    /// The context and the Vulkan presenter, when there is one.
+    pub fn parts(&mut self) -> (&glow::Context, Option<&mut super::vk::Vk>) {
+        (&self.gl, self.vk.as_mut())
+    }
+
     pub fn set_vsync(&self, on: bool) {
         if let Some(v) = &self.vk {
             return v.set_vsync(on);

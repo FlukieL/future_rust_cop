@@ -41,6 +41,7 @@ const GL_HANDLE_TYPE: u32 = 0x9587; // GL_HANDLE_TYPE_OPAQUE_WIN32_EXT
 #[cfg(unix)]
 const GL_HANDLE_TYPE: u32 = 0x9586; // GL_HANDLE_TYPE_OPAQUE_FD_EXT
 const GL_LAYOUT_TRANSFER_SRC: u32 = 0x9592;
+const GL_LAYOUT_GENERAL: u32 = 0x958D;
 const GL_NUM_DEVICE_UUIDS: u32 = 0x9596;
 const GL_DEVICE_UUID: u32 = 0x9597;
 
@@ -60,6 +61,7 @@ struct GlFns {
     gen_semaphores: unsafe extern "system" fn(i32, *mut u32),
     import_semaphore: unsafe extern "system" fn(u32, u32, GlHandle),
     signal_semaphore: unsafe extern "system" fn(u32, u32, *const u32, u32, *const u32, *const u32),
+    wait_semaphore: unsafe extern "system" fn(u32, u32, *const u32, u32, *const u32, *const u32),
     get_unsigned_byte_i: unsafe extern "system" fn(u32, u32, *mut u8),
 }
 
@@ -89,6 +91,7 @@ impl GlFns {
             #[cfg(unix)]
             import_semaphore: f!(c"glImportSemaphoreFdEXT"),
             signal_semaphore: f!(c"glSignalSemaphoreEXT"),
+            wait_semaphore: f!(c"glWaitSemaphoreEXT"),
             get_unsigned_byte_i: f!(c"glGetUnsignedBytei_vEXT"),
         })
     }
@@ -131,6 +134,37 @@ struct Shared {
     fbo: glow::Framebuffer,
 }
 
+/// The sun's shadow by rays (`sun_rays`): the image a view's depth goes into (R, written by GL)
+/// and the shadow comes back in (G, written by Vulkan), RG32F, as both APIs see it.
+struct SunImage {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    w: u32,
+    h: u32,
+    gl_memory: u32,
+    tex: glow::Texture,
+    fbo: glow::Framebuffer,
+}
+
+/// What the sun's rays need besides their image: the semaphores GL to Vulkan and back (Vulkan's
+/// and GL's names), a command buffer and its fence, GL's programs copying the depth (single
+/// sampled, multisampled) and a vertex array.
+struct Sun {
+    to_vk: (vk::Semaphore, u32),
+    to_gl: (vk::Semaphore, u32),
+    cmd: vk::CommandBuffer,
+    fence: vk::Fence,
+    copy: [glow::Program; 2],
+    vao: glow::VertexArray,
+    image: Option<SunImage>,
+}
+
+const COPY_FS: &str = r#"
+out vec4 o;
+void main() { o = vec4(G(ivec2(gl_FragCoord.xy)).r, 0.0, 0.0, 0.0); }
+"#;
+
 pub struct Vk {
     _entry: ash::Entry,
     instance: ash::Instance,
@@ -144,6 +178,8 @@ pub struct Vk {
     mem_fn: MemFn,
     /// ray tracing (`raytrace.rs`), when on and the device has it
     rt: Option<super::raytrace::Rt>,
+    /// the sun's shadow by rays (made with `rt`)
+    sun: Option<Sun>,
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     /// signalled by the copy into each swapchain image, waited for by its present
@@ -276,10 +312,10 @@ impl Vk {
             let prio = [1.0];
             let queues = [vk::DeviceQueueCreateInfo::default().queue_family_index(family).queue_priorities(&prio)];
             let mut ext_ptrs: Vec<*const c_char> = dev_exts.iter().map(|e| e.as_ptr()).collect();
-            // ray tracing (FCOP_GBUFFER=rt for now): its extensions and features when the device has them
+            // ray tracing (the sun's rays, FCOP_GBUFFER=rt): its extensions and features when the
+            // device has them (the shadow mode can be chosen while playing)
             let has = instance.enumerate_device_extension_properties(phys).unwrap_or_default();
-            let rt = super::scene::rt_on()
-                && instance.get_physical_device_properties(phys).api_version >= vk::API_VERSION_1_2
+            let rt = instance.get_physical_device_properties(phys).api_version >= vk::API_VERSION_1_2
                 && super::raytrace::EXTENSIONS.iter().all(|e| has.iter().any(|h| h.extension_name_as_c_str() == Ok(*e)));
             let mut v12 = vk::PhysicalDeviceVulkan12Features::default().buffer_device_address(true);
             let mut accel = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
@@ -288,7 +324,7 @@ impl Vk {
             if rt {
                 ext_ptrs.extend(super::raytrace::EXTENSIONS.iter().map(|e| e.as_ptr()));
                 info = info.push_next(&mut v12).push_next(&mut accel).push_next(&mut query);
-            } else if super::scene::rt_on() {
+            } else if super::scene::rays() {
                 super::log!("vulkan: no ray tracing on this device");
             }
             let info = info.enabled_extension_names(&ext_ptrs);
@@ -306,7 +342,7 @@ impl Vk {
                 .create_command_pool(&vk::CommandPoolCreateInfo::default().queue_family_index(family).flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER), None)
                 .map_err(err("command pool"))?;
             let cmds = device
-                .allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(2))
+                .allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(3))
                 .map_err(err("command buffers"))?;
             let frame = |cmd| -> Result<Frame, String> {
                 Ok(Frame {
@@ -346,6 +382,21 @@ impl Vk {
                 let (gl_done, gl_name) = shared_semaphore()?;
                 slots.push(Slot { gl_done, gl_name, shared: None });
             }
+            let sun = match rt {
+                Some(_) => {
+                    let prog = |ms: bool| super::gl::compile(gl, super::ao::VS, &format!("{}{}{COPY_FS}", if ms { "#define MS\n" } else { "" }, super::ao::COMMON));
+                    Some(Sun {
+                        to_vk: shared_semaphore()?,
+                        to_gl: shared_semaphore()?,
+                        cmd: cmds[2],
+                        fence: device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).map_err(err("fence"))?,
+                        copy: [prog(false), prog(true)],
+                        vao: gl.create_vertex_array().map_err(|e| format!("GL vertex array: {e}"))?,
+                        image: None,
+                    })
+                }
+                None => None,
+            };
             let mut v = Vk {
                 _entry: entry,
                 instance,
@@ -370,6 +421,7 @@ impl Vk {
                 cur: 0,
                 gl: gl_fns,
                 rt,
+                sun,
             };
             let size = win.inner_size();
             v.build_swapchain(size.width, size.height)?;
@@ -463,16 +515,35 @@ impl Vk {
                 self.device.destroy_image(s.image, None);
                 self.device.free_memory(s.memory, None);
             }
+            let usage = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+            let (image, memory, gl_memory, tex) = self.shared_image(gl, w, h, vk::Format::R8G8B8A8_UNORM, glow::RGBA8, usage)?;
+            let fbo = gl.create_framebuffer().map_err(|e| format!("GL framebuffer: {e}"))?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
+            let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            if status != glow::FRAMEBUFFER_COMPLETE {
+                return Err(format!("the shared image is no complete GL framebuffer ({status:#x})"));
+            }
+            self.slots[k].shared = Some(Shared { image, memory, w, h, gl_memory, tex, fbo });
+            Ok(())
+        }
+    }
+
+    /// A Vulkan image of w x h in `format` with `usage`, its memory imported by GL: the image,
+    /// its memory, GL's memory object and texture (storage `gl_format`, bound to TEXTURE_2D).
+    unsafe fn shared_image(&self, gl: &glow::Context, w: u32, h: u32, format: vk::Format, gl_format: u32, usage: vk::ImageUsageFlags) -> Result<(vk::Image, vk::DeviceMemory, u32, glow::Texture), String> {
+        unsafe {
             let mut ext = vk::ExternalMemoryImageCreateInfo::default().handle_types(MEM_HANDLE);
             let info = vk::ImageCreateInfo::default()
                 .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_UNORM)
+                .format(format)
                 .extent(vk::Extent3D { width: w, height: h, depth: 1 })
                 .mip_levels(1)
                 .array_layers(1)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+                .usage(usage)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED)
                 .push_next(&mut ext);
@@ -509,24 +580,150 @@ impl Vk {
             }
             let tex = gl.create_texture().map_err(|e| format!("GL texture: {e}"))?;
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            (self.gl.tex_storage_mem_2d)(glow::TEXTURE_2D, 1, glow::RGBA8, w as i32, h as i32, gl_memory, 0);
+            (self.gl.tex_storage_mem_2d)(glow::TEXTURE_2D, 1, gl_format, w as i32, h as i32, gl_memory, 0);
             // NVIDIA's GL takes the memory by the handle only here: closed after the import, GL
             // drew into memory of its own (black window, ~40 fps)
             #[cfg(windows)]
             windows_sys::Win32::Foundation::CloseHandle(handle as _);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+            Ok((image, memory, gl_memory, tex))
+        }
+    }
+
+    /// The sun's image made (again) at w x h: shared, in GENERAL layout (GL hands it over and
+    /// takes it back in that one).
+    fn make_sun_image(&mut self, gl: &glow::Context, w: u32, h: u32) -> Result<(), String> {
+        let Some(sun) = &mut self.sun else { return Err("no ray tracing".into()) };
+        let (cmd, fence) = (sun.cmd, sun.fence);
+        let old = sun.image.take();
+        unsafe {
+            gl.finish();
+            let _ = self.device.device_wait_idle();
+            if let Some(s) = old {
+                gl.delete_framebuffer(s.fbo);
+                gl.delete_texture(s.tex);
+                (self.gl.delete_memory_objects)(1, &s.gl_memory);
+                self.device.destroy_image_view(s.view, None);
+                self.device.destroy_image(s.image, None);
+                self.device.free_memory(s.memory, None);
+            }
+            let format = vk::Format::R32G32_SFLOAT;
+            let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+            let (image, memory, gl_memory, tex) = self.shared_image(gl, w, h, format, glow::RG32F, usage)?;
+            let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+            let view = self
+                .device
+                .create_image_view(&vk::ImageViewCreateInfo::default().image(image).view_type(vk::ImageViewType::TYPE_2D).format(format).subresource_range(range), None)
+                .map_err(err("sun image view"))?;
             let fbo = gl.create_framebuffer().map_err(|e| format!("GL framebuffer: {e}"))?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
             let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            // into GENERAL once
+            let d = &self.device;
+            d.reset_fences(&[fence]).map_err(err("fence"))?;
+            d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).map_err(err("begin"))?;
+            let b = [vk::ImageMemoryBarrier::default()
+                .image(image)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .subresource_range(range)];
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &b);
+            d.end_command_buffer(cmd).map_err(err("end"))?;
+            let cmds = [cmd];
+            d.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&cmds)], fence).map_err(err("submit"))?;
+            d.wait_for_fences(&[fence], true, u64::MAX).map_err(err("wait"))?;
+            self.sun.as_mut().unwrap().image = Some(SunImage { image, memory, view, w, h, gl_memory, tex, fbo });
             if status != glow::FRAMEBUFFER_COMPLETE {
-                return Err(format!("the shared image is no complete GL framebuffer ({status:#x})"));
+                return Err(format!("the sun's image is no complete GL framebuffer ({status:#x})"));
             }
-            self.slots[k].shared = Some(Shared { image, memory, w, h, gl_memory, tex, fbo });
             Ok(())
         }
+    }
+
+    /// The sun's shadow by rays for a view of w x h (`shadows::Mode::Rays`): GL copies the
+    /// view's depth (`depth`, the G-buffer's attachment, multisampled: sample 0) into the shared
+    /// image's R, Vulkan traces a ray per pixel toward the sun (`sun`, the shaders' view space)
+    /// against `frame`'s scene and writes 1 into G where it is blocked, GL waits for that on the
+    /// GPU. The texture holding both, or None (no ray tracing, an error: logged, off for good).
+    pub fn sun_rays(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, (w, h): (u32, u32), frame: &super::scene::Frame, sun: [f32; 3]) -> Option<glow::Texture> {
+        if self.rt.is_none() || self.sun.is_none() {
+            return None;
+        }
+        if self.sun.as_ref().unwrap().image.as_ref().is_none_or(|s| (s.w, s.h) != (w, h)) {
+            if let Err(e) = self.make_sun_image(gl, w, h) {
+                super::log!("error: vulkan: sun's rays: {e}");
+                self.sun = None;
+                return None;
+            }
+        }
+        let s = self.sun.as_ref().unwrap();
+        let img = s.image.as_ref().unwrap();
+        let (tex, fbo, image, view) = (img.tex, img.fbo, img.image, img.view);
+        let (to_vk, to_gl, cmd, fence) = (s.to_vk, s.to_gl, s.cmd, s.fence);
+        let tex_name = tex.0.get();
+        unsafe {
+            // the depth into R
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.viewport(0, 0, w as i32, h as i32);
+            gl.disable(glow::BLEND);
+            // (no depth attachment: the depth test passes)
+            gl.disable(glow::SCISSOR_TEST);
+            gl.bind_vertex_array(Some(s.vao));
+            let p = s.copy[ms as usize];
+            gl.use_program(Some(p));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(if ms { glow::TEXTURE_2D_MULTISAMPLE } else { glow::TEXTURE_2D }, Some(depth));
+            gl.uniform_1_i32(super::gl::uniform(gl, p, "gdepth").as_ref(), 0);
+            gl.uniform_2_i32(super::gl::uniform(gl, p, "size").as_ref(), w as i32, h as i32);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            (self.gl.signal_semaphore)(to_vk.1, 0, std::ptr::null(), 1, &tex_name, &GL_LAYOUT_GENERAL);
+            gl.flush();
+
+            // the rays
+            let d = &self.device;
+            let _ = d.wait_for_fences(&[fence], true, u64::MAX);
+            let _ = d.reset_fences(&[fence]);
+            let _ = d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT));
+            let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+            let own = |src, dst, from, to| {
+                [vk::ImageMemoryBarrier::default()
+                    .image(image)
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_access_mask(src)
+                    .dst_access_mask(dst)
+                    .src_queue_family_index(from)
+                    .dst_queue_family_index(to)
+                    .subresource_range(range)]
+            };
+            let compute = vk::PipelineStageFlags::COMPUTE_SHADER;
+            let rw = vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE;
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, compute, vk::DependencyFlags::empty(), &[], &[], &own(vk::AccessFlags::empty(), rw, vk::QUEUE_FAMILY_EXTERNAL, self.family));
+            let traced = self.rt.as_mut().unwrap().shadow(cmd, view, w, h, frame, sun);
+            let d = &self.device;
+            d.cmd_pipeline_barrier(cmd, compute, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &own(vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::empty(), self.family, vk::QUEUE_FAMILY_EXTERNAL));
+            let _ = d.end_command_buffer(cmd);
+            let (waits, signals, cmds) = ([to_vk.0], [to_gl.0], [cmd]);
+            let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+            let submit = vk::SubmitInfo::default().wait_semaphores(&waits).wait_dst_stage_mask(&stages).command_buffers(&cmds).signal_semaphores(&signals);
+            let submitted = d.queue_submit(self.queue, &[submit], fence).map_err(err("submit"));
+            if let Err(e) = traced.and(submitted) {
+                // GL's signal must still be waited for: nothing more is sent, the device is left to finish
+                super::log!("error: vulkan: sun's rays: {e}");
+                let _ = d.device_wait_idle();
+                self.sun = None;
+                return None;
+            }
+            // GL's passes after this wait on the GPU for the rays
+            (self.gl.wait_semaphore)(to_gl.1, 0, std::ptr::null(), 1, &tex_name, &GL_LAYOUT_GENERAL);
+        }
+        Some(tex)
     }
 
     /// Before GL draws a picture of w x h: the framebuffer to draw it into.

@@ -281,12 +281,24 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   (`shaders/rt_debug.comp`; SPIR-V checked in, rebuilt with the Vulkan SDK's
   `glslc --target-env=vulkan1.2 -O shaders/rt_debug.comp -o shaders/rt_debug.spv`) shoots a
   ray per pixel from the game's camera; `vk.rs` copies that picture into the swapchain instead
-  of GL's. The RT device extensions/features are enabled only with this switch. The frame is
+  of GL's. The RT device extensions/features are enabled whenever the device has them (the
+  shadow mode can change while playing); the scene is collected only with this switch or
+  `Shadows` 3 (`scene::rays`). The frame is
   the whole level: every terrain map block (map [0x4a31ac] +4 width, +8 rows, cells from
   +0x24, blocks [0x4a3060]; its world place from render_terrain's first seen block,
   `scene::terrain_map`), plus static objects (grid [0x4a13fc]) and actors (record +0x28) the
   game did not draw, by their records. `FCOP_RT_HIGH=<units>` (a test) looks straight down from
   that high above.
+  Sun shadows by rays (PLAN-RTX.md step 5, REG_DWORD `Shadows` 3 "Ray Traced", listed in
+  Advanced Graphics only with `FCOP_VULKAN=1`; `FCOP_SHADOWS=3`): in `glide::post_3d` per view,
+  synchronously: GL copies the G-buffer depth (R; MS: sample 0) into a shared RG32F image
+  (`vk::Vk::sun_rays`, GL handle closed after glTexStorageMem2DEXT as the present's), signals a
+  semaphore; Vulkan builds the view's scene (`scene::take_frame`) and runs
+  `shaders/rt_shadow.comp` (place from depth, pulled toward the camera by 2 + 0.002 z, one ray
+  toward the sun, terminate on first hit) writing G = 1 where blocked, signals back; GL waits on
+  the GPU, the AO's last pass (`ao::Sun::Traced`, `use_sun` 2) takes G times the N·L fade the
+  map has. Opaque so far: keyed lattices (railings) cast solid shadows. First mission start,
+  1280x960, MSAA 8, AO on: ~530 fps against the shadow map's ~320.
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
   path 0x4397cd, so vertices arrive in 2560x1920 units; text (type 6, game pixels) is drawn in
@@ -402,8 +414,8 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
 - `shadows.rs`: shadows (PLAN.md 2a step 3; REG_DWORD `Shadows` 0 off (default), 1
   screen-space (the ray march below, at half resolution blurred with the AO), 2 shadow map (offered
   again since 2026-11-19 for testing, `shadows::MAP_OFFERED`; false: the combo lists Off /
-  Screen-Space, no quality combo, a stored 2 is Off, only `FCOP_SHADOWS=2` turns it on),
-  `FCOP_SHADOWS=0/1/2`; REG_DWORD `ShadowQuality` 0...3 Low / Medium (default) / High / Ultra,
+  Screen-Space, no quality combo, a stored 2 is Off, only `FCOP_SHADOWS=2` turns it on), 3 ray
+  traced (`raytrace.rs`, Vulkan only), `FCOP_SHADOWS=0/1/2/3`; REG_DWORD `ShadowQuality` 0...3 Low / Medium (default) / High / Ultra,
   `FCOP_SHADOW_QUALITY=low|mid|high|ultra` (`look`, as nuclear_rust_strike's: map 1024 / 2048 /
   4096 / 4096, PCF 3x3 / 5x5 / 5x5 / 5x5 taps 1 / 1.5 / 1.5 / 1 texels apart, Low looked up in
   the AO's half-resolution pass and blurred with it); two combos in Advanced Graphics;

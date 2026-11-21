@@ -404,8 +404,10 @@ uniform sampler2D ao;
 uniform float strength;
 uniform int show;       // 0 the AO as a factor, 1 the depth, 2 the AO alone
 uniform int use_half;   // the half-resolution pass ran (AO, a half-resolution sun's shadow)
-uniform int use_sun;    // the sun's shadow map (shadows.rs), looked up per pixel
+uniform int use_sun;    // the sun's shadow per pixel: 1 the map (shadows.rs), 2 traced by rays
 uniform float sun_k;
+uniform sampler2D rmask; // traced: G 1 where the ray toward the sun is blocked
+uniform vec3 rsun;       // traced: toward the sun, view space
 out vec4 o;
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
@@ -454,7 +456,10 @@ void main() {
     }
     if (z > 0.0 && use_sun != 0) {
         vec3 p = P(vec2(q), z);
-        v *= 1.0 - sun_k * sun_shadow(p, N(q, z, p, 1));
+        vec3 n = N(q, z, p, 1);
+        // traced: faces turned away and those the sun grazes are the game's own shading, as the map's
+        float s = use_sun == 2 ? texelFetch(rmask, q, 0).g * smoothstep(0.02, 0.15, dot(n, normalize(rsun))) : sun_shadow(p, n);
+        v *= 1.0 - sun_k * s;
     }
     if (show == 2) { o = vec4(vec3(v), 1.0); return; }
     o = vec4(vec3(mix(1.0, v, strength * (1.0 - clamp(g.g, 0.0, 1.0)))), 1.0);
@@ -469,6 +474,9 @@ pub enum Sun<'a> {
     Ray([f32; 3]),
     /// the view's shadow map
     Map(&'a super::shadows::View),
+    /// traced by rays (`vk::Vk::sun_rays`): a texture whose G is 1 where blocked, and toward
+    /// the sun in view space
+    Traced(glow::Texture, [f32; 3]),
 }
 
 /// A half-resolution texture and its framebuffer.
@@ -569,7 +577,7 @@ impl Ssao {
         let (sun_half, sun_full) = match sun {
             Sun::Ray(_) => (1, false),
             Sun::Map(_) if !look.full => (2, false),
-            Sun::Map(_) => (0, true),
+            Sun::Map(_) | Sun::Traced(..) => (0, true),
             Sun::None => (0, false),
         };
         let half_pass = ao || sun_half != 0;
@@ -615,6 +623,7 @@ impl Ssao {
                 gl.uniform_2_i32(u("size").as_ref(), w, h);
                 gl.uniform_1_f32(u("focal").as_ref(), focal);
                 gl.uniform_1_i32(u("near_z").as_ref(), 3);
+                gl.uniform_1_i32(u("rmask").as_ref(), 4);
                 u
             };
             if ao {
@@ -674,14 +683,24 @@ impl Ssao {
             gl.uniform_1_f32(u("strength").as_ref(), STRENGTH);
             gl.uniform_1_i32(u("show").as_ref(), show);
             gl.uniform_1_i32(u("use_half").as_ref(), half_pass as i32);
-            gl.uniform_1_i32(u("use_sun").as_ref(), sun_full as i32);
+            gl.uniform_1_i32(u("use_sun").as_ref(), if matches!(sun, Sun::Traced(..)) { 2 } else { sun_full as i32 });
             gl.uniform_1_f32(u("sun_k").as_ref(), super::shadows::sun_strength());
             if sun_full {
                 set_map(&u);
             }
+            if let Sun::Traced(t, d) = sun {
+                gl.active_texture(glow::TEXTURE4);
+                gl.bind_texture(glow::TEXTURE_2D, Some(t));
+                gl.active_texture(glow::TEXTURE0);
+                gl.uniform_3_f32(u("rsun").as_ref(), d[0], d[1], d[2]);
+            }
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             if matches!(sun, Sun::Map(_)) {
                 gl.active_texture(glow::TEXTURE2);
+                gl.bind_texture(glow::TEXTURE_2D, None);
+            }
+            if matches!(sun, Sun::Traced(..)) {
+                gl.active_texture(glow::TEXTURE4);
                 gl.bind_texture(glow::TEXTURE_2D, None);
             }
             gl.disable(glow::BLEND);
