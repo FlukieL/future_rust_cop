@@ -23,13 +23,16 @@ Sun shadows by ray query work (2026-11-21, `Shadows` 3 "Ray Traced", step 5's fi
 - Looks like the shadow map (compared at the first mission's start), without its ring and with
   the whole level casting. ~530 fps against the map's ~320 (1280x960, MSAA 8, AO on).
 - Validation clean.
+- Alpha test (2026-11-21): keyed texels (railings, the ramp's lattice walls, which are terrain,
+  trees) let the light through, as with the shadow map. Triangle materials from guest memory
+  (models' `3DTL`, terrain's texture words), the mission's pages as coverage bits; only
+  triangles whose texel box has a black texel are tested (a geometry of their own in each
+  BLAS: making whole BLAS non-opaque halved the frame rate, ~540 -> ~280; split ~540).
 
 Next:
-- Alpha test: keyed texels (railings, lattices, trees) cast solid shadows now. Needs materials
-  per triangle (texture layer and UVs, `3DTL` / terrain textures) and an any-hit check in the
-  ray query (non-opaque geometry, `rayQueryConfirmIntersectionEXT` where the texel is kept).
-  Textures: the Glide texture array is GL's; share it, or upload pages to Vulkan from guest
-  memory / the mission's `Cbmp`.
+- Alpha test open points: scrolled terrain textures (tw & 0x800) are tested unscrolled;
+  semi-transparent faces (glass, PS1 STP) still cast fully; HD replacement textures' coverage
+  is not used (the original page's).
 - Soft edges: a few jittered rays toward a sun disc, or one ray and a blur along the surface.
 - Compare in more levels and at night/evening suns (`sun` cheat); the two dark lines at block
   borders seen from above (step 2) may show as thin shadow lines.
@@ -184,7 +187,8 @@ In this order, each with its own setting, each compared against the current effe
 
 - [x] Sun shadows by ray query: per pixel the world position from the depth, one ray to the
       sun against the TLAS (2026-11-21, `Shadows` 3, see "Where we stand").
-- [ ] Keyed texels by an any-hit / alpha test (or opacity micromaps). Soft edges.
+- [x] Keyed texels by an alpha test in the ray query (2026-11-21).
+- [ ] Soft edges.
 - [ ] Replace the shadow map and its ring once the rays look as good everywhere.
 - [ ] Shadows of the dynamic lights (`lights.rs`) by rays instead of the screen ray march.
 - [ ] RT ambient occlusion instead of SSAO.

@@ -34,7 +34,7 @@ void main() {
         float t = rayQueryGetIntersectionTEXT(rq, true);
         int kind = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
         uint id = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true)) * 7919u + uint(rayQueryGetIntersectionInstanceIdEXT(rq, true)) * 104729u;
-        vec3 base = kind == 0 ? vec3(0.95, 0.8, 0.3) : vec3(0.3, 0.95, 0.45);
+        vec3 base = kind < 0x800000 ? vec3(0.95, 0.8, 0.3) : vec3(0.3, 0.95, 0.45);
         float face = 0.65 + 0.35 * hash(id);
         float fog = clamp(1.0 - t / cam.lens.z, 0.2, 1.0);
         c = base * face * fog * (rayQueryGetIntersectionFrontFaceEXT(rq, true) ? 1.0 : 0.55);

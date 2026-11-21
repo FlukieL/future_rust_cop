@@ -19,6 +19,8 @@ pub const EXTENSIONS: [&std::ffi::CStr; 3] = [khr::acceleration_structure::NAME,
 
 const DEBUG_SPV: &[u8] = include_bytes!("../../shaders/rt_debug.spv");
 const SHADOW_SPV: &[u8] = include_bytes!("../../shaders/rt_shadow.spv");
+/// An instance's custom index: bit 23 a model (else terrain), below it its first material + 1.
+const MODEL: u32 = 1 << 23;
 /// The shaders' push constants (bytes).
 const PUSH: u32 = 128;
 
@@ -49,8 +51,17 @@ pub struct Rt {
     device: ash::Device,
     accel_fn: khr::acceleration_structure::Device,
     memory: vk::PhysicalDeviceMemoryProperties,
-    blas: HashMap<Key, Option<Accel>>,
+    /// each BLAS and its instances' custom index: its triangles' first material + 1 (0: terrain,
+    /// opaque)
+    blas: HashMap<Key, Option<(Accel, u32)>>,
     generation: u32,
+    /// the models' triangle materials (`scene::Material`) in BLAS order, how many are in the
+    /// buffer, the buffer and its capacity
+    mats: Vec<super::scene::Material>,
+    mats_sent: usize,
+    mat_buf: Option<(Buffer, usize)>,
+    /// the mission's texture pages as coverage bits (`scene::Frame::pages`) and which ones
+    pages_buf: Option<(Buffer, *const Vec<u32>)>,
     /// instance buffers, one per picture in flight (the debug picture's two, the sun's one),
     /// and their capacity
     instances: [Option<(Buffer, usize)>; 3],
@@ -63,8 +74,8 @@ pub struct Rt {
     debug: vk::Pipeline,
     shadow: vk::Pipeline,
     /// the debug picture's and the sun's descriptor sets, and what each was written with (TLAS,
-    /// storage image)
-    sets: [(vk::DescriptorSet, Option<(u64, vk::ImageView)>); 2],
+    /// storage image, pages, materials)
+    sets: [(vk::DescriptorSet, Option<(u64, vk::ImageView, vk::Buffer, vk::Buffer)>); 2],
     /// the picture rays are shot into (storage image), its size
     image: Option<(vk::Image, vk::DeviceMemory, vk::ImageView, u32, u32)>,
 }
@@ -85,6 +96,8 @@ impl Rt {
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::COMPUTE),
                 vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
+                vk::DescriptorSetLayoutBinding::default().binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
+                vk::DescriptorSetLayoutBinding::default().binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
             ];
             let set_layout = device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None).map_err(err("descriptor set layout"))?;
             let ranges = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).size(PUSH)];
@@ -102,6 +115,7 @@ impl Rt {
             let sizes = [
                 vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 2 },
                 vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 2 },
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 4 },
             ];
             let pool = device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(2).pool_sizes(&sizes), None).map_err(err("descriptor pool"))?;
             let both = [set_layout, set_layout];
@@ -113,6 +127,10 @@ impl Rt {
                 memory,
                 blas: HashMap::new(),
                 generation: u32::MAX,
+                mats: Vec::new(),
+                mats_sent: 0,
+                mat_buf: None,
+                pages_buf: None,
                 instances: [None, None, None],
                 tlas: None,
                 tlas_made: 0,
@@ -168,18 +186,17 @@ impl Rt {
         Ok(b)
     }
 
-    /// Storage and scratch for an acceleration structure of `kind` with `geometry` (room for
-    /// `max` primitives); the build of `count` recorded into `cmd`.
-    fn build(&self, cmd: vk::CommandBuffer, kind: vk::AccelerationStructureTypeKHR, geometry: vk::AccelerationStructureGeometryKHR, count: u32, max: u32, mut bufs: Vec<Buffer>) -> Result<Accel, String> {
+    /// Storage and scratch for an acceleration structure of `kind` with `geometries` (room for
+    /// `max` primitives each); the build of `counts` recorded into `cmd`.
+    fn build(&self, cmd: vk::CommandBuffer, kind: vk::AccelerationStructureTypeKHR, geometries: &[vk::AccelerationStructureGeometryKHR], counts: &[u32], max: &[u32], mut bufs: Vec<Buffer>) -> Result<Accel, String> {
         unsafe {
-            let geometries = [geometry];
             let mut info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(kind)
                 .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-                .geometries(&geometries);
+                .geometries(geometries);
             let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
-            self.accel_fn.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &info, &[max], &mut sizes);
+            self.accel_fn.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &info, max, &mut sizes);
             let storage = self.buffer(sizes.acceleration_structure_size, vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR, false)?;
             let accel = self
                 .accel_fn
@@ -188,8 +205,8 @@ impl Rt {
             // scratch addresses aligned to 256 (more than any device asks)
             let scratch = self.buffer(sizes.build_scratch_size + 256, vk::BufferUsageFlags::STORAGE_BUFFER, false)?;
             info = info.dst_acceleration_structure(accel).scratch_data(vk::DeviceOrHostAddressKHR { device_address: (scratch.addr + 255) & !255 });
-            let range = [vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(count)];
-            self.accel_fn.cmd_build_acceleration_structures(cmd, &[info], &[&range]);
+            let ranges: Vec<_> = counts.iter().map(|&c| vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(c)).collect();
+            self.accel_fn.cmd_build_acceleration_structures(cmd, &[info], &[&ranges]);
             let addr = self.accel_fn.get_acceleration_structure_device_address(&vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(accel));
             bufs.push(storage);
             bufs.push(scratch);
@@ -197,26 +214,53 @@ impl Rt {
         }
     }
 
-    /// A BLAS of triangles (positions, indices), or none when there are none.
-    fn blas(&self, cmd: vk::CommandBuffer, (pos, idx): (Vec<[f32; 3]>, Vec<u32>)) -> Result<Option<Accel>, String> {
+    /// A BLAS of triangles (positions, indices), or none when there are none: the first
+    /// `opaque` triangles one opaque geometry, the rest a second one whose hits the rays test
+    /// by their texel (`shaders/rt_shadow.comp`; its primitive indices count from 0).
+    fn blas(&self, cmd: vk::CommandBuffer, pos: &[[f32; 3]], idx: &[u32], opaque: u32) -> Result<Option<Accel>, String> {
         if idx.is_empty() {
             return Ok(None);
         }
         let input = vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
-        let (vb, ib) = (self.upload(&pos, input)?, self.upload(&idx, input)?);
-        let tri = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
-            .vertex_format(vk::Format::R32G32B32_SFLOAT)
-            .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vb.addr })
-            .vertex_stride(12)
-            .max_vertex(pos.len() as u32 - 1)
-            .index_type(vk::IndexType::UINT32)
-            .index_data(vk::DeviceOrHostAddressConstKHR { device_address: ib.addr });
-        let geometry = vk::AccelerationStructureGeometryKHR::default()
-            .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-            .geometry(vk::AccelerationStructureGeometryDataKHR { triangles: tri })
-            .flags(vk::GeometryFlagsKHR::OPAQUE);
+        let (vb, ib) = (self.upload(pos, input)?, self.upload(idx, input)?);
         let n = idx.len() as u32 / 3;
-        self.build(cmd, vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL, geometry, n, n, vec![vb, ib]).map(Some)
+        let mut geometries = Vec::new();
+        let mut counts = Vec::new();
+        for (first, count, flags) in [(0, opaque, vk::GeometryFlagsKHR::OPAQUE), (opaque, n - opaque, vk::GeometryFlagsKHR::empty())] {
+            if count == 0 {
+                continue;
+            }
+            let tri = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vb.addr })
+                .vertex_stride(12)
+                .max_vertex(pos.len() as u32 - 1)
+                .index_type(vk::IndexType::UINT32)
+                .index_data(vk::DeviceOrHostAddressConstKHR { device_address: ib.addr + 12 * first as u64 });
+            geometries.push(vk::AccelerationStructureGeometryKHR::default().geometry_type(vk::GeometryTypeKHR::TRIANGLES).geometry(vk::AccelerationStructureGeometryDataKHR { triangles: tri }).flags(flags));
+            counts.push(count);
+        }
+        self.build(cmd, vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL, &geometries, &counts, &counts, vec![vb, ib]).map(Some)
+    }
+
+    /// A mesh's BLAS (`scene::model_mesh` / `block_mesh`) and its instances' custom index: `kind`
+    /// (`MODEL` or 0) | the first material of its triangles with keyed texels + 1.
+    fn mesh(&mut self, cmd: vk::CommandBuffer, (pos, idx, mats): (Vec<[f32; 3]>, Vec<u32>, Vec<super::scene::Material>), kind: u32) -> Result<Option<(Accel, u32)>, String> {
+        // opaque triangles first, then those with keyed texels and their materials
+        let keyed = |m: &super::scene::Material| m[1] >> 16 != super::scene::OPAQUE;
+        let mut sorted = Vec::with_capacity(idx.len());
+        for pass in [false, true] {
+            for (t, m) in idx.chunks(3).zip(&mats) {
+                if keyed(m) == pass {
+                    sorted.extend_from_slice(t);
+                }
+            }
+        }
+        let opaque = mats.iter().filter(|m| !keyed(m)).count() as u32;
+        let a = self.blas(cmd, &pos, &sorted, opaque)?;
+        let index = kind | (self.mats.len() as u32 + 1);
+        self.mats.extend(mats.into_iter().filter(keyed));
+        Ok(a.map(|a| (a, index)))
     }
 
     fn barrier(&self, cmd: vk::CommandBuffer, src: (vk::PipelineStageFlags, vk::AccessFlags), dst: (vk::PipelineStageFlags, vk::AccessFlags)) {
@@ -235,11 +279,22 @@ impl Rt {
             // a new mission: its geometry is elsewhere
             unsafe { self.device.device_wait_idle().map_err(err("wait"))? };
             for (_, a) in std::mem::take(&mut self.blas) {
-                if let Some(a) = a {
+                if let Some((a, _)) = a {
                     self.free_accel(a);
                 }
             }
+            self.mats.clear();
+            self.mats_sent = 0;
             self.generation = frame.generation;
+        }
+        // the mission's pages (the device is idle when they change: a new mission)
+        if self.pages_buf.as_ref().is_none_or(|p| p.1 != std::sync::Arc::as_ptr(&frame.pages)) {
+            unsafe { self.device.device_wait_idle().map_err(err("wait"))? };
+            if let Some((b, _)) = self.pages_buf.take() {
+                self.free(b);
+            }
+            let b = self.upload(&frame.pages[..], vk::BufferUsageFlags::STORAGE_BUFFER)?;
+            self.pages_buf = Some((b, std::sync::Arc::as_ptr(&frame.pages)));
         }
         // the last picture's rays and builds are done with what is built now
         self.barrier(cmd, (build | compute, aw | ar | vk::AccessFlags::SHADER_READ), (build, aw | ar));
@@ -248,28 +303,44 @@ impl Rt {
         for (sect, b) in &frame.blocks {
             let key = Key::Block(*sect);
             if !self.blas.contains_key(&key) {
-                let a = self.blas(cmd, super::scene::block_mesh(*sect, b))?;
+                let a = self.mesh(cmd, super::scene::block_mesh(*sect, b), 0)?;
                 self.blas.insert(key, a);
                 built += 1;
             }
-            if let Some(Some(a)) = self.blas.get(&key) {
+            if let Some(Some((a, index))) = self.blas.get(&key) {
                 let o = b.origin.map(|x| x as f32);
-                instances.push(instance([1.0, 0.0, 0.0, o[0], 0.0, 1.0, 0.0, o[1], 0.0, 0.0, 1.0, o[2]], 0, a.addr));
+                instances.push(instance([1.0, 0.0, 0.0, o[0], 0.0, 1.0, 0.0, o[1], 0.0, 0.0, 1.0, o[2]], *index, a.addr));
             }
         }
         for i in &frame.models {
             let key = Key::Model(i.list, i.first, i.count);
             if !self.blas.contains_key(&key) {
-                let a = self.blas(cmd, super::scene::model_mesh(i))?;
+                let a = self.mesh(cmd, super::scene::model_mesh(i), MODEL)?;
                 self.blas.insert(key, a);
                 built += 1;
             }
-            if let Some(Some(a)) = self.blas.get(&key) {
-                instances.push(instance(model_transform(i), 1, a.addr));
+            if let Some(Some((a, index))) = self.blas.get(&key) {
+                instances.push(instance(model_transform(i), *index, a.addr));
             }
         }
         if built > 0 {
             self.barrier(cmd, (build, aw), (build, ar));
+        }
+        // new materials: behind those the rays in flight read, or all into a larger buffer
+        if self.mat_buf.as_ref().is_none_or(|b| b.1 < self.mats.len()) {
+            unsafe { self.device.device_wait_idle().map_err(err("wait"))? };
+            if let Some((b, _)) = self.mat_buf.take() {
+                self.free(b);
+            }
+            let cap = self.mats.len().max(4096).next_power_of_two();
+            self.mat_buf = Some((self.buffer((cap * 8) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, true)?, cap));
+            self.mats_sent = 0;
+        }
+        if self.mats_sent < self.mats.len() {
+            let (b, _) = self.mat_buf.as_ref().unwrap();
+            let new = &self.mats[self.mats_sent..];
+            unsafe { std::ptr::copy_nonoverlapping(new.as_ptr() as *const u8, b.ptr.add(self.mats_sent * 8), new.len() * 8) };
+            self.mats_sent = self.mats.len();
         }
         // the instances into this picture's buffer
         if self.instances[slot].as_ref().is_none_or(|b| b.1 < instances.len()) {
@@ -309,7 +380,7 @@ impl Rt {
                     self.free(scratch);
                 }
                 let cap = instances.len().max(256).next_power_of_two();
-                let mut tlas = self.build(cmd, top, geometry, n, cap as u32, vec![])?;
+                let mut tlas = self.build(cmd, top, &[geometry], &[n], &[cap as u32], vec![])?;
                 let scratch = tlas.bufs.pop().unwrap();
                 self.tlas = Some((tlas, scratch, cap));
                 self.tlas_made += 1;
@@ -323,16 +394,22 @@ impl Rt {
     /// `view`, written when either changed.
     fn set(&mut self, k: usize, view: vk::ImageView) -> vk::DescriptorSet {
         let (set, bound) = self.sets[k];
-        if bound != Some((self.tlas_made, view)) {
+        let (pages, mats) = (self.pages_buf.as_ref().unwrap().0.buf, self.mat_buf.as_ref().unwrap().0.buf);
+        let now = (self.tlas_made, view, pages, mats);
+        if bound != Some(now) {
             let accels = [self.tlas.as_ref().unwrap().0.accel];
             let mut write_as = vk::WriteDescriptorSetAccelerationStructureKHR::default().acceleration_structures(&accels);
             let images = [vk::DescriptorImageInfo::default().image_view(view).image_layout(vk::ImageLayout::GENERAL)];
+            let page_info = [vk::DescriptorBufferInfo::default().buffer(pages).range(vk::WHOLE_SIZE)];
+            let mat_info = [vk::DescriptorBufferInfo::default().buffer(mats).range(vk::WHOLE_SIZE)];
             let writes = [
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1).push_next(&mut write_as),
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&images),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&page_info),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mat_info),
             ];
             unsafe { self.device.update_descriptor_sets(&writes, &[]) };
-            self.sets[k].1 = Some((self.tlas_made, view));
+            self.sets[k].1 = Some(now);
         }
         set
     }

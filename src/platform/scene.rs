@@ -64,6 +64,8 @@ thread_local! {
     /// the last view's scene for the rays
     static LAST: RefCell<Option<Frame>> = const { RefCell::new(None) };
     static GENERATION: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// the mission's texture pages as coverage bits (`Frame::pages`)
+    static PAGES: RefCell<std::sync::Arc<Vec<u32>>> = RefCell::new(std::sync::Arc::new(Vec::new()));
     static MAP_FRAME: std::cell::Cell<Option<MapFrame>> = const { std::cell::Cell::new(None) };
     /// records model_draw drew for the view
     static DRAWN: RefCell<std::collections::HashSet<u32>> = RefCell::new(std::collections::HashSet::new());
@@ -270,6 +272,33 @@ pub struct Frame {
     pub models: Vec<Instance>,
     pub blocks: Vec<(u32, Block)>,
     pub generation: u32,
+    /// the mission's texture pages as bits, 1 where a texel covers (not black: keyed out), 2048
+    /// words a page by page number (`Cbmp` - 1) (`pages`)
+    pub pages: std::sync::Arc<Vec<u32>>,
+}
+
+/// A triangle's material for the rays (`model_mesh`): texel coordinates of its corners
+/// u0 v0 u1 v1 (bytes of the first word), u2 v2 and the page (second word, page from bit 16;
+/// `OPAQUE` none: always covers).
+pub type Material = [u32; 2];
+pub const OPAQUE: u32 = 0xffff;
+
+/// The texture pages of mission file `path` as coverage bits (`Frame::pages`).
+fn page_bits(path: &str) -> Vec<u32> {
+    let Ok(file) = std::fs::read(super::host_path(path)) else { return Vec::new() };
+    let mut bits = Vec::new();
+    for r in crate::mission::resources(&file).iter().filter(|r| r.kind == "Cbmp") {
+        let (Some(t), Some(page)) = (crate::mission::page_texels(&r.data), r.id.checked_sub(1)) else { continue };
+        let at = page as usize * 2048;
+        if bits.len() < at + 2048 {
+            // pages missing in between cover everywhere
+            bits.resize(at + 2048, u32::MAX);
+        }
+        for (i, w) in bits[at..at + 2048].iter_mut().enumerate() {
+            *w = (0..32).fold(0, |a, b| a | (((t[32 * i + b] & 0x7fff != 0) as u32) << b));
+        }
+    }
+    bits
 }
 
 /// The last view's scene (taken by the sun's rays in `glide::post_3d`, else by the Vulkan
@@ -278,8 +307,10 @@ pub fn take_frame() -> Option<Frame> {
     LAST.with_borrow_mut(|l| l.take())
 }
 
-/// A model's (or part's) triangles in model space: positions and indices.
-pub fn model_mesh(i: &Instance) -> (Vec<[f32; 3]>, Vec<u32>) {
+/// A model's (or part's) triangles in model space: positions, indices and each triangle's
+/// material (textured faces: face flags & 0x80; their `3DTL` entry: +4 the corners' u v bytes,
+/// +12 the page).
+pub fn model_mesh(i: &Instance) -> (Vec<[f32; 3]>, Vec<u32>, Vec<Material>) {
     let m = super::mem();
     let pos = (0..i.count)
         .map(|n| {
@@ -288,7 +319,9 @@ pub fn model_mesh(i: &Instance) -> (Vec<[f32; 3]>, Vec<u32>) {
         })
         .collect();
     let faces = m.rd32(i.model + 0x24);
+    let entries = m.rd32(i.model + 0x28);
     let mut idx = Vec::new();
+    let mut mats = Vec::new();
     for f in 0..m.rd32(faces).min(4096) {
         let a = faces + 4 + 12 * f;
         let corners = (m.rd8(a + 1) & 7) as u32;
@@ -300,12 +333,20 @@ pub fn model_mesh(i: &Instance) -> (Vec<[f32; 3]>, Vec<u32>) {
             continue;
         }
         let v: Vec<u32> = vs.iter().map(|&v| v - i.first).collect();
+        // (the model's pointer is the first entry, behind the chunk's word)
+        let e = entries + m.rd16(a + 2) as u32;
+        let textured = m.rd8(a) & 0x80 != 0 && entries != 0;
+        let uv = |k: u32| m.rd16(e + 4 + 2 * k) as u32;
+        let page = if textured { m.rd32(e + 12).min(OPAQUE - 1) } else { OPAQUE };
+        let mat = |a, b, c| if page == OPAQUE { [0, OPAQUE << 16] } else { material([uv(a), uv(b), uv(c)], page) };
         idx.extend([v[0], v[1], v[2]]);
+        mats.push(mat(0, 1, 2));
         if corners == 4 {
             idx.extend([v[0], v[2], v[3]]);
+            mats.push(mat(0, 2, 3));
         }
     }
-    (pos, idx)
+    (pos, idx, mats)
 }
 
 /// Per tile shape its 4 corners (point indices from the cell's first) (`terrain.rs`).
@@ -313,10 +354,14 @@ const CORNERS: Us = Us(0x48c608);
 
 /// A terrain block's tiles (all of them, as `terrain.rs` walks a group's) relative to its
 /// origin, in world axes.
-pub fn block_mesh(sect: u32, b: &Block) -> (Vec<[f32; 3]>, Vec<u32>) {
+pub fn block_mesh(sect: u32, b: &Block) -> (Vec<[f32; 3]>, Vec<u32>, Vec<Material>) {
     let m = super::mem();
     let mut pos = Vec::new();
     let mut idx = Vec::new();
+    let mut mats = Vec::new();
+    // a tile's texture (u16 in the table at [sect + 4]: page bits 8-10, bit 13 four texel
+    // coordinates) and its coordinates (u v bytes at [sect + 8]), as `terrain.rs` reads them
+    let (textures, coords) = (m.rd32(sect + 4), m.rd32(sect + 8));
     let mut point = |i: u32| -> Option<u32> {
         let h = m.rd8(sect + 0xc + i) as i8;
         if h == -128 {
@@ -346,9 +391,21 @@ pub fn block_mesh(sect: u32, b: &Block) -> (Vec<[f32; 3]>, Vec<u32>) {
             let n = if k[3] == k[0] { 3 } else { 4 };
             let p: Option<Vec<u32>> = k[..n].iter().map(|&i| point(i)).collect();
             if let Some(p) = p {
+                let tw = m.rd16(textures + ((t >> 21) & 0x7fe)) as u32;
+                let at = coords + (t & 0x7fe);
+                let mut uv: [u32; 4] = std::array::from_fn(|i| m.rd16(at + 2 * i as u32) as u32);
+                if tw & 0x2000 == 0 {
+                    // three coordinates: the fourth corner's completes the parallelogram
+                    let c = |w: u32, s: u32| (w >> s & 255) as i32;
+                    let f = |s| (c(uv[0], s) + c(uv[2], s) - c(uv[1], s)).clamp(0, 255) as u32;
+                    uv[3] = f(0) | f(8) << 8;
+                }
+                let page = (tw >> 8) & 7;
                 idx.extend([p[0], p[1], p[2]]);
+                mats.push(material([uv[0], uv[1], uv[2]], page));
                 if n == 4 {
                     idx.extend([p[0], p[2], p[3]]);
+                    mats.push(material([uv[0], uv[2], uv[3]], page));
                 }
             }
             if c >= 16 {
@@ -356,7 +413,26 @@ pub fn block_mesh(sect: u32, b: &Block) -> (Vec<[f32; 3]>, Vec<u32>) {
             }
         }
     }
-    (pos, idx)
+    (pos, idx, mats)
+}
+
+/// A triangle's material: texel coordinates of its corners (u | v << 8) on `page`; `OPAQUE`
+/// when no texel of their box is keyed out (the rays then need not test its texels).
+fn material(uv: [u32; 3], page: u32) -> Material {
+    let keyed = PAGES.with_borrow(|bits| {
+        let c = |s: u32| uv.map(|w| w >> s & 255);
+        let (us, vs) = (c(0), c(8));
+        let (u0, u1) = (*us.iter().min().unwrap(), *us.iter().max().unwrap());
+        let (v0, v1) = (*vs.iter().min().unwrap(), *vs.iter().max().unwrap());
+        (v0..=v1).any(|v| {
+            (u0..=u1).any(|u| {
+                let i = (page * 65536 + v * 256 + u) as usize;
+                bits.get(i >> 5).is_some_and(|w| w >> (i & 31) & 1 == 0)
+            })
+        })
+    });
+    let page = if keyed { page } else { OPAQUE };
+    [uv[0] | uv[1] << 16, uv[2] | page << 16]
 }
 
 fn log_on() -> bool {
@@ -518,6 +594,9 @@ fn new_mission() {
     MODELS.with_borrow_mut(|m| m.clear());
     MAP_FRAME.set(None);
     GENERATION.set(GENERATION.get() + 1);
+    if rays() {
+        PAGES.set(std::sync::Arc::new(page_bits(&path)));
+    }
     if !log_on() {
         return;
     }
@@ -564,7 +643,7 @@ pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f3
                     super::log!("scene: frame of {} blocks, {drawn_count} drawn instances, {} more objects and actors", blocks.len(), models.len() - drawn_count);
                 }
             }
-            LAST.set(Some(Frame { camera, k, models, blocks, generation: GENERATION.get() }));
+            LAST.set(Some(Frame { camera, k, models, blocks, generation: GENERATION.get(), pages: PAGES.with_borrow(|p| p.clone()) }));
         }
         return;
     }

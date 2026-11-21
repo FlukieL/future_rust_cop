@@ -297,7 +297,17 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   `shaders/rt_shadow.comp` (place from depth, pulled toward the camera by 2 + 0.002 z, one ray
   toward the sun, terminate on first hit) writing G = 1 where blocked, signals back; GL waits on
   the GPU, the AO's last pass (`ao::Sun::Traced`, `use_sun` 2) takes G times the N·L fade the
-  map has. Opaque so far: keyed lattices (railings) cast solid shadows. First mission start,
+  map has. Keyed texels (lattices, railings, trees) let light through: each triangle's material
+  (`scene::Material`: corners' u v bytes, page; models: face flags & 0x80 textured, the model's
+  +0x28 points at the first `3DTL` entry, the face's u16 at +2 adds; terrain: texture word at
+  [sect + 4] + (t >> 21 & 0x7fe), page bits 8-10, bit 13 four coordinates (else the fourth
+  completes the parallelogram), coordinates at [sect + 8] + (t & 0x7fe)) is `OPAQUE` unless its
+  texel box on the page has a black texel; the mission's pages as coverage bits (`scene::PAGES`,
+  from its `Cbmp`s, 1 = colour not black) and the keyed triangles' materials are storage
+  buffers (bindings 2, 3). Each BLAS has an opaque geometry and one of the keyed triangles
+  (without OPAQUE: candidates); the instance's custom index is bit 23 model | its first keyed
+  material + 1, the shader confirms a candidate where the barycentric texel covers (all
+  non-opaque BLAS halved the frame rate; split: no cost seen). First mission start,
   1280x960, MSAA 8, AO on: ~530 fps against the shadow map's ~320.
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
