@@ -1833,6 +1833,8 @@ pub fn set_gbuffer(on: Option<f32>) {
 pub fn post_3d() {
     with(|g, gl| {
         g.flush(gl);
+        // FCOP_GBUFFER=scene: our scene's models as lines over the picture (PLAN-RTX.md step 2)
+        super::scene::overlay(gl, g.draw_fbo(), g.target.0, g.target.1, super::wide::k());
         let _t = super::fps::timer(super::fps::Phase::Post);
         let lights = std::mem::take(&mut g.lights);
         let heat = std::mem::take(&mut g.heat_sources);

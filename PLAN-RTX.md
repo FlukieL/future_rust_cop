@@ -91,9 +91,9 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
       replacements, `hd.rs`), chroma key as alpha test. Colour byte and flags per face.
 - [ ] TLAS built per picture. Pictures drawn in between (`fps.rs`) use the interpolated
       transforms, so the scene must be read after `fps.rs` has placed things.
-- [ ] Debug view `FCOP_GBUFFER=scene`: our scene rasterized from the game's camera, laid
-      over the game's picture, plus a depth difference to `ao::depths`. Both must agree
-      before anything builds on the scene.
+- [x] Debug view `FCOP_GBUFFER=scene` (2026-11-21): each view's instances as green lines
+      over its 3D picture (`scene::overlay` from `glide::post_3d`, no depth test). They lie on
+      the robot (all parts, animated), enemies and objects. Terrain not yet.
 
 ## Step 3: motion vectors and jitter
 

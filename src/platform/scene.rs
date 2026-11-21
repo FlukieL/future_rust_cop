@@ -19,6 +19,9 @@
 //! model's +0x14 list, 0x14 bytes each: +0 number, +3 first vertex, +4 count, +7 & 0x80 last)
 //! ranges of the first list.
 //!
+//! `FCOP_GBUFFER=scene` draws each view's instances as green lines over its 3D picture
+//! (`overlay`, called from `glide::post_3d`): they must lie on the game's models.
+//!
 //! `FCOP_SCENE_LOG=1` logs each model the first time it is drawn, the mission file's `Cobj`
 //! counts for comparison, and every 2 s how far the world matrices of models not in parts are
 //! from their records (matrix and position).
@@ -44,11 +47,25 @@ thread_local! {
     static CURRENT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// what was drawn (for now: since the last log)
     static PICTURE: RefCell<Vec<Instance>> = const { RefCell::new(Vec::new()) };
+    /// the camera of the instances collected: matrix C and position c / 16
+    static VIEW_CAMERA: std::cell::Cell<Option<([f64; 9], [f64; 3])>> = const { std::cell::Cell::new(None) };
+    static OVERLAY: RefCell<Option<(glow::Program, glow::VertexArray, glow::Buffer)>> = const { RefCell::new(None) };
     /// points checked, their largest and summed distance (model units), since the last log
     static STATS: std::cell::Cell<(u64, f64, f64, std::option::Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0.0, 0.0, None)) };
 }
 
 const CAMERA: Us = Us(0x511f48);
+
+/// `FCOP_GBUFFER=scene`: the overlay.
+fn overlay_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FCOP_GBUFFER").is_ok_and(|v| v == "scene"))
+}
+
+/// Instances are collected (for the log or the overlay).
+fn wanted() -> bool {
+    log_on() || overlay_on()
+}
 
 fn log_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -59,6 +76,8 @@ fn log_on() -> bool {
 pub fn model_draw(c: &mut Cpu) {
     if log_on() {
         note(c);
+    }
+    if wanted() {
         CURRENT.set(super::mem().rd32(c.r[ESP] + 4));
     }
     call_original(c, MODEL_DRAW.at());
@@ -143,16 +162,21 @@ pub fn check(p: u32, n: u32) {
         max = f64::max(max, dr * 1000.0);
     }
     PICTURE.with_borrow_mut(|v| v.push(inst));
+    VIEW_CAMERA.set(Some((std::array::from_fn(|k| c[k]), std::array::from_fn(|k| cp[k]))));
+    if !log_on() {
+        return;
+    }
     let now = std::time::Instant::now();
     let since = *since.get_or_insert(now);
     if now - since >= std::time::Duration::from_secs(2) {
-        let (whole, inparts) = PICTURE.with_borrow(|v| (v.iter().filter(|i| i.first == 0).count(), v.iter().filter(|i| i.first != 0).count()));
         super::log!(
-            "scene: {count} models checked against their records: position off by {:.2} model units on average, matrix by at most {:.4}; {whole} + {inparts} instances since",
+            "scene: {count} models checked against their records: position off by {:.2} model units on average, matrix by at most {:.4}",
             sum / count.max(1) as f64,
             max / 1000.0
         );
-        PICTURE.with_borrow_mut(|v| v.clear());
+        if !overlay_on() {
+            PICTURE.with_borrow_mut(|v| v.clear());
+        }
         STATS.set((0, 0.0, 0.0, Some(now)));
     } else {
         STATS.set((count, max, sum, Some(since)));
@@ -200,4 +224,81 @@ fn new_mission() {
         let count = |tag: &str| crate::mission::chunks(&r.data).iter().find(|c| c.0 == tag).map(|c| u32::from_le_bytes(c.1[4..8].try_into().unwrap()));
         super::log!("scene: {path} Cobj {} vertices {:?} faces {:?}", r.id, count("4DVL"), count("3DQL"));
     }
+}
+
+const LINE_VS: &str = r#"
+layout(location = 0) in vec2 pos;
+void main() { gl_Position = vec4(pos, 0.0, 1.0); }
+"#;
+
+const LINE_FS: &str = r#"
+out vec4 color;
+void main() { color = vec4(0.1, 1.0, 0.2, 1.0); }
+"#;
+
+/// `FCOP_GBUFFER=scene`: the view's instances as lines into `fbo` (the 3D picture, w x h
+/// pixels, `k` widescreen's x scale), then forgotten.
+pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f32) {
+    use glow::HasContext;
+    let instances = PICTURE.with_borrow_mut(std::mem::take);
+    let Some((c, cp)) = VIEW_CAMERA.take().filter(|_| overlay_on()) else { return };
+    let m = super::mem();
+    let focal = 4096.0 * h as f64 / 1920.0;
+    let ndc = |p: [f64; 3]| -> Option<[f32; 2]> {
+        (p[2] > 16.0).then(|| [(p[0] * k as f64 * focal / p[2] / (w as f64 * 0.5)) as f32, (p[1] * focal / p[2] / (h as f64 * 0.5)) as f32])
+    };
+    let mut lines: Vec<[f32; 2]> = Vec::new();
+    for i in &instances {
+        let faces = m.rd32(i.model + 0x24);
+        let cam: Vec<Option<[f32; 2]>> = (0..i.count)
+            .map(|n| {
+                let a = i.list + 4 + 8 * (i.first + n);
+                let v: [f64; 3] = std::array::from_fn(|j| m.rd16(a + 2 * j as u32) as i16 as f64);
+                let w: [f64; 3] = std::array::from_fn(|j| (0..3).map(|r| v[r] * i.matrix[3 * r + j]).sum::<f64>() + i.offset[j] - cp[j]);
+                ndc(std::array::from_fn(|j| (0..3).map(|r| w[r] * c[3 * r + j]).sum()))
+            })
+            .collect();
+        for f in 0..m.rd32(faces).min(4096) {
+            let a = faces + 4 + 12 * f;
+            let corners = (m.rd8(a + 1) & 7) as u32;
+            if corners != 3 && corners != 4 {
+                continue;
+            }
+            let vs: Vec<u32> = (0..corners).map(|k| m.rd8(a + 4 + k) as u32).collect();
+            if vs.iter().any(|&v| v < i.first || v >= i.first + i.count) {
+                continue;
+            }
+            for e in 0..corners as usize {
+                if let (Some(p), Some(q)) = (cam[(vs[e] - i.first) as usize], cam[(vs[(e + 1) % vs.len()] - i.first) as usize]) {
+                    lines.push(p);
+                    lines.push(q);
+                }
+            }
+        }
+    }
+    OVERLAY.with_borrow_mut(|o| {
+        let (prog, vao, vbo) = *o.get_or_insert_with(|| unsafe {
+            let prog = super::gl::compile(gl, LINE_VS, LINE_FS);
+            let vao = gl.create_vertex_array().expect("GL vertex array");
+            let vbo = gl.create_buffer().expect("GL buffer");
+            gl.bind_vertex_array(Some(vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+            gl.enable_vertex_attrib_array(0);
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
+            (prog, vao, vbo)
+        });
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.viewport(0, 0, w as i32, h as i32);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.disable(glow::BLEND);
+            gl.disable(glow::DEPTH_TEST);
+            gl.use_program(Some(prog));
+            gl.bind_vertex_array(Some(vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+            let bytes = std::slice::from_raw_parts(lines.as_ptr() as *const u8, lines.len() * 8);
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
+            gl.draw_arrays(glow::LINES, 0, lines.len() as i32);
+        }
+    });
 }
