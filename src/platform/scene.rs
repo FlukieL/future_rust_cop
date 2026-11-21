@@ -61,6 +61,9 @@ thread_local! {
     static BLOCKS: RefCell<HashMap<u32, Block>> = RefCell::new(HashMap::new());
     /// the terrain tiles kept for the view: sect and corners
     static TILES: RefCell<Vec<(u32, [u16; 4])>> = const { RefCell::new(Vec::new()) };
+    /// the last view's scene for the rays
+    static LAST: RefCell<Option<Frame>> = const { RefCell::new(None) };
+    static GENERATION: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// points checked, their largest and summed distance (model units), since the last log
     static STATS: std::cell::Cell<(u64, f64, f64, std::option::Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0.0, 0.0, None)) };
 }
@@ -127,9 +130,113 @@ fn overlay_on() -> bool {
     *ON.get_or_init(|| std::env::var("FCOP_GBUFFER").is_ok_and(|v| v == "scene"))
 }
 
-/// Instances are collected (for the log or the overlay).
+/// `FCOP_GBUFFER=rt`: the window shows rays from the camera against the scene's acceleration
+/// structures instead of the picture (`raytrace.rs`).
+pub fn rt_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FCOP_GBUFFER").is_ok_and(|v| v == "rt"))
+}
+
+/// Instances are collected (for the log, the overlay or the rays).
 fn wanted() -> bool {
-    log_on() || overlay_on()
+    log_on() || overlay_on() || rt_on()
+}
+
+/// A view's scene as `raytrace.rs` takes it: the camera (matrix C, position c / 16), widescreen's
+/// x scale, the drawn models and parts, the terrain blocks projected; `generation` changes with
+/// each mission (cached geometry is stale then).
+pub struct Frame {
+    pub camera: ([f64; 9], [f64; 3]),
+    pub k: f32,
+    pub models: Vec<Instance>,
+    pub blocks: Vec<(u32, Block)>,
+    pub generation: u32,
+}
+
+/// The last view's scene (taken by the Vulkan present).
+pub fn take_frame() -> Option<Frame> {
+    LAST.with_borrow_mut(|l| l.take())
+}
+
+/// A model's (or part's) triangles in model space: positions and indices.
+pub fn model_mesh(i: &Instance) -> (Vec<[f32; 3]>, Vec<u32>) {
+    let m = super::mem();
+    let pos = (0..i.count)
+        .map(|n| {
+            let a = i.list + 4 + 8 * (i.first + n);
+            std::array::from_fn(|j| m.rd16(a + 2 * j as u32) as i16 as f32)
+        })
+        .collect();
+    let faces = m.rd32(i.model + 0x24);
+    let mut idx = Vec::new();
+    for f in 0..m.rd32(faces).min(4096) {
+        let a = faces + 4 + 12 * f;
+        let corners = (m.rd8(a + 1) & 7) as u32;
+        if corners != 3 && corners != 4 {
+            continue;
+        }
+        let vs: Vec<u32> = (0..corners).map(|k| m.rd8(a + 4 + k) as u32).collect();
+        if vs.iter().any(|&v| v < i.first || v >= i.first + i.count) {
+            continue;
+        }
+        let v: Vec<u32> = vs.iter().map(|&v| v - i.first).collect();
+        idx.extend([v[0], v[1], v[2]]);
+        if corners == 4 {
+            idx.extend([v[0], v[2], v[3]]);
+        }
+    }
+    (pos, idx)
+}
+
+/// Per tile shape its 4 corners (point indices from the cell's first) (`terrain.rs`).
+const CORNERS: Us = Us(0x48c608);
+
+/// A terrain block's tiles (all of them, as `terrain.rs` walks a group's) relative to its
+/// origin, in world axes.
+pub fn block_mesh(sect: u32, b: &Block) -> (Vec<[f32; 3]>, Vec<u32>) {
+    let m = super::mem();
+    let mut pos = Vec::new();
+    let mut idx = Vec::new();
+    let mut point = |i: u32| -> Option<u32> {
+        let h = m.rd8(sect + 0xc + i) as i8;
+        if h == -128 {
+            return None;
+        }
+        let (row, col) = ((i / 3 / 17) as f64, (i / 3 % 17) as f64);
+        pos.push(std::array::from_fn(|j| (row * b.rows[j] + col * b.columns[j] + h as f64 * b.height[j]) as f32));
+        Some(pos.len() as u32 - 1)
+    };
+    for g in 0..16u32 {
+        let gofs = (g / 4) * 64 + (g % 4) * 4;
+        let mut tp = sect + 0x5d0 + (m.rd16(sect + 0x3cc + 2 * gofs) as u32 >> 4);
+        let (mut c, mut ci) = (0, gofs);
+        for _ in 0..1024 {
+            let t = m.rd32(tp);
+            tp += 4;
+            let cell = ci;
+            if t & 1 != 0 {
+                c += 1;
+                ci += 1;
+                if c & 3 == 0 {
+                    ci += 0xc;
+                }
+            }
+            let shape = (t >> 15) & 0x7f;
+            let k: Vec<u32> = (0..4).map(|i| 3 * (cell + (cell >> 4)) + m.rd8(CORNERS.at() + 4 * shape + i) as u32).collect();
+            let n = if k[3] == k[0] { 3 } else { 4 };
+            let p: Option<Vec<u32>> = k[..n].iter().map(|&i| point(i)).collect();
+            if let Some(p) = p {
+                idx.extend([p[0], p[1], p[2]]);
+                if n == 4 {
+                    idx.extend([p[0], p[2], p[3]]);
+                }
+            }
+            if c >= 16 {
+                break;
+            }
+        }
+    }
+    (pos, idx)
 }
 
 fn log_on() -> bool {
@@ -178,6 +285,7 @@ pub fn check(p: u32, n: u32) {
     }
     let m = super::mem();
     let model = m.rd32(record);
+    new_mission();
     let rd = |a: u32| m.rd32(a) as i32 as f64;
     let lists = m.rd32(model + 0x1c);
     let parts = m.rd32(model + 0xc) & 0x2000000 != 0;
@@ -284,6 +392,10 @@ fn new_mission() {
     }
     MISSION.with_borrow_mut(|p| *p = path.clone());
     MODELS.with_borrow_mut(|m| m.clear());
+    GENERATION.set(GENERATION.get() + 1);
+    if !log_on() {
+        return;
+    }
     let Ok(file) = std::fs::read(super::host_path(&path)) else { return };
     for r in crate::mission::resources(&file).iter().filter(|r| r.kind == "Cobj") {
         let count = |tag: &str| crate::mission::chunks(&r.data).iter().find(|c| c.0 == tag).map(|c| u32::from_le_bytes(c.1[4..8].try_into().unwrap()));
@@ -307,7 +419,16 @@ void main() { color = tint; }
 pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f32) {
     use glow::HasContext;
     let instances = PICTURE.with_borrow_mut(std::mem::take);
-    let Some((c, cp)) = VIEW_CAMERA.take().filter(|_| overlay_on()) else {
+    let camera = VIEW_CAMERA.take();
+    if rt_on() {
+        if let Some(camera) = camera {
+            let blocks = BLOCKS.with_borrow_mut(std::mem::take).into_iter().collect();
+            TILES.with_borrow_mut(|t| t.clear());
+            LAST.set(Some(Frame { camera, k, models: instances, blocks, generation: GENERATION.get() }));
+        }
+        return;
+    }
+    let Some((c, cp)) = camera.filter(|_| overlay_on()) else {
         BLOCKS.with_borrow_mut(|b| b.clear());
         TILES.with_borrow_mut(|t| t.clear());
         return;

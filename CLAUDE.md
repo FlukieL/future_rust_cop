@@ -273,6 +273,15 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   terrain pass gives each block's camera-space origin and axes (`scene::terrain_block`, 16
   terrain units to a model unit, height axis / 256) and each kept tile's corners
   (`scene::terrain_tile`); world frame = camera taken out.
+- `raytrace.rs` (PLAN-RTX.md, `FCOP_GBUFFER=rt` with `FCOP_VULKAN=1`): BLAS per model vertex
+  range / part (`scene::model_mesh`) and terrain block (`scene::block_mesh`, all its tiles as
+  `terrain.rs` walks them), cached until the mission changes (`scene::Frame::generation`); a
+  TLAS of the last view's instances (`scene::take_frame`, set in `scene::overlay`) rebuilt in
+  place each picture (instance buffers per picture in flight); a compute shader with ray query
+  (`shaders/rt_debug.comp`; SPIR-V checked in, rebuilt with the Vulkan SDK's
+  `glslc --target-env=vulkan1.2 -O shaders/rt_debug.comp -o shaders/rt_debug.spv`) shoots a
+  ray per pixel from the game's camera; `vk.rs` copies that picture into the swapchain instead
+  of GL's. The RT device extensions/features are enabled only with this switch.
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
   path 0x4397cd, so vertices arrive in 2560x1920 units; text (type 6, game pixels) is drawn in

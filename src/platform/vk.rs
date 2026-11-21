@@ -142,6 +142,8 @@ pub struct Vk {
     family: u32,
     swapchain_fn: khr::swapchain::Device,
     mem_fn: MemFn,
+    /// ray tracing (`raytrace.rs`), when on and the device has it
+    rt: Option<super::raytrace::Rt>,
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     /// signalled by the copy into each swapchain image, waited for by its present
@@ -273,10 +275,28 @@ impl Vk {
 
             let prio = [1.0];
             let queues = [vk::DeviceQueueCreateInfo::default().queue_family_index(family).queue_priorities(&prio)];
-            let ext_ptrs: Vec<*const c_char> = dev_exts.iter().map(|e| e.as_ptr()).collect();
-            let device = instance
-                .create_device(phys, &vk::DeviceCreateInfo::default().queue_create_infos(&queues).enabled_extension_names(&ext_ptrs), None)
-                .map_err(err("vkCreateDevice"))?;
+            let mut ext_ptrs: Vec<*const c_char> = dev_exts.iter().map(|e| e.as_ptr()).collect();
+            // ray tracing (FCOP_GBUFFER=rt for now): its extensions and features when the device has them
+            let has = instance.enumerate_device_extension_properties(phys).unwrap_or_default();
+            let rt = super::scene::rt_on()
+                && instance.get_physical_device_properties(phys).api_version >= vk::API_VERSION_1_2
+                && super::raytrace::EXTENSIONS.iter().all(|e| has.iter().any(|h| h.extension_name_as_c_str() == Ok(*e)));
+            let mut v12 = vk::PhysicalDeviceVulkan12Features::default().buffer_device_address(true);
+            let mut accel = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
+            let mut query = vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(true);
+            let mut info = vk::DeviceCreateInfo::default().queue_create_infos(&queues);
+            if rt {
+                ext_ptrs.extend(super::raytrace::EXTENSIONS.iter().map(|e| e.as_ptr()));
+                info = info.push_next(&mut v12).push_next(&mut accel).push_next(&mut query);
+            } else if super::scene::rt_on() {
+                super::log!("vulkan: no ray tracing on this device");
+            }
+            let info = info.enabled_extension_names(&ext_ptrs);
+            let device = instance.create_device(phys, &info, None).map_err(err("vkCreateDevice"))?;
+            let rt = match rt {
+                true => super::raytrace::Rt::new(&instance, &device, phys).map_err(|e| super::log!("error: raytrace: {e}")).ok(),
+                false => None,
+            };
             let queue = device.get_device_queue(family, 0);
             let swapchain_fn = khr::swapchain::Device::new(&instance, &device);
             let mem_fn = MemFn::new(&instance, &device);
@@ -349,6 +369,7 @@ impl Vk {
                 slots,
                 cur: 0,
                 gl: gl_fns,
+                rt,
             };
             let size = win.inner_size();
             v.build_swapchain(size.width, size.height)?;
@@ -532,6 +553,7 @@ impl Vk {
             gl.flush();
             let f = &self.frames[self.next];
             let (cmd, fence, acquired) = (f.cmd, f.fence, f.acquired);
+            let slot = self.next;
             self.next ^= 1;
             let _ = self.device.wait_for_fences(&[fence], true, u64::MAX);
             if self.stale.get() {
@@ -574,7 +596,26 @@ impl Vk {
                 take.push(barrier(self.images[i], vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, ign, ign));
             }
             d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &take);
-            if let Some(i) = img {
+            // FCOP_GBUFFER=rt: the rays' picture instead of GL's (the last view's scene)
+            let (ew, eh) = (self.extent.width, self.extent.height);
+            let rays = match (&mut self.rt, img, super::scene::take_frame()) {
+                (Some(rt), Some(_), Some(frame)) => match rt.record(cmd, slot, ew, eh, &frame) {
+                    Ok(image) => Some(image),
+                    Err(e) => {
+                        super::log!("error: raytrace: {e}");
+                        self.rt = None;
+                        None
+                    }
+                },
+                _ => None,
+            };
+            let d = &self.device;
+            if let (Some(i), Some(image)) = (img, rays) {
+                let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
+                let o = |x: u32, y: u32, z| vk::Offset3D { x: x as i32, y: y as i32, z };
+                let blit = vk::ImageBlit::default().src_subresource(layers).src_offsets([o(0, 0, 0), o(ew, eh, 1)]).dst_subresource(layers).dst_offsets([o(0, 0, 0), o(ew, eh, 1)]);
+                d.cmd_blit_image(cmd, image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, self.images[i], vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::NEAREST);
+            } else if let Some(i) = img {
                 let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
                 let o = |x: u32, y: u32, z| vk::Offset3D { x: x as i32, y: y as i32, z };
                 // the first row of GL's picture is its bottom

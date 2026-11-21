@@ -102,6 +102,17 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
       over its 3D picture (`scene::overlay` from `glide::post_3d`, no depth test). They lie on
       the robot (all parts, animated), enemies and objects. Terrain not yet.
 
+- [x] First BLAS/TLAS (2026-11-21, `raytrace.rs`, `FCOP_GBUFFER=rt` with `FCOP_VULKAN=1`):
+      a BLAS per model vertex range / part and per terrain block the first time it is seen
+      (cached until the mission changes), a TLAS of the view's instances rebuilt each picture
+      in place, a compute shader (`shaders/rt_debug.comp`, ray query, SPIR-V checked in) shoots
+      a ray per pixel from the game's camera; the present shows that picture. Robot, enemies,
+      objects, ground and walls stand where the game draws them. ~390 fps (~435 without).
+      Validation clean. RT extensions and features are enabled only with this switch.
+- [ ] Off-screen things for the rays: the whole level (terrain blocks from the map, objects from
+      the grid, actors from their list) instead of what the game drew this picture.
+- [ ] Stable instance keys (record address + part) for last picture's transforms.
+
 ## Step 3: motion vectors and jitter
 
 - [ ] Motion vectors per pixel: our scene rasterized with this picture's and the last

@@ -43,6 +43,7 @@ pub mod tonemap;
 pub mod walk;
 pub mod walker;
 pub mod wide;
+pub mod raytrace;
 pub mod scene;
 pub mod vk;
 pub mod window;
