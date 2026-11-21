@@ -131,7 +131,11 @@ pub fn begin(recs: impl Iterator<Item = u32>) {
 /// The 3D picture is drawn.
 pub fn end() {
     LIST.with_borrow_mut(|l| {
+        // all three: with the effects switched off no `begin` comes, and a stale index
+        // pointed into the empty list
         l.recs.clear();
+        l.lights.clear();
+        l.index.clear();
         l.pictures += 1;
         if logging() && l.pictures % 1000 == 0 {
             super::log!("effect: records found for {} primitives, not for {}", l.found[0], l.found[1]);
