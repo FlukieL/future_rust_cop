@@ -1337,6 +1337,10 @@ impl Glide {
         } else {
             0
         };
+        // ...but not the game's round shadows (blend ZERO, 1 - SRC_ALPHA): a fan whose corners
+        // are no projected points of their own, so their depths were other things' (the robot's
+        // feet): the test cut most of the shadow away. Drawn in the game's order, as before.
+        let zk = if self.state.blend == (0, 5) { 0 } else { zk };
         if zk != self.batch_z {
             self.flush(gl);
             self.batch_z = zk;

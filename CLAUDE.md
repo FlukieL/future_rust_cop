@@ -297,7 +297,9 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   writers write their depth 0.1% farther (`slack`, `FCOP_ZSLACK`: within it the game's order decides,
   coplanar surfaces fought with a strict test), test-only ones (blended, darkening, borrowed
   depths) are pulled 0.4% nearer. A batch holds one kind
-  (`Glide::batch_z`). HUD and primitives without depth as before. The terrain's records
+  (`Glide::batch_z`). HUD and primitives without depth as before; so are the game's round
+  shadows (blend (0, 5)): their fan's corners are no projected points of their own, the depths
+  found there are other things' (the robot's feet) and the test cut most of them away. The terrain's records
   (noted by `terrain::tile`, `is_terrain`) are drawn first in the 3D picture (`walker.rs`
   relinks them ahead, their order and the rest's kept, semi-transparent decals too: oil
   flickered while they kept their place among the tiles): a ground tile the buckets put after a
