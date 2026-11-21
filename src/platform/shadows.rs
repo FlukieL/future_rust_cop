@@ -583,7 +583,7 @@ const STRENGTHS: &[f32] = &[SUN_STRENGTH, 0.3, 0.6, 0.75, 0.9];
 /// Lax2 is the second part of level 7, loaded at 0x40a6ae once Lax1 is won). Other missions
 /// (Precinct Assault) have `SUN` / `SUN_STRENGTH`.
 const LEVEL_SUNS: &[(&str, usize, usize)] = &[
-    ("m2c", 4, 3),  // 1
+    ("m2c", 4, 2),  // 1
     ("m3a", 2, 2),  // 2
     ("m3b", 2, 2),  // 3
     ("ov", 3, 0),   // 4
