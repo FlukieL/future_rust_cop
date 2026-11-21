@@ -38,9 +38,13 @@ Hardware here: RTX 4090 (Ada). It supports DLSS Super Resolution, DLAA, Frame Ge
       its own: a black window at ~40 fps, no GL error, validation clean. The handle is closed
       after the texture storage now; the two semaphore handles stay open.
 - [ ] Speed: first mission start, 1280x960, V-Sync off: ~435 fps with Vulkan against ~557
-      with GL. ~13% of the game thread waits inside nvoglv64 (a GL call per picture, likely
-      glWaitSemaphoreEXT on the last copy). Next try: a ring of 2-3 shared images, so GL never
-      waits for the copy of the picture before.
+      with GL. The cost is NVIDIA's GL: glWaitSemaphoreEXT blocked ~300 µs a picture,
+      glSignalSemaphoreEXT blocks until the GPU finished the picture (~350 µs). A ring of 3
+      shared images (2026-11-21) made the wait unnecessary (the CPU already waited for the
+      copy's fence), but the frame rate stayed: the block moved into the signal. Left open:
+      signal, submit and present on a thread of their own (a second GL context in the share
+      group, glFenceSync / glWaitSync from the main one) would hide ~0.5 ms a picture. Step 6
+      (everything in Vulkan) removes the interop and this cost anyway.
 - [ ] Linux (EXT_memory_object_fd, the hidden window under Wayland/X11) in the CachyOS VM.
 - [ ] Check: same picture as GL (`FCOP_SHOT`, compared pixel by pixel), frame times with
       `FCOP_FRAMELOG` and CapFrameX, V-Sync pacing as in `fps.rs` (memory: losses at 480 Hz

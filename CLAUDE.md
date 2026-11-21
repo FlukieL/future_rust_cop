@@ -173,7 +173,9 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   Win32 handles; the memory handle may be closed only after glTexStorageMem2DEXT, else
   NVIDIA's GL draws into memory of its own: black), its context on a hidden window
   (`Gl::new_window`, window events of other windows ignored); Vulkan copies it flipped into the
-  swapchain (FIFO with V-Sync, else IMMEDIATE/MAILBOX). No usable device: GL as before.
+  swapchain (FIFO with V-Sync, else IMMEDIATE/MAILBOX); a ring of 3 shared images, GL never
+  waits (the fence of the copy two pictures back is waited first), only signals (that call
+  blocks until the GPU is done: ~435 fps against GL's ~557). No usable device: GL as before.
   `FCOP_VK_VALIDATE=1` logs the validation layer's messages),
   `window.rs` (winit window and input; main thread only, other threads' frames are shown
   at the next pump), `gl.rs` (the OpenGL 3.3 context: shows a 2D frame or a rendered texture,

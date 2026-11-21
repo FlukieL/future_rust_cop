@@ -4,10 +4,14 @@
 //! hidden window of its own (`gl::Gl::new_window`). Without a usable Vulkan device (no loader,
 //! no interop, GL and Vulkan on different GPUs) GL shows the window as before.
 //!
-//! Each picture: GL waits for `vk_done` (Vulkan's copy of the last picture is finished), draws
-//! into the shared image, signals `gl_done`; Vulkan waits for it and for the acquired
-//! swapchain image, copies (flipped: GL's first row is the bottom), signals `vk_done` and the
-//! image's `present_done`, presents. Two pictures in flight (`frames`).
+//! Pictures go round `SLOTS` shared images. Each picture: GL draws into the next one and
+//! signals its `gl_done`; Vulkan waits for that and for the acquired swapchain image, copies
+//! (flipped: GL's first row is the bottom), signals the swapchain image's `present_done`,
+//! presents. Two pictures in flight (`frames`): before a picture is submitted, the fence of the
+//! one two before it is waited for, so when GL draws into a slot again (`SLOTS` = 3 pictures
+//! later) Vulkan's copy from it is done, and GL needs no semaphore wait (glWaitSemaphoreEXT
+//! blocked ~300 µs a picture). glSignalSemaphoreEXT still blocks until the GPU finished the
+//! picture (~350 µs; ~435 fps against GL's ~557 at the first mission's start, 1280x960).
 
 use ash::{khr, vk};
 use glow::HasContext;
@@ -56,7 +60,6 @@ struct GlFns {
     gen_semaphores: unsafe extern "system" fn(i32, *mut u32),
     import_semaphore: unsafe extern "system" fn(u32, u32, GlHandle),
     signal_semaphore: unsafe extern "system" fn(u32, u32, *const u32, u32, *const u32, *const u32),
-    wait_semaphore: unsafe extern "system" fn(u32, u32, *const u32, u32, *const u32, *const u32),
     get_unsigned_byte_i: unsafe extern "system" fn(u32, u32, *mut u8),
 }
 
@@ -86,7 +89,6 @@ impl GlFns {
             #[cfg(unix)]
             import_semaphore: f!(c"glImportSemaphoreFdEXT"),
             signal_semaphore: f!(c"glSignalSemaphoreEXT"),
-            wait_semaphore: f!(c"glWaitSemaphoreEXT"),
             get_unsigned_byte_i: f!(c"glGetUnsignedBytei_vEXT"),
         })
     }
@@ -100,6 +102,17 @@ type MemFn = khr::external_memory_fd::Device;
 type SemFn = khr::external_semaphore_win32::Device;
 #[cfg(unix)]
 type SemFn = khr::external_semaphore_fd::Device;
+
+/// Shared images GL draws into in turn.
+const SLOTS: usize = 3;
+
+/// A shared image and the semaphore that hands it from GL to Vulkan.
+struct Slot {
+    /// GL finished drawing: Vulkan's semaphore and GL's name for it
+    gl_done: vk::Semaphore,
+    gl_name: u32,
+    shared: Option<Shared>,
+}
 
 struct Frame {
     cmd: vk::CommandBuffer,
@@ -140,13 +153,9 @@ pub struct Vk {
     _pool: vk::CommandPool,
     frames: [Frame; 2],
     next: usize,
-    /// GL finished drawing / Vulkan finished copying: Vulkan's semaphores and GL's names for them
-    gl_done: vk::Semaphore,
-    vk_done: vk::Semaphore,
-    gl_sems: (u32, u32),
-    /// GL has to wait for `vk_done` before it draws into the shared image again
-    gl_wait: bool,
-    shared: Option<Shared>,
+    slots: Vec<Slot>,
+    /// the slot of the picture being drawn
+    cur: usize,
     gl: GlFns,
 }
 
@@ -301,7 +310,7 @@ impl Vk {
                         .map_err(err("semaphore handle"))?;
                     // left open: NVIDIA's GL takes an object by its handle only when it first uses
                     // it (a memory handle closed after the import gave GL memory of its own: a
-                    // black window), and these two live as long as the process
+                    // black window), and these live as long as the process
                     (gl_fns.import_semaphore)(name, GL_HANDLE_TYPE, h as GlHandle);
                 }
                 #[cfg(unix)]
@@ -312,8 +321,11 @@ impl Vk {
                 }
                 Ok((s, name))
             };
-            let (gl_done, gl_name) = shared_semaphore()?;
-            let (vk_done, vk_name) = shared_semaphore()?;
+            let mut slots = vec![];
+            for _ in 0..SLOTS {
+                let (gl_done, gl_name) = shared_semaphore()?;
+                slots.push(Slot { gl_done, gl_name, shared: None });
+            }
             let mut v = Vk {
                 _entry: entry,
                 instance,
@@ -334,11 +346,8 @@ impl Vk {
                 _pool: pool,
                 frames,
                 next: 0,
-                gl_done,
-                vk_done,
-                gl_sems: (gl_name, vk_name),
-                gl_wait: false,
-                shared: None,
+                slots,
+                cur: 0,
                 gl: gl_fns,
             };
             let size = win.inner_size();
@@ -421,17 +430,12 @@ impl Vk {
         }
     }
 
-    /// The shared image made (again) at w x h.
-    fn make_shared(&mut self, gl: &glow::Context, w: u32, h: u32) -> Result<(), String> {
+    /// Slot `k`'s shared image made (again) at w x h.
+    fn make_shared(&mut self, k: usize, gl: &glow::Context, w: u32, h: u32) -> Result<(), String> {
         unsafe {
             gl.finish();
             let _ = self.device.device_wait_idle();
-            if self.gl_wait {
-                // the last copy's signal is still to be taken
-                (self.gl.wait_semaphore)(self.gl_sems.1, 0, std::ptr::null(), 0, std::ptr::null(), std::ptr::null());
-                self.gl_wait = false;
-            }
-            if let Some(s) = self.shared.take() {
+            if let Some(s) = self.slots[k].shared.take() {
                 gl.delete_framebuffer(s.fbo);
                 gl.delete_texture(s.tex);
                 (self.gl.delete_memory_objects)(1, &s.gl_memory);
@@ -499,35 +503,32 @@ impl Vk {
             if status != glow::FRAMEBUFFER_COMPLETE {
                 return Err(format!("the shared image is no complete GL framebuffer ({status:#x})"));
             }
-            self.shared = Some(Shared { image, memory, w, h, gl_memory, tex, fbo });
+            self.slots[k].shared = Some(Shared { image, memory, w, h, gl_memory, tex, fbo });
             Ok(())
         }
     }
 
-    /// Before GL draws a picture of w x h: the framebuffer to draw it into, once Vulkan's copy
-    /// of the last one is done.
+    /// Before GL draws a picture of w x h: the framebuffer to draw it into.
     pub fn begin(&mut self, gl: &glow::Context, w: u32, h: u32) -> Option<glow::Framebuffer> {
-        if self.shared.as_ref().is_none_or(|s| (s.w, s.h) != (w, h)) {
-            if let Err(e) = self.make_shared(gl, w, h) {
+        self.cur = (self.cur + 1) % SLOTS;
+        let k = self.cur;
+        if self.slots[k].shared.as_ref().is_none_or(|s| (s.w, s.h) != (w, h)) {
+            if let Err(e) = self.make_shared(k, gl, w, h) {
                 super::log!("error: vulkan: {e}");
                 return None;
             }
         }
-        let s = self.shared.as_ref()?;
-        if self.gl_wait {
-            let tex = s.tex.0.get();
-            unsafe { (self.gl.wait_semaphore)(self.gl_sems.1, 0, std::ptr::null(), 1, &tex, &GL_LAYOUT_TRANSFER_SRC) };
-            self.gl_wait = false;
-        }
-        Some(s.fbo)
+        self.slots[k].shared.as_ref().map(|s| s.fbo)
     }
 
     /// After GL drew the picture: Vulkan copies it into the swapchain and presents it.
     pub fn end(&mut self, gl: &glow::Context) {
-        let Some(s) = &self.shared else { return };
+        let k = self.cur;
+        let Some(s) = &self.slots[k].shared else { return };
+        let (gl_done, gl_done_name) = (self.slots[k].gl_done, self.slots[k].gl_name);
         let (sw, sh, simage, tex) = (s.w, s.h, s.image, s.tex.0.get());
         unsafe {
-            (self.gl.signal_semaphore)(self.gl_sems.0, 0, std::ptr::null(), 1, &tex, &GL_LAYOUT_TRANSFER_SRC);
+            (self.gl.signal_semaphore)(gl_done_name, 0, std::ptr::null(), 1, &tex, &GL_LAYOUT_TRANSFER_SRC);
             gl.flush();
             let f = &self.frames[self.next];
             let (cmd, fence, acquired) = (f.cmd, f.fence, f.acquired);
@@ -591,8 +592,8 @@ impl Vk {
             d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &give);
             let _ = d.end_command_buffer(cmd);
 
-            let mut waits = vec![self.gl_done];
-            let mut signals = vec![self.vk_done];
+            let mut waits = vec![gl_done];
+            let mut signals = vec![];
             if let Some(i) = img {
                 waits.push(acquired);
                 signals.push(self.present_done[i]);
@@ -604,7 +605,6 @@ impl Vk {
                 super::log!("error: vulkan: submit: {e}");
                 return;
             }
-            self.gl_wait = true;
             if let Some(i) = img {
                 let wait = [self.present_done[i]];
                 let chains = [self.swapchain];
