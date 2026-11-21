@@ -269,7 +269,10 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   project_points from the game's camera-space matrix (0x4a05c0, parts + 0x30 * number) with
   the camera taken out: animated parts need no animation code (points at [0x4a0f58], flags at
   [0x4a074c]). `FCOP_GBUFFER=scene` draws a view's instances as green lines over its 3D
-  picture (`scene::overlay`, called first in `glide::post_3d`).
+  picture (`scene::overlay`, called first in `glide::post_3d`), terrain tiles yellow: our
+  terrain pass gives each block's camera-space origin and axes (`scene::terrain_block`, 16
+  terrain units to a model unit, height axis / 256) and each kept tile's corners
+  (`scene::terrain_tile`); world frame = camera taken out.
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
   path 0x4397cd, so vertices arrive in 2560x1920 units; text (type 6, game pixels) is drawn in

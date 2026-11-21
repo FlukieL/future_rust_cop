@@ -60,6 +60,13 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
       a refit when a frame changes.
 - [ ] Terrain: `Ctil` sections (tiles, heights, shapes; read as `terrain.rs` does). One
       static BLAS per mission. Find out if any terrain changes during a mission.
+      - [x] Drawn tiles in world space (2026-11-21): our terrain pass hands each block's
+        camera-space origin and axes (column, row, height / 256; 16 terrain units to a model
+        unit) to `scene::terrain_block`, which takes the camera out; each kept tile notes its 4
+        corners (indices into the block's points, 3 layers each; a triangle repeats the first).
+        In the overlay (yellow) they lie on the ground and walls.
+      - [ ] The whole level, not only drawn tiles: blocks without a projection need their
+        frame from the map ([0x4a31ac]) and the block steps (axes are the same everywhere).
 - [ ] Instances: who is drawn, with which model and which transform.
       - Actors: list 0x50e428, count [0x50e420], matrix +0x2c, position +0x50 (`fps.rs`).
       - The robot's side weapons and lights: data [+0xac] at +0x178, +0x1c4, +0x210.

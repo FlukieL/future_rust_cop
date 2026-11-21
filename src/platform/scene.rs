@@ -19,6 +19,13 @@
 //! model's +0x14 list, 0x14 bytes each: +0 number, +3 first vertex, +4 count, +7 & 0x80 last)
 //! ranges of the first list.
 //!
+//! Terrain: our terrain pass (`terrain.rs`) projects a block (a 17x17 grid of points with 3
+//! height layers, s8 at sect + 0xc, -128 none) from its camera-space origin and axes (column,
+//! row, height / 256; terrain camera space is 16 model units to one); with the camera taken
+//! out they are the block's world frame (`terrain_block`). Each tile it keeps notes its 4
+//! corners as indices into the block's points (3 per grid point; a triangle repeats its first
+//! as the fourth: `terrain_tile`).
+//!
 //! `FCOP_GBUFFER=scene` draws each view's instances as green lines over its 3D picture
 //! (`overlay`, called from `glide::post_3d`): they must lie on the game's models.
 //!
@@ -50,11 +57,69 @@ thread_local! {
     /// the camera of the instances collected: matrix C and position c / 16
     static VIEW_CAMERA: std::cell::Cell<Option<([f64; 9], [f64; 3])>> = const { std::cell::Cell::new(None) };
     static OVERLAY: RefCell<Option<(glow::Program, glow::VertexArray, glow::Buffer)>> = const { RefCell::new(None) };
+    /// the terrain blocks projected for the view: world frame by sect
+    static BLOCKS: RefCell<HashMap<u32, Block>> = RefCell::new(HashMap::new());
+    /// the terrain tiles kept for the view: sect and corners
+    static TILES: RefCell<Vec<(u32, [u16; 4])>> = const { RefCell::new(Vec::new()) };
     /// points checked, their largest and summed distance (model units), since the last log
     static STATS: std::cell::Cell<(u64, f64, f64, std::option::Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0.0, 0.0, None)) };
 }
 
 const CAMERA: Us = Us(0x511f48);
+
+/// A terrain block's world frame (model units): point (row, column, height h) = origin + row *
+/// rows + column * columns + h * height.
+#[derive(Clone, Copy)]
+pub struct Block {
+    pub origin: [f64; 3],
+    pub rows: [f64; 3],
+    pub columns: [f64; 3],
+    pub height: [f64; 3],
+}
+
+/// The camera now: matrix C (16.16 as f64) and position c / 16.
+fn camera() -> ([f64; 9], [f64; 3]) {
+    let m = super::mem();
+    let cam = m.rd32(CAMERA.at());
+    let rd = |a: u32| m.rd32(a) as i32 as f64;
+    (std::array::from_fn(|k| rd(cam + 0x28 + 4 * k as u32) / 65536.0), std::array::from_fn(|k| rd(cam + 0x7c + 4 * k as u32) / 16.0))
+}
+
+/// x * C^T: a camera-space vector in world space.
+fn untilt(c: &[f64; 9], x: [f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|j| (0..3).map(|i| x[i] * c[3 * j + i]).sum())
+}
+
+/// Our terrain pass projects block `sect` from camera-space `pos` with `rows` / `columns` steps
+/// and `height` (times h / 256), terrain units (16 to a model unit).
+pub fn terrain_block(sect: u32, pos: [i32; 3], rows: [i32; 3], columns: [i32; 3], height: [i32; 3]) {
+    if !wanted() {
+        return;
+    }
+    let (c, cp) = camera();
+    let v = |x: [i32; 3], s: f64| untilt(&c, x.map(|x| x as f64 / s));
+    let o = v(pos, 16.0);
+    let b = Block { origin: std::array::from_fn(|j| o[j] + cp[j]), rows: v(rows, 16.0), columns: v(columns, 16.0), height: v(height, 16.0 * 256.0) };
+    BLOCKS.with_borrow_mut(|m| m.insert(sect, b));
+    VIEW_CAMERA.set(Some((c, cp)));
+}
+
+/// Our terrain pass keeps a tile of block `sect` with these corners (indices into its points).
+pub fn terrain_tile(sect: u32, corners: [u16; 4]) {
+    if wanted() {
+        TILES.with_borrow_mut(|t| t.push((sect, corners)));
+    }
+}
+
+/// Point `i` of block `sect` (its frame `b`) in world space, or none (no height there).
+fn terrain_point(sect: u32, b: &Block, i: u16) -> Option<[f64; 3]> {
+    let h = super::mem().rd8(sect + 0xc + i as u32) as i8;
+    if h == -128 {
+        return None;
+    }
+    let (row, col) = ((i / 3 / 17) as f64, (i / 3 % 17) as f64);
+    Some(std::array::from_fn(|j| b.origin[j] + row * b.rows[j] + col * b.columns[j] + h as f64 * b.height[j]))
+}
 
 /// `FCOP_GBUFFER=scene`: the overlay.
 fn overlay_on() -> bool {
@@ -232,8 +297,9 @@ void main() { gl_Position = vec4(pos, 0.0, 1.0); }
 "#;
 
 const LINE_FS: &str = r#"
+uniform vec4 tint;
 out vec4 color;
-void main() { color = vec4(0.1, 1.0, 0.2, 1.0); }
+void main() { color = tint; }
 "#;
 
 /// `FCOP_GBUFFER=scene`: the view's instances as lines into `fbo` (the 3D picture, w x h
@@ -241,7 +307,11 @@ void main() { color = vec4(0.1, 1.0, 0.2, 1.0); }
 pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f32) {
     use glow::HasContext;
     let instances = PICTURE.with_borrow_mut(std::mem::take);
-    let Some((c, cp)) = VIEW_CAMERA.take().filter(|_| overlay_on()) else { return };
+    let Some((c, cp)) = VIEW_CAMERA.take().filter(|_| overlay_on()) else {
+        BLOCKS.with_borrow_mut(|b| b.clear());
+        TILES.with_borrow_mut(|t| t.clear());
+        return;
+    };
     let m = super::mem();
     let focal = 4096.0 * h as f64 / 1920.0;
     let ndc = |p: [f64; 3]| -> Option<[f32; 2]> {
@@ -276,6 +346,24 @@ pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f3
             }
         }
     }
+    let blocks = BLOCKS.with_borrow_mut(std::mem::take);
+    let tiles = TILES.with_borrow_mut(std::mem::take);
+    let to_cam = |w: [f64; 3]| -> [f64; 3] {
+        let d: [f64; 3] = std::array::from_fn(|j| w[j] - cp[j]);
+        std::array::from_fn(|j| (0..3).map(|r| d[r] * c[3 * r + j]).sum())
+    };
+    let ground_from = lines.len();
+    for (sect, corners) in &tiles {
+        let Some(b) = blocks.get(sect) else { continue };
+        let n = if corners[3] == corners[0] { 3 } else { 4 };
+        let p: Vec<Option<[f32; 2]>> = corners[..n].iter().map(|&i| terrain_point(*sect, b, i).and_then(|w| ndc(to_cam(w)))).collect();
+        for e in 0..n {
+            if let (Some(a), Some(q)) = (p[e], p[(e + 1) % n]) {
+                lines.push(a);
+                lines.push(q);
+            }
+        }
+    }
     OVERLAY.with_borrow_mut(|o| {
         let (prog, vao, vbo) = *o.get_or_insert_with(|| unsafe {
             let prog = super::gl::compile(gl, LINE_VS, LINE_FS);
@@ -298,7 +386,12 @@ pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f3
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             let bytes = std::slice::from_raw_parts(lines.as_ptr() as *const u8, lines.len() * 8);
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
-            gl.draw_arrays(glow::LINES, 0, lines.len() as i32);
+            // models green, terrain yellow
+            let tint = super::gl::uniform(gl, prog, "tint");
+            gl.uniform_4_f32(tint.as_ref(), 0.1, 1.0, 0.2, 1.0);
+            gl.draw_arrays(glow::LINES, 0, ground_from as i32);
+            gl.uniform_4_f32(tint.as_ref(), 1.0, 0.85, 0.1, 1.0);
+            gl.draw_arrays(glow::LINES, ground_from as i32, (lines.len() - ground_from) as i32);
         }
     });
 }

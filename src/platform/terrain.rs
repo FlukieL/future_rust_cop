@@ -98,6 +98,10 @@ fn project_block(m: &Memory, sect: u32, vbuf: u32, pos: [i32; 3], mask: u32, vie
     let rd = |a: u32| m.rd32(a) as i32;
     let (u, cs) = ([rd(view + 0xc), rd(view + 0x10), rd(view + 0x14)], [rd(view + 0x18), rd(view + 0x1c), rd(view + 0x20)]);
     let step = [rd(view), rd(view + 4), rd(view + 8)];
+    if ao {
+        // our pass (not the check's first run): the block's frame for the scene (PLAN-RTX.md)
+        super::scene::terrain_block(sect, pos, step, cs, u);
+    }
     let mut row = pos;
     let k = wide::k();
     let split = m.rd8(SPLIT.at()) != 0;
@@ -555,6 +559,7 @@ fn tile(m: &Memory, vbase: u32, t: u32, sect: u32, cell: u32, cast: bool, hidden
     let r = m.rd32(LIST_END.at());
     m.wr32(LIST_END.at(), r.wrapping_add(0x38));
     m.wr32(r, depth as u32);
+    super::scene::terrain_tile(sect, std::array::from_fn(|i| (3 * (cell + (cell >> 4)) + m.rd8(k + i as u32) as u32) as u16));
     if super::zbuffer::enabled() {
         RECORDS.with_borrow_mut(|s| s.insert(r));
     }
