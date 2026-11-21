@@ -640,7 +640,7 @@ impl Ssao {
                 let d = if let Sun::Ray(d) = sun { d } else { [0.0, 1.0, 0.0] };
                 gl.uniform_3_f32(u("sun").as_ref(), d[0], d[1], d[2]);
                 gl.uniform_1_f32(u("sun_len").as_ref(), super::shadows::SUN_LENGTH);
-                gl.uniform_1_f32(u("sun_k").as_ref(), super::shadows::SUN_STRENGTH);
+                gl.uniform_1_f32(u("sun_k").as_ref(), super::shadows::sun_strength());
                 if sun_half == 2 {
                     set_map(&u);
                 }
@@ -675,7 +675,7 @@ impl Ssao {
             gl.uniform_1_i32(u("show").as_ref(), show);
             gl.uniform_1_i32(u("use_half").as_ref(), half_pass as i32);
             gl.uniform_1_i32(u("use_sun").as_ref(), sun_full as i32);
-            gl.uniform_1_f32(u("sun_k").as_ref(), super::shadows::SUN_STRENGTH);
+            gl.uniform_1_f32(u("sun_k").as_ref(), super::shadows::sun_strength());
             if sun_full {
                 set_map(&u);
             }

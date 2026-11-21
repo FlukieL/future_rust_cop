@@ -1,4 +1,4 @@
-//! Debug cheats: by name in FCOP_INPUT ("30000:win") and, with FCOP_CHEATS=1, on Shift+F1...
+//! Debug cheats: by name in FCOP_INPUT ("30000:win") and, in a `--features cheats` build, on Shift+F1...
 //! (Ctrl is player 1's special weapon). A cheat only asks; it runs in the mission loop's
 //! frame wait (0x406a30, every frame, split screen too), between two frames of the game's
 //! logic, and waits there while no mission is played. Cheats marked `#[cfg(feature = "cheats")]`
@@ -83,6 +83,10 @@ pub const CHEATS: &[Cheat] = &[
     #[cfg(feature = "cheats")]
     Cheat { name: "pa_win", key: 9, what: "Precinct Assault: player 1 wins the match (as the base's capture does)", solo: false, run: Run::Frame(pa_win) },
     #[cfg(feature = "cheats")]
+    Cheat { name: "sun", key: 11, what: "shadows: the next sun direction to compare (logged)", solo: false, run: Run::Now(super::shadows::next_sun) },
+    #[cfg(feature = "cheats")]
+    Cheat { name: "sun_strength", key: 12, what: "shadows: the next sun strength to compare (logged)", solo: false, run: Run::Now(super::shadows::next_strength) },
+    #[cfg(feature = "cheats")]
     Cheat { name: "unlock", key: 10, what: "every level selectable (Crime War and Precinct Assault; also in the menus)", solo: false, run: Run::Now(unlock) },
 ];
 
@@ -99,11 +103,11 @@ pub fn find(name: &str) -> Option<usize> {
     CHEATS.iter().position(|c| c.name == name)
 }
 
-/// Shift+F<n> when FCOP_CHEATS is set (the first call, at start, lists them).
+/// Shift+F<n>, only in a build with the `cheats` feature (the first call, at start, lists them).
 pub fn by_key(f: u8) -> Option<usize> {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let on = *ON.get_or_init(|| {
-        let on = std::env::var("FCOP_CHEATS").is_ok_and(|v| v != "0");
+        let on = cfg!(feature = "cheats");
         if on {
             for c in CHEATS {
                 log!("cheat: Shift+F{} {} ({})", c.key, c.name, c.what);

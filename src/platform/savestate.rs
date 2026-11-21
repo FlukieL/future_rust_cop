@@ -1,6 +1,6 @@
 //! Savestates (test tool): the whole game as it is now, written to `savestate.bin` in the game
 //! folder and put back later, also after a restart, as an emulator does. Cheats `save`
-//! (Shift+F7) and `load` (Shift+F8), with FCOP_CHEATS=1 or by name in FCOP_INPUT; one slot.
+//! (Shift+F7) and `load` (Shift+F8), in a `--features cheats` build or by name in FCOP_INPUT; one slot.
 //!
 //! Both run in the mission loop's frame wait (0x406a30, `cheats.rs`), between two frames of
 //! the game's logic. Recompiled code returns through the host's stack and loads every register

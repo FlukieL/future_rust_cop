@@ -569,8 +569,8 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   (player 1) / 0x48b120 (player 2): 3 profiles of 0x78 bytes, (device, key) pairs, device 0
   keyboard with virtual keys, 1 joystick. Both keyboard profiles are the keypad;
   `user32::single_player_keys` rewrites player 1's at start (arrows, A/D jink).
-- Cheats (`cheats.rs`): by name in FCOP_INPUT ("30000:win") and, with `FCOP_CHEATS=1`, on
-  Shift+F1... (Ctrl is player 1's special weapon; the game does not see these keys). They
+- Cheats (`cheats.rs`): by name in FCOP_INPUT ("30000:win") and on
+  Shift+F1... (only in a `--features cheats` build; Ctrl is player 1's special weapon; the game does not see these keys). They
   run in the mission loop's frame wait (hook of 0x406a30), only while playing. `win`: progress
   +0x40 = goal +0x44 of the game record [0x511f80], state 0xb, as the mission script does (the
   reward video follows); `lose`: progress != goal, state 0xb; `health`: as the game makes a
@@ -594,7 +594,11 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   progress 0x511e00 (save.cfg's slots; +3 mode 1 Crime War / 0 Precinct Assault, +0 PA map
   0...5, +7 + map its highest level 0...9 (10 all won), +0xd + map the one chosen, +0x24 all
   maps won; +1 Crime War mission chosen, +2 highest 0...7 (8 all won)): every PA level and CW
-  mission selectable (map panel built again when the mode is switched). (The user's Cheat
+  mission selectable (map panel built again when the mode is switched). `sun` / `sun_strength`
+  (Shift+F11 / F12, `Run::Now`): the next of `shadows::SUNS` / `STRENGTHS` (sun direction /
+  shadow strength to compare, logged; from the level's own, `shadows::LEVEL_SUNS`: each Crime War
+  level's sun by mission file, in order M2c M3a M3b Ov M1a1 Un Lax1 Lax2 M4a1 (table 0x488254;
+  Lax2 is level 7's second part, 0x40a6ae), others `SUN`, until the next mission). (The user's Cheat
   Engine address 0x80FF0344 was guest 0x1000344 with the guest base at 0x7FFF0000.)
 - Savestates (`savestate.rs`, test tool): cheats `save` / `load` (Shift+F7 / F8, FCOP_INPUT
   "20000:save 30000:load"), one slot: `savestate.bin` in the game folder (kept by `setup`),

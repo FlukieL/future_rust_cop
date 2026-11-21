@@ -397,8 +397,11 @@ sort, the camera [0x511f48] (`fps.rs`, up to +0x88), the actors (0x50e428).
 - [ ] The sun's strength and direction: the user cannot judge them without seeing the
       differences. Planned: a comparison sheet, the same scene (shadow map, Ultra) rendered
       with several strengths (`SUN_STRENGTH` now 0.45) and sun directions (`SUN` now
-      (0.45, 1, -0.3)) side by side; needs test switches for both (e.g. `FCOP_SUN_STRENGTH`,
-      `FCOP_SUN=x,y,z`).
+      (0.45, 1, -0.3)) side by side; needs test keys for both.
+      Switches there (2026-11-21): in a `--features cheats` build Shift+F11 / F12 step through 6 directions / 5 strengths while playing
+      (`shadows::SUNS` / `STRENGTHS`, the choice logged). The user's pick per Crime War level
+      is `shadows::LEVEL_SUNS` (by mission file; Precinct Assault keeps `SUN`); the cheats step
+      on from a level's own until the next mission.
       Models' faces turned away from the camera cast too (2026-11-14, the user saw what
       nuclear_rust_strike had: the game culls them; `shadows::nclip`, ~300 a picture, cost
       within the measurement's noise of 0-15%). The dynamic lights keep the ray march. The user: a depth buffer (as
@@ -666,7 +669,7 @@ textures), wet streets / reflections in dark missions.
 ### 3. Smaller open points
 
 - [x] Debug cheats (`cheats.rs`, 2026-10-27): `win`, `lose`, `health`, `ammo` by name in
-      FCOP_INPUT and on Shift+F1...F4 with `FCOP_CHEATS=1`. Ideas: invulnerable
+      FCOP_INPUT and on Shift+F1...F4 in a `--features cheats` build. Ideas: invulnerable
 - [x] Test cheats (`--features cheats`, 2026-11-18): `pa_win` (Shift+F9, Precinct Assault won
       by player 1, score screen and next level as the game does) and `unlock` (Shift+F10, in the
       menu: every Precinct Assault level up to 10 and every Crime War mission selectable)
