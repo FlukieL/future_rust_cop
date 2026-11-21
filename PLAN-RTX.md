@@ -9,6 +9,25 @@ integration. Our job is a clean standard integration that they can find.
 Hardware here: RTX 4090 (Ada). It supports DLSS Super Resolution, DLAA, Frame Generation
 (2x), Ray Reconstruction and Reflex. It has no Multi Frame Generation, which needs RTX 50.
 
+## Where we stand (2026-11-21, branch `feat/vulkan`, not pushed)
+
+Step 1 done (Vulkan presents, GL draws into shared images). Step 2: the scene in world space
+(models, animated parts, terrain, the whole level) and the first BLAS/TLAS with a ray query
+debug picture (`FCOP_VULKAN=1 FCOP_GBUFFER=rt`, `FCOP_RT_HIGH=<units>` from above).
+
+Next: sun shadows by ray query (step 5's first item, moved forward). Plan:
+- Share the depth with Vulkan: the G-buffer's RG32F colour attachment (R = depth as 1/z
+  interpolated, `ao.rs`; resolved when MSAA) as a shared image like the present's (memory
+  handle closed only after glTexStorageMem2DEXT).
+- A compute pass on the Vulkan device: per pixel the world position from depth and the view's
+  camera (focal 4096 * h / 1920, widescreen k on x, view space as `ao::COMMON`'s P), one ray
+  toward the sun (`shadows::sun()`, world y up) against the TLAS, the result into a shared R8
+  mask.
+- GL uses the mask where the shadow map's lookup is now (`SUN_GLSL` in the AO's last pass),
+  as a third `Shadows` mode; compare with the shadow map.
+- Sync: the mask is for the picture GL draws next (one picture late) or GL waits for it
+  (semaphore pair as in the present); first try one late.
+
 ## Principles
 
 - Every step stays playable. The OpenGL renderer stays the default until Vulkan gives the
