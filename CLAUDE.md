@@ -259,6 +259,10 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   A clicked last, once (`dialog::pad_capture`): its first box waits from the start and took
   the pad's first move. `extend::pad_click`: a pad save to an unused slot gets the name
   "Save <slot>" (the game refuses "-EMPTY-").
+- `scene.rs` (PLAN-RTX.md step 2): hook of model_draw 0x4280a0 (record +0 model, +4 matrix
+  i32 16.16, +0x28 position 20.12, +0x48 frame; the model points at its chunk data in guest
+  memory: [+0x1c]+4 `4DVL` count, +0x24 `3DQL` count, +0x28 `3DTL`). `FCOP_SCENE_LOG=1` logs
+  each model at its first draw and the mission file's `Cobj` counts (all matched).
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
   path 0x4397cd, so vertices arrive in 2560x1920 units; text (type 6, game pixels) is drawn in

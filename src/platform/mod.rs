@@ -43,6 +43,7 @@ pub mod tonemap;
 pub mod walk;
 pub mod walker;
 pub mod wide;
+pub mod scene;
 pub mod vk;
 pub mod window;
 pub mod zbuffer;
@@ -764,6 +765,7 @@ pub const HOOKS: &[(crate::ver::Us, crate::rt::Hook)] = &[
     (cheats::FRAME_WAIT, cheats::frame_wait),
     (savestate::MISSION_LOOP, savestate::mission_loop),
     (effects::GLOW_DRAW, effects::glow_draw),
+    (scene::MODEL_DRAW, scene::model_draw),
     (shadows::NCLIP, shadows::nclip),
     (shadows::ACTORS_DRAW, shadows::actors_draw),
     (camera::ROBOT_CAMERA, camera::robot_camera),

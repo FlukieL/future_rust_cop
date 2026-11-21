@@ -64,8 +64,13 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
       - Actors: list 0x50e428, count [0x50e420], matrix +0x2c, position +0x50 (`fps.rs`).
       - The robot's side weapons and lights: data [+0xac] at +0x178, +0x1c4, +0x210.
       - Static objects: grid [0x4a13fc] (`shadows.rs` step 2).
-      - Understand model_draw 0x4280a0 (its arguments: model, matrix, position) and hook it.
-        That gives every drawn model with its transform in one place.
+      - [x] model_draw 0x4280a0 understood and hooked (`scene.rs`, 2026-11-21): record +0
+        model, +4 matrix 3x3 (i32 16.16), +0x28 position (20.12), +0x48 frame (i16). The model
+        points at its chunks in guest memory: +0xc flags (0x2000000 in parts), [+0x1c]+4 the
+        `4DVL` count with 8-byte vertices behind, +0x24 the `3DQL` count with 12-byte faces
+        behind, +0x28 `3DTL`, +0x34 bounding spheres. Checked: all 37 models drawn at the first
+        mission's start match a `Cobj` of the mission file in vertex and face count
+        (`FCOP_SCENE_LOG=1`). BLAS can be built from guest memory, keyed by the model pointer.
       - The whole level is needed, not only the visible part: shadows and reflections come
         from things off screen too. The ring of `shadows.rs` shows how to reach them.
 - [ ] Each instance gets a stable key (actor or object address plus model), so its last
