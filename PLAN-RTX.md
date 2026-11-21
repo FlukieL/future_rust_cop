@@ -76,8 +76,13 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
         c at +0x7c (20.12) and matrix C at +0x28 (16.16). Against the game's camera-space
         points in project_points (models not in parts, ~1 million points per 2 s while
         walking): mean 1.35, max 2.5 model units, the game's integer rounding.
-      - [ ] Models in parts (flags 0x2000000: robot, animated things): per part 0x428380
-        (part record 0x14 bytes, [+0x14] list, +7 & 0x80 last) with the frame +0x48.
+      - [x] Models in parts (flags 0x2000000: robot, animated things; 2026-11-21): taken
+        where project_points projects them: the game's camera-space matrix (0x4a05c0 + 0x30 *
+        part number, computed by 0x428380 with the animation) with the camera taken out is
+        the part's world matrix; no animation code of ours. Checked on models not in parts
+        against their records: position 0.4 model units off on average, matrix 0.0002.
+        A model not in parts takes its frame's vertex list ([[+0x1c] + 4 + 4 * frame]).
+        ~25000 part instances per second at the first mission's start.
       - The whole level is needed, not only the visible part: shadows and reflections come
         from things off screen too. The ring of `shadows.rs` shows how to reach them.
 - [ ] Each instance gets a stable key (actor or object address plus model), so its last

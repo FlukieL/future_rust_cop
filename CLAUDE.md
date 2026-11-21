@@ -265,7 +265,10 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   each model at its first draw and the mission file's `Cobj` counts (all matched), and checks
   our world/camera transform against the game's camera-space points in project_points (world =
   v * R + p / 16, camera = (world - c / 16) * C, camera [0x511f48] c +0x7c, C +0x28; within
-  rounding).
+  rounding). Instances (`scene::Instance`: vertex range, world matrix) are taken in
+  project_points from the game's camera-space matrix (0x4a05c0, parts + 0x30 * number) with
+  the camera taken out: animated parts need no animation code (points at [0x4a0f58], flags at
+  [0x4a074c]).
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
   path 0x4397cd, so vertices arrive in 2560x1920 units; text (type 6, game pixels) is drawn in
