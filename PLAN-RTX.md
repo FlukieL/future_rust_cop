@@ -109,8 +109,17 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
       a ray per pixel from the game's camera; the present shows that picture. Robot, enemies,
       objects, ground and walls stand where the game draws them. ~390 fps (~435 without).
       Validation clean. RT extensions and features are enabled only with this switch.
-- [ ] Off-screen things for the rays: the whole level (terrain blocks from the map, objects from
-      the grid, actors from their list) instead of what the game drew this picture.
+- [x] The whole level for the rays (2026-11-21): every block of the terrain map (header +4
+      width, +8 rows; the map's world place from the first block render_terrain draws, 16 point
+      steps a block; blocks are shared by many cells: one BLAS each, an instance per cell), the
+      static objects of their grid and the actors (record at +0x28) the game did not draw this
+      picture, by their records (parts in the pose their vertices have). What the game drew
+      stays exact (animated). With the shadows on, their ring already draws every static object
+      and nearly every actor of the first mission; with them off 100 objects and 18 actors come
+      from the records. Seen from above (`FCOP_RT_HIGH=<units>`, a test) the map ends at its
+      edges and the objects stand in the level.
+- [ ] Two thin dark lines along block borders seen from above: points without a height at a
+      block's edge, or a small offset of the map's place. To be checked.
 - [ ] Stable instance keys (record address + part) for last picture's transforms.
 
 ## Step 3: motion vectors and jitter

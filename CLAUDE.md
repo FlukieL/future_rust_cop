@@ -281,7 +281,12 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   (`shaders/rt_debug.comp`; SPIR-V checked in, rebuilt with the Vulkan SDK's
   `glslc --target-env=vulkan1.2 -O shaders/rt_debug.comp -o shaders/rt_debug.spv`) shoots a
   ray per pixel from the game's camera; `vk.rs` copies that picture into the swapchain instead
-  of GL's. The RT device extensions/features are enabled only with this switch.
+  of GL's. The RT device extensions/features are enabled only with this switch. The frame is
+  the whole level: every terrain map block (map [0x4a31ac] +4 width, +8 rows, cells from
+  +0x24, blocks [0x4a3060]; its world place from render_terrain's first seen block,
+  `scene::terrain_map`), plus static objects (grid [0x4a13fc]) and actors (record +0x28) the
+  game did not draw, by their records. `FCOP_RT_HIGH=<units>` (a test) looks straight down from
+  that high above.
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
   path 0x4397cd, so vertices arrive in 2560x1920 units; text (type 6, game pixels) is drawn in

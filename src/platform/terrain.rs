@@ -290,11 +290,11 @@ pub const RENDER_TERRAIN: Us = Us(0x453360);
 /// (0x50dc80 + 0x1f4 * view).
 const WINDOW: Us = Us(0x4a3b00);
 const ENTRIES: Us = Us(0x50dc80);
-/// The vertex buffer, the map ([+4] blocks a row, cells from +0x24: (block index << 2)) and its
-/// blocks.
+/// The vertex buffer, the map ([+4] blocks a row, [+8] rows, cells from +0x24: (block index
+/// << 2)) and its blocks.
 const VBUF: Us = Us(0x50dc4c);
-const MAP: Us = Us(0x4a31ac);
-const BLOCKS: Us = Us(0x4a3060);
+pub const MAP: Us = Us(0x4a31ac);
+pub const BLOCKS: Us = Us(0x4a3060);
 
 /// Hook of render_terrain: after it, the shadows' terrain ring (`ring`).
 pub fn render_terrain(c: &mut Cpu) {
@@ -302,6 +302,19 @@ pub fn render_terrain(c: &mut Cpu) {
     let sp = c.r[ESP];
     let (entries, view) = (m.rd32(sp + 12), m.rd32(sp + 16));
     call_original(c, RENDER_TERRAIN.at());
+    if ours() {
+        // where the map's blocks lie (PLAN-RTX.md: the whole level for the rays): from the
+        // first block of the window seen
+        let off = entries.wrapping_sub(ENTRIES.at());
+        if off % 0x1f4 == 0 && off / 0x1f4 < 4 {
+            let v = off / 0x1f4;
+            if let Some(k) = (0..25u32).find(|&k| m.rd32(entries + 0x14 * k) & 0xffff != 0) {
+                let (w0, w1) = (m.rd8(WINDOW.at() + 2 * v) as i8 as i32, m.rd8(WINDOW.at() + 2 * v + 1) as i8 as i32);
+                let at = read3(m, entries + 0x14 * k + 8);
+                super::scene::terrain_map(w1 + (k / 5) as i32, w0 + (k % 5) as i32, at, read3(m, view), read3(m, view + 0x18), read3(m, view + 0xc));
+            }
+        }
+    }
     static ON: OnceLock<bool> = OnceLock::new();
     let on = *ON.get_or_init(|| std::env::var("FCOP_SHADOW_TERRAIN").map_or(true, |v| v != "0"));
     if on && ours() && m.rd8(SPLIT.at()) == 0 && super::shadows::keep_hidden() && super::walker::precise() {

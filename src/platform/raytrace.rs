@@ -330,6 +330,15 @@ impl Rt {
         push[16..19].copy_from_slice(&cp.map(|x| x as f32));
         push[20] = 4096.0 * h as f32 / 1920.0;
         push[21] = frame.k;
+        // the debug shading's fog: darker with distance
+        push[22] = 30000.0;
+        // FCOP_RT_HIGH=<model units> (a test): seen from that high above, straight down (camera
+        // x to world x, its up to world z, ahead to world -y)
+        if let Some(high) = high() {
+            push[..12].copy_from_slice(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0]);
+            push[17] += high;
+            push[22] = 3.0 * high;
+        }
         unsafe {
             let d = &self.device;
             d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, compute, vk::DependencyFlags::empty(), &[], &[], &to(vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE));
@@ -404,4 +413,10 @@ fn instance(t: [f32; 12], kind: u32, blas: u64) -> vk::AccelerationStructureInst
         instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: blas },
     }
+}
+
+/// `FCOP_RT_HIGH=<model units>` (a test): the rays' picture from that high above the camera.
+fn high() -> Option<f32> {
+    static H: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *H.get_or_init(|| std::env::var("FCOP_RT_HIGH").ok().and_then(|v| v.parse().ok()))
 }

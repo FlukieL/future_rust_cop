@@ -64,6 +64,9 @@ thread_local! {
     /// the last view's scene for the rays
     static LAST: RefCell<Option<Frame>> = const { RefCell::new(None) };
     static GENERATION: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static MAP_FRAME: std::cell::Cell<Option<MapFrame>> = const { std::cell::Cell::new(None) };
+    /// records model_draw drew for the view
+    static DRAWN: RefCell<std::collections::HashSet<u32>> = RefCell::new(std::collections::HashSet::new());
     /// points checked, their largest and summed distance (model units), since the last log
     static STATS: std::cell::Cell<(u64, f64, f64, std::option::Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0.0, 0.0, None)) };
 }
@@ -105,6 +108,117 @@ pub fn terrain_block(sect: u32, pos: [i32; 3], rows: [i32; 3], columns: [i32; 3]
     let b = Block { origin: std::array::from_fn(|j| o[j] + cp[j]), rows: v(rows, 16.0), columns: v(columns, 16.0), height: v(height, 16.0 * 256.0) };
     BLOCKS.with_borrow_mut(|m| m.insert(sect, b));
     VIEW_CAMERA.set(Some((c, cp)));
+}
+
+/// The terrain map's place in the world: block (row, column)'s origin = `origin` + row * `rows`
+/// + column * `columns` (16 point steps each); `axes` a block's own (`Block` without origin).
+#[derive(Clone, Copy)]
+struct MapFrame {
+    origin: [f64; 3],
+    rows: [f64; 3],
+    columns: [f64; 3],
+    axes: Block,
+}
+
+/// render_terrain drew map block (`row`, `column`), its first point at camera-space `at`, with
+/// these steps (terrain units; `height` << 8): the map's place in the world.
+pub fn terrain_map(row: i32, column: i32, at: [i32; 3], rows: [i32; 3], columns: [i32; 3], height: [i32; 3]) {
+    if !rt_on() {
+        return;
+    }
+    let (c, cp) = camera();
+    let v = |x: [i32; 3], s: f64| untilt(&c, x.map(|x| x as f64 / s));
+    let (r, k, h) = (v(rows, 16.0), v(columns, 16.0), v(height, 16.0 * 256.0));
+    let o = v(at, 16.0);
+    let (r16, k16): ([f64; 3], [f64; 3]) = (r.map(|x| 16.0 * x), k.map(|x| 16.0 * x));
+    let origin = std::array::from_fn(|j| o[j] + cp[j] - row as f64 * r16[j] - column as f64 * k16[j]);
+    MAP_FRAME.set(Some(MapFrame { origin, rows: r16, columns: k16, axes: Block { origin: [0.0; 3], rows: r, columns: k, height: h } }));
+}
+
+/// Every block of the terrain map with its world frame (the whole level's ground).
+fn level_blocks(f: &MapFrame) -> Vec<(u32, Block)> {
+    let m = super::mem();
+    let (map, blocks) = (m.rd32(super::terrain::MAP.at()), m.rd32(super::terrain::BLOCKS.at()));
+    if map == 0 || blocks == 0 {
+        return vec![];
+    }
+    let (w, h) = (m.rd32(map + 4).min(256), m.rd32(map + 8).min(256));
+    let mut out = Vec::new();
+    for row in 0..h {
+        for col in 0..w {
+            let cell = m.rd32(map + 0x24 + 4 * (w * row + col));
+            let sect = m.rd32(blocks + 4 * ((cell >> 2) & 0x3fff));
+            if sect == 0 {
+                continue;
+            }
+            let origin = std::array::from_fn(|j| f.origin[j] + row as f64 * f.rows[j] + col as f64 * f.columns[j]);
+            out.push((sect, Block { origin, ..f.axes }));
+        }
+    }
+    out
+}
+
+/// The static objects' grid: cells (8 bytes: first object, linked by +0x58), its width and height.
+const OBJECT_GRID: Us = Us(0x4a13fc);
+const OBJECT_GRID_WIDTH: Us = Us(0x4a13f4);
+const OBJECT_GRID_HEIGHT: Us = Us(0x4a1400);
+/// The actors (pointers) and their count; an actor's model record is at +0x28.
+const ACTORS: Us = Us(0x50e428);
+const ACTOR_COUNT: Us = Us(0x50e420);
+
+/// A record (model_draw's: +0 model, +4 matrix, +0x28 position, +0x48 frame) as an instance by
+/// its own transform: for things the game did not draw this picture (whole; parts in the pose
+/// their vertices have).
+fn record_instance(record: u32) -> Option<Instance> {
+    let m = super::mem();
+    let model = m.rd32(record);
+    if model == 0 {
+        return None;
+    }
+    let lists = m.rd32(model + 0x1c);
+    let frame = if m.rd32(model + 0xc) & 0x2000000 != 0 { 0 } else { (m.rd16(record + 0x48) as i16).max(0) as u32 };
+    let list = m.rd32(lists + 4 + 4 * frame);
+    if list == 0 {
+        return None;
+    }
+    let rd = |a: u32| m.rd32(a) as i32 as f64;
+    Some(Instance {
+        model,
+        list,
+        first: 0,
+        count: m.rd32(list).min(4096),
+        matrix: std::array::from_fn(|k| rd(record + 4 + 4 * k as u32) / 65536.0),
+        offset: std::array::from_fn(|k| rd(record + 0x28 + 4 * k as u32) / 16.0),
+    })
+}
+
+/// The level's static objects and actors the game did not draw this picture (`drawn`: records).
+fn level_objects(drawn: &std::collections::HashSet<u32>) -> Vec<Instance> {
+    let m = super::mem();
+    let mut out = Vec::new();
+    let grid = m.rd32(OBJECT_GRID.at());
+    if grid != 0 {
+        let n = m.rd32(OBJECT_GRID_WIDTH.at()).min(1024) * m.rd32(OBJECT_GRID_HEIGHT.at()).min(1024);
+        for cell in 0..n {
+            let mut o = m.rd32(grid + 8 * cell);
+            for _ in 0..4096 {
+                if o == 0 {
+                    break;
+                }
+                if m.rd8(o + 0x4c) & 0x10 == 0 && !drawn.contains(&o) {
+                    out.extend(record_instance(o));
+                }
+                o = m.rd32(o + 0x58);
+            }
+        }
+    }
+    for k in 0..m.rd32(ACTOR_COUNT.at()).min(1024) {
+        let a = m.rd32(ACTORS.at() + 4 * k);
+        if a != 0 && !drawn.contains(&(a + 0x28)) {
+            out.extend(record_instance(a + 0x28));
+        }
+    }
+    out
 }
 
 /// Our terrain pass keeps a tile of block `sect` with these corners (indices into its points).
@@ -250,7 +364,11 @@ pub fn model_draw(c: &mut Cpu) {
         note(c);
     }
     if wanted() {
-        CURRENT.set(super::mem().rd32(c.r[ESP] + 4));
+        let record = super::mem().rd32(c.r[ESP] + 4);
+        CURRENT.set(record);
+        if rt_on() {
+            DRAWN.with_borrow_mut(|d| d.insert(record));
+        }
     }
     call_original(c, MODEL_DRAW.at());
     CURRENT.set(0);
@@ -392,6 +510,7 @@ fn new_mission() {
     }
     MISSION.with_borrow_mut(|p| *p = path.clone());
     MODELS.with_borrow_mut(|m| m.clear());
+    MAP_FRAME.set(None);
     GENERATION.set(GENERATION.get() + 1);
     if !log_on() {
         return;
@@ -421,10 +540,25 @@ pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f3
     let instances = PICTURE.with_borrow_mut(std::mem::take);
     let camera = VIEW_CAMERA.take();
     if rt_on() {
+        let drawn = DRAWN.with_borrow_mut(std::mem::take);
+        let projected: Vec<(u32, Block)> = BLOCKS.with_borrow_mut(std::mem::take).into_iter().collect();
+        TILES.with_borrow_mut(|t| t.clear());
         if let Some(camera) = camera {
-            let blocks = BLOCKS.with_borrow_mut(std::mem::take).into_iter().collect();
-            TILES.with_borrow_mut(|t| t.clear());
-            LAST.set(Some(Frame { camera, k, models: instances, blocks, generation: GENERATION.get() }));
+            // the whole level: every map block, the objects and actors not drawn (by their records)
+            let blocks = match MAP_FRAME.get() {
+                Some(f) => level_blocks(&f),
+                None => projected,
+            };
+            let mut models = instances;
+            let drawn_count = models.len();
+            models.extend(level_objects(&drawn));
+            if log_on() {
+                static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 1000 == 0 {
+                    super::log!("scene: frame of {} blocks, {drawn_count} drawn instances, {} more objects and actors", blocks.len(), models.len() - drawn_count);
+                }
+            }
+            LAST.set(Some(Frame { camera, k, models, blocks, generation: GENERATION.get() }));
         }
         return;
     }
