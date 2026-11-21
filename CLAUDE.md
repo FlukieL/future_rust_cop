@@ -1,6 +1,7 @@
 # CLAUDE.md — Future Cop in Rust
 
 Hand-over for future sessions. What is done and what is open: **PLAN.md** (keep it current).
+Vulkan / DLSS / RTX raytracing (experimental): **PLAN-RTX.md**.
 
 ## Goal (the user's)
 
