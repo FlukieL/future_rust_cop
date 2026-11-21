@@ -281,7 +281,7 @@ static PEAK: AtomicU32 = AtomicU32::new(0);
 /// and the ring's (`actors_draw`, ranges of records), both only casting.
 #[derive(Default)]
 struct Extra {
-    faces: std::collections::HashSet<u32>,
+    faces: super::ao::RecordSet,
     ring: Vec<(u32, u32)>,
     /// the ring's actors this picture, and the extra triangles kept as casters or not (no
     /// depth) by kind (`FCOP_SHADOW_LOG`)

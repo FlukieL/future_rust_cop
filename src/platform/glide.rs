@@ -1224,11 +1224,9 @@ impl Glide {
                 gl.buffer_data_size(glow::ARRAY_BUFFER, VBO_SIZE.max(bytes.len()) as i32, glow::STREAM_DRAW);
                 self.vbo_at = 0;
             }
-            // the part written was never drawn from since the buffer was made: no wait
-            let flags = glow::MAP_WRITE_BIT | glow::MAP_UNSYNCHRONIZED_BIT | glow::MAP_INVALIDATE_RANGE_BIT;
-            let p = gl.map_buffer_range(glow::ARRAY_BUFFER, self.vbo_at as i32, bytes.len() as i32, flags);
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
-            gl.unmap_buffer(glow::ARRAY_BUFFER);
+            // the part written was never drawn from since the buffer was made: no wait (glBufferSubData:
+            // mapping the range made the driver's thread catch up at every batch, ~0.3 ms a picture)
+            gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, self.vbo_at as i32, bytes);
             let (first, count) = ((self.vbo_at / (4 * VERTEX)) as i32, (self.batch.len() / VERTEX) as i32);
             if zwrite {
                 // first the depth alone, where the alpha is at least 0.75 when it counts
