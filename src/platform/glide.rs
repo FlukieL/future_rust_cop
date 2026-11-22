@@ -253,6 +253,7 @@ thread_local! {
 
 const VS: &str = r#"
 uniform vec2 space;
+uniform vec2 jitter;    // the 3D picture's subpixel offset (`jitter.rs`), in clip space
 uniform int ztest;      // the depth buffer (`zbuffer.rs`): 1 the depth from z
 uniform float zbias;    // pulled nearer by this share
 invariant gl_Position;
@@ -284,7 +285,7 @@ void main() {
     stq = vec3(tc * vinvz, vinvz);
     // 1 - NEAR / z: linear in 1/z, so exact across a plane on the screen (w is 1)
     float d = ztest != 0 && z > 0.0 ? clamp(1.0 - 8.0 / (z * (1.0 - zbias)), 0.0, 1.0) : 0.5;
-    gl_Position = vec4(pos.x / space.x * 2.0 - 1.0, 1.0 - pos.y / space.y * 2.0, 2.0 * d - 1.0, 1.0);
+    gl_Position = vec4(pos.x / space.x * 2.0 - 1.0 + jitter.x, 1.0 - pos.y / space.y * 2.0 + jitter.y, 2.0 * d - 1.0, 1.0);
 }
 "#;
 
@@ -525,6 +526,7 @@ pub(super) fn vertex_layout(gl: &glow::Context) {
 /// The shaders' uniforms, looked up once.
 struct Uniforms {
     space: Option<glow::UniformLocation>,
+    jitter: Option<glow::UniformLocation>,
     tex: Option<glow::UniformLocation>,
     tex_a: Option<glow::UniformLocation>,
     tex_hd: Option<glow::UniformLocation>,
@@ -552,6 +554,7 @@ impl Uniforms {
         let u = |n: &str| unsafe { gl.get_uniform_location(prog, n) };
         Uniforms {
             space: u("space"),
+            jitter: u("jitter"),
             tex: u("tex"),
             tex_a: u("tex_a"),
             tex_hd: u("tex_hd"),
@@ -1070,6 +1073,9 @@ impl Glide {
             gl.bind_vertex_array(Some(self.vao));
             let u = &self.uniforms;
             gl.uniform_2_f32(u.space.as_ref(), self.space.0 as f32, self.space.1 as f32);
+            // only the 3D picture is jittered, the HUD stays still
+            let j = if self.gbuf.is_some() { super::jitter::now() } else { [0.0; 2] };
+            gl.uniform_2_f32(u.jitter.as_ref(), 2.0 * j[0] / self.target.0 as f32, 2.0 * j[1] / self.target.1 as f32);
             let filter = FILTER.load(Ordering::Relaxed);
             let mipmaps = filter != 0 && s.key & 0xff_ffff == 0;
             gl.uniform_1_i32(u.mipmaps.as_ref(), mipmaps as i32);
@@ -1798,6 +1804,7 @@ fn buffer_swap(_: &mut Cpu) -> u32 {
     if let Some((tex, (w, h), gamma)) = shown {
         super::window::show_texture(tex, w, h, gamma);
         super::fps::frame_shown();
+        super::jitter::next();
         // the next frame follows the window
         let (ww, wh) = super::display::render_size();
         let a = super::wide::set_aspect(Some(ww as f32 / wh.max(1) as f32));

@@ -27,6 +27,7 @@ pub mod gdi32;
 pub mod gl;
 pub mod glide;
 pub mod hd;
+pub mod jitter;
 pub mod heat;
 pub mod kernel32;
 pub mod light;

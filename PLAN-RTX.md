@@ -61,8 +61,8 @@ surface along its normal (no flicker on ground seen at a flat angle), the debug 
 motion vectors (`motion.rs`, `FCOP_GBUFFER=motion` / `reproject`).
 
 Next (where to go on after a break):
-- Step 3, second part done (moving things' motion, `motion.rs`). Next: jitter (Halton 2,3 in
-  the projection hooks), then step 4 DLSS.
+- Step 3 done but the check below (moving things' motion, jitter `jitter.rs`). Next: step 4
+  DLSS through Streamline.
 - Alpha test open points: scrolled terrain textures (tw & 0x800) are tested unscrolled;
   semi-transparent faces (glass, PS1 STP) still cast fully; HD replacement textures' coverage
   is not used (the original page's).
@@ -195,8 +195,11 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
       Not followed: vertex animation (models with frames).
 - [x] Vectors between shown pictures, not between game frames (pictures come between frames):
       the interpolated camera of each picture.
-- [ ] Jitter: a Halton (2, 3) subpixel offset added in the projection hooks (0x457340
-      objects, 0x453740 terrain, 0x457140 sprites) in 2560x1920 units. The HUD stays still.
+- [x] Jitter (2026-11-22, `jitter.rs`, `FCOP_JITTER=1`): a Halton (2, 3) subpixel offset, 8
+      points, one per picture shown. Not in the projection hooks as planned (they give whole
+      2560x1920 units, coarser than a pixel at high resolutions) but in Glide's vertex shader
+      for the 3D picture's primitives; the HUD stays still. Motion vectors without jitter.
+      DLSS will want the phase count from the scale (8 * (display / render)^2).
 - [ ] Check: `FCOP_GBUFFER=motion` (colour by direction). A reprojected last picture must
       lie on the new one when walking and turning.
 

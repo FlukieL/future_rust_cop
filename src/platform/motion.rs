@@ -73,11 +73,13 @@ const MOTION_FS: &str = r#"
 uniform mat3 m;
 uniform vec3 off;
 uniform vec2 ks;      // widescreen's k now, in the last picture
+uniform vec2 jn;      // this picture's jitter (pixels): taken out
 out vec4 o;
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
     float z = G(q).r;
-    vec2 s = vec2(q) + 0.5;
+    // the place on the screen without the jitter of the point the pixel shows
+    vec2 s = vec2(q) + 0.5 - jn;
     // camera space (unscaled x); no depth: infinitely far
     vec3 c = z > 0.0 ? P(s, z) : P(s, 1.0) * 1.0e6;
     c.x /= ks.x;
@@ -92,6 +94,7 @@ const MOVED_VS: &str = r#"
 layout(location = 0) in vec3 now;
 layout(location = 1) in vec3 last;
 uniform vec2 ks;
+uniform vec2 jn;
 uniform float focal;
 uniform ivec2 size;
 out vec3 l;
@@ -99,13 +102,16 @@ out float z;
 void main() {
     l = last;
     z = now.z;
-    // clip space with w = z: x, y as the game projects; the near plane at z = 16
-    gl_Position = vec4(now.x * ks.x * focal / (float(size.x) * 0.5), now.y * focal / (float(size.y) * 0.5), now.z - 32.0, now.z);
+    // clip space with w = z: x, y as the game projects (and jittered as the picture); the near
+    // plane at z = 16
+    vec2 j = 2.0 * jn / vec2(size) * now.z;
+    gl_Position = vec4(now.x * ks.x * focal / (float(size.x) * 0.5) + j.x, now.y * focal / (float(size.y) * 0.5) + j.y, now.z - 32.0, now.z);
 }
 "#;
 
 const MOVED_FS: &str = r#"
 uniform vec2 ks;
+uniform vec2 jn;
 in vec3 l;
 in float z;
 out vec4 o;
@@ -113,7 +119,7 @@ void main() {
     float d = G(ivec2(gl_FragCoord.xy)).r;
     // the game shows something else here (in front of it)
     if (d <= 0.0 || abs(d - z) > 0.01 * z + 4.0) discard;
-    vec2 s = gl_FragCoord.xy;
+    vec2 s = gl_FragCoord.xy - jn;
     vec2 s0 = l.z > 1.0 ? vec2(l.x * ks.y, l.y) * focal / l.z + vec2(size) * 0.5 : s;
     o = vec4(s0 - s, 0.0, 1.0);
 }
@@ -185,10 +191,13 @@ const CHECK_FS: &str = r#"
 uniform sampler2D mv;
 uniform sampler2D now;
 uniform sampler2D last;
+uniform vec2 jn;        // the jitter of this picture and the last
+uniform vec2 jl;
 out vec4 o;
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
-    vec2 s = (vec2(q) + 0.5 + texelFetch(mv, q, 0).rg) / vec2(size);
+    // the vectors are without jitter: the last picture was drawn with its own
+    vec2 s = (vec2(q) + 0.5 - jn + jl + texelFetch(mv, q, 0).rg) / vec2(size);
     vec3 c = texelFetch(now, q, 0).rgb;
     vec3 l = texture(last, s).rgb;
     o = vec4(any(lessThan(s, vec2(0.0))) || any(greaterThan(s, vec2(1.0))) ? vec3(0.0, 0.0, 0.3) : abs(c - l) * 4.0, 1.0);
@@ -295,9 +304,11 @@ impl Motion {
             gl.bind_vertex_array(Some(self.vao));
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(if ms { glow::TEXTURE_2D_MULTISAMPLE } else { glow::TEXTURE_2D }, Some(depth));
+            let jn = super::jitter::now();
             let common = |p: glow::Program| {
                 gl.use_program(Some(p));
                 let u = move |n: &'static str| super::gl::uniform(gl, p, n);
+                gl.uniform_2_f32(u("jn").as_ref(), jn[0], jn[1]);
                 gl.uniform_1_i32(u("gdepth").as_ref(), 0);
                 gl.uniform_2_i32(u("size").as_ref(), w, h);
                 gl.uniform_1_f32(u("focal").as_ref(), 4096.0 * h as f32 / 1920.0);
@@ -384,6 +395,9 @@ impl Motion {
             gl.uniform_2_i32(u("size").as_ref(), size.0 as i32, size.1 as i32);
             gl.uniform_1_i32(u("now").as_ref(), 2);
             gl.uniform_1_i32(u("last").as_ref(), 3);
+            let (jn, jl) = (super::jitter::now(), super::jitter::last());
+            gl.uniform_2_f32(u("jn").as_ref(), jn[0], jn[1]);
+            gl.uniform_2_f32(u("jl").as_ref(), jl[0], jl[1]);
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             for unit in 1..4 {
                 gl.active_texture(glow::TEXTURE0 + unit);

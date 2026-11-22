@@ -571,6 +571,14 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   those whose transform changed are rasterized over the camera's vectors with both transforms,
   only where the game's depth is the triangle's (1% + 4 units). Not followed: vertex animation
   (frames), effects and sprites (camera's motion only).
+- `jitter.rs`: subpixel jitter for DLSS (PLAN-RTX.md step 3; `FCOP_JITTER=1`, debug menu
+  Renderer page, off: without a temporal filter the picture only shakes). Halton (2, 3), 8
+  points, the next at each grBufferSwap. Not in the projection hooks (whole 2560x1920 units,
+  coarser than a pixel above 2560 wide): Glide's vertex shader adds it (uniform `jitter`, clip
+  space) to the 3D picture's primitives only (`gbuf`; HUD still). The motion vectors take it out
+  (a pixel shows the point at its centre less the offset; moved pass jittered as the picture);
+  `reproject` samples the last picture with its own jitter (standing: ~3 against ~0.3 without,
+  bilinear resampling; the wrong sign gave ~9).
 - `wide.rs`: widescreen (Hor+). k = (4/3) / aspect scales camera-space x before the
   projections (0x453740 terrain vertex, 0x457340 object points, 0x457140 sprites) and the
   sphere view tests (0x452fd0 terrain cells, 0x4572a0 objects); target markers (0x435330,
