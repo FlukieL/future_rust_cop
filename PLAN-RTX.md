@@ -205,6 +205,18 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
 
 ## Step 4: DLSS through Streamline
 
+- [ ] The SDK's files by download, never in the repository or the release (decided
+      2026-11-22): when the player chooses DLSS in Advanced Graphics and it is missing,
+      "Download..." shows NVIDIA's licence (`nvngx_dlss.license.txt`) with Accept / Cancel,
+      then fetches only the needed entries of NVIDIA's official Streamline release zip on
+      GitHub (276 MB; HTTP range requests: its central directory, then each entry, ~37 MB
+      packed): `bin/x64/` sl.interposer, sl.common, sl.dlss, sl.dlss_g, sl.reflex, sl.pcl,
+      NvLowLatencyVk.dll, nvngx_dlss.dll, nvngx_dlssg.dll, the licence texts and the root
+      `license.txt` (Streamline's MIT). Inflated, each checked against a SHA-256 in our code
+      (version and hashes fixed, updated by hand), into `game_files/DLSS/` (kept by `setup`).
+      On its own thread with progress. Never at start, only on the player's choice. A DLL
+      changed later by DLSS Swapper / the NVIDIA App is no error (DLSS 5 by managers).
+      Streamline is Windows only: DLSS too.
 - [ ] Streamline (open source) with the Vulkan path: `sl.interposer`, features DLSS (Super
       Resolution and DLAA), DLSS-G (Frame Generation) and Reflex.
 - [ ] Inputs: colour without the HUD, depth, motion vectors, jitter, camera matrices, and
@@ -219,8 +231,20 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
       Frame Generation (box), Reflex (box). MSAA is off while DLSS is on.
 - [ ] DLSS 5 by managers: the standard DLL names beside fcop.exe (`nvngx_dlss.dll`,
       `nvngx_dlssg.dll`) and the Streamline path, so the NVIDIA App override finds them.
-- [ ] Licence: check what the release may ship (Streamline's and the DLSS DLLs' terms).
-      The DLLs never go into the repository.
+- [x] Licence checked (2026-11-22, Streamline v2.14.16; not legal advice):
+      - Streamline itself (headers, `sl.interposer.dll`, `sl.*.dll` plugins) is MIT
+        (`license.txt`): may be shipped, its notice beside it.
+      - The DLSS DLLs (`nvngx_dlss.dll`, `nvngx_dlssg.dll`) fall under the NVIDIA RTX SDKs
+        licence (`external/ngx-sdk/license.txt`), Reflex under NVIDIA's SDK licence: shipping
+        allowed only inside an application with functionality of its own, under terms at least
+        as protective as NVIDIA's, never made subject to an open source licence (our MIT must
+        not cover them), and then: NVIDIA's marks on splash screen, about box and credits (marks
+        only after NVIDIA's written approval of a sample), notice to NVIDIA before a commercial
+        release, NVIDIA GPUs only, NVIDIA may disable a broken integration. Community opinion
+        (Nexus Mods) says the DLLs may not be passed on at all; Unigine ships them with their
+        licence text. Questions: nvidia-rtx-license-questions@nvidia.com.
+      - Never in the repository. Open: ship them in the release, or the player puts
+        `nvngx_dlss.dll` beside fcop.exe (the user decides).
 
 ## Step 5: raytracing
 

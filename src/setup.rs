@@ -9,6 +9,8 @@
 //!                        controls.txt, gamepad.txt, save.cfg: settings, key bindings, saves)
 //! game_files/Video/      the videos (optional)
 //! game_files/Textures/   replacement textures (optional, `platform::hd`)
+//! game_files/DLSS/       NVIDIA's Streamline and DLSS files, downloaded on the player's choice
+//!                        (optional, `platform::sdk`)
 //! ```
 //!
 //! Everything else in `game_files` (the CD's installer, DirectX, the Mac version's MISSIONS
@@ -22,6 +24,8 @@ const GAME: &str = "FCopLAPD";
 const VIDEO: &str = "Video";
 /// replacement textures (`platform::hd`), the player's
 const TEXTURES: &str = "Textures";
+/// NVIDIA's Streamline and DLSS files (`platform::sdk`)
+pub const DLSS: &str = "DLSS";
 /// what stays in the game folder: the game's files and ours
 const GAME_FILES: [&str; 9] = ["FCopLAPD.exe", "febmp.bin", "missions", "registry.txt", "controls.txt", "gamepad.txt", "save.cfg", COMPILED, SAVESTATE];
 /// our savestate (`platform::savestate`)
@@ -87,7 +91,7 @@ pub fn game_exe(root: &Path) -> Result<PathBuf, String> {
     writable(&game);
     writable(&video);
     // what the game does not need
-    let mut rest = others(root, &[GAME, VIDEO, TEXTURES, NOTE]);
+    let mut rest = others(root, &[GAME, VIDEO, TEXTURES, DLSS, NOTE]);
     rest.extend(others(&game, &GAME_FILES));
     for p in rest {
         eprintln!("setup: not needed, removed: {}", p.display());

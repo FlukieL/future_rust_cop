@@ -571,6 +571,14 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   those whose transform changed are rasterized over the camera's vectors with both transforms,
   only where the game's depth is the triangle's (1% + 4 units). Not followed: vertex animation
   (frames), effects and sprites (camera's motion only).
+- `sdk.rs` (Windows only): NVIDIA's Streamline and DLSS files, downloaded on the player's choice,
+  never in the repository or the release (NVIDIA's DLSS licence; Streamline itself is MIT): only
+  the needed entries of the official Streamline release zip on GitHub (`VERSION`, `URL`) by HTTP
+  range requests (central directory from the end, then each entry; ureq with rustls, flate2),
+  each checked against its SHA-256 in `FILES`, into `game_files/DLSS/` (`setup::DLSS`, kept).
+  `licence()` gives `nvngx_dlss.license.txt` to show first. Test (network, ~37 MB, ~3 s):
+  `cargo test --release --lib sdk -- --ignored` (FCOP_SDK_HASHES=1: hashes only logged, for a
+  new version).
 - `jitter.rs`: subpixel jitter for DLSS (PLAN-RTX.md step 3; `FCOP_JITTER=1`, debug menu
   Renderer page, off: without a temporal filter the picture only shakes). Halton (2, 3), 8
   points, the next at each grBufferSwap. Not in the projection hooks (whole 2560x1920 units,

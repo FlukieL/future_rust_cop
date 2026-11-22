@@ -28,6 +28,8 @@ ash-window = "0.13"
 gilrs = "0.11.2"
 sha2 = "0.11.1"
 png = "0.18"
+# inflating zip entries (`platform::sdk`)
+flate2 = "1"
 
 [features]
 difftest = ["dep:unicorn-engine"]
@@ -39,6 +41,8 @@ name = "difftest"
 required-features = ["difftest"]
 
 [target.'cfg(windows)'.dependencies]
+# HTTPS for the DLSS download (`platform::sdk`, Windows only as Streamline)
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]

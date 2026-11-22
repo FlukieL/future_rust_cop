@@ -48,6 +48,8 @@ pub mod walker;
 pub mod wide;
 pub mod raytrace;
 pub mod scene;
+#[cfg(windows)]
+pub mod sdk;
 pub mod vk;
 pub mod window;
 pub mod zbuffer;
