@@ -126,8 +126,9 @@ const SHADOW_QUALITY_LABEL: u32 = FIRST_OURS + 30;
 const SHADOW_QUALITY: u32 = FIRST_OURS + 31;
 /// Below the Frame Rate combo (`fps::vsync`).
 const VSYNC: u32 = FIRST_OURS + 32;
-/// How far the left column's rows below the Display Mode list move for Frame Rate and V-Sync.
-const FRAME_RATE_ROWS: i32 = 30;
+/// The rows Frame Rate and V-Sync take below the Display Mode list (the left column's rows below
+/// follow them).
+const FRAME_RATE_ROWS: i32 = 34;
 /// Right of Fullscreen: the frame rate display (`stats.rs`).
 const SHOW_FPS: u32 = FIRST_OURS + 33;
 /// Advanced Graphics: the 3D picture's depth test (`zbuffer.rs`).
@@ -426,10 +427,27 @@ pub fn adjust(template: u32, t: &mut Template) {
             return;
         }
         if let (Some(m), Some(g)) = (display_mode, group) {
-            let y = note.map_or(m[1] + 16, |n| n[1] + n[3]) + 5;
-            let left = |i: &Item| i.rect[0] < g[0] && i.id != OK && i.id != CANCEL;
-            for i in t.items.iter_mut().filter(|i| left(i) && i.rect[1] >= y) {
-                i.rect[1] += FRAME_RATE_ROWS;
+            // with Glide our resolution list (also fullscreen) takes the Display Mode list's place
+            // and the game's note "* Only supported in a window" goes: Frame Rate right below the
+            // list (behind the hidden note it left a gap); else below the note
+            let glide = renderer() == "3Dfx";
+            if glide {
+                for i in t.items.iter_mut().filter(|i| i.id == WINDOW_NOTE) {
+                    i.style &= !VISIBLE;
+                }
+            }
+            let y = match (glide, note) {
+                (false, Some(n)) => n[1] + n[3] + 5,
+                _ => m[1] + 16,
+            };
+            // the left column's rows below: their first one goes below V-Sync
+            let left = |i: &Item| i.rect[0] < g[0] && ![OK, CANCEL, WINDOW_NOTE, DISPLAY_MODE, RESOLUTION, DISPLAY_MODE_LABEL].contains(&i.id);
+            let next = t.items.iter().filter(|i| left(i) && i.rect[1] >= y).map(|i| i.rect[1]).min();
+            if let Some(next) = next {
+                let shift = y + FRAME_RATE_ROWS - next;
+                for i in t.items.iter_mut().filter(|i| left(i) && i.rect[1] >= next) {
+                    i.rect[1] += shift;
+                }
             }
             row(t, FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate", [m[0], y + 2, 52, 8], [m[0] + 54, y, m[2] - 54, 100]);
             vsync(t, [m[0], y + 16, m[2], 9]);
@@ -825,6 +843,8 @@ mod tests {
         let (Ok(exe), Ok(dir)) = (std::env::var("FCOP_TEST_EXE"), std::env::var("FCOP_DLG_PNG")) else { return };
         use crate::image::{Image, ResId, list_resources};
         let img = Image::load(std::path::Path::new(&exe)).unwrap();
+        // (its registry says the renderer)
+        let _ = crate::platform::GAME_DIR.set(std::path::Path::new(&exe).parent().unwrap().into());
         let rd = |a: u32| img.byte(a);
         let (_, at, size) = list_resources(&rd, img.base, ResId::Id(5)).into_iter().find(|r| format!("{:?}", r.0).contains("101")).unwrap();
         let mut t = Template::parse(&img.read(at, size as usize).unwrap()).unwrap();
