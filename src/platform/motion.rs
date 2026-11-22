@@ -26,7 +26,7 @@ use glow::HasContext;
 
 /// Whether the vectors are made (the depth then too: `ao::depth_wanted`).
 pub fn wanted() -> bool {
-    showing() || checking()
+    showing() || checking() || super::vk::dlss_ready()
 }
 
 fn showing() -> bool {

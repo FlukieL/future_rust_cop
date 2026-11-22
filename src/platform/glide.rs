@@ -1853,7 +1853,7 @@ pub fn post_3d() {
     });
 }
 
-fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk>) {
+fn post_3d_with(g: &mut Glide, gl: &glow::Context, mut vk: Option<&mut super::vk::Vk>) {
     {
         g.flush(gl);
         // FCOP_GBUFFER=scene: our scene's models as lines over the picture (PLAN-RTX.md step 2)
@@ -1889,7 +1889,7 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk
         // (with the dynamic lights' shadows: the strongest lights' rays go with the sun's)
         let merged = super::lights::merged(&lights, target);
         let casters = super::lights::casters(&merged);
-        let rays = match (super::shadows::mode(), vk) {
+        let rays = match (super::shadows::mode(), vk.as_deref_mut()) {
             (super::shadows::Mode::Rays, Some(vk)) => super::scene::take_frame().and_then(|frame| vk.sun_rays(gl, tex, ms, target, &frame, dir, &casters, super::ao::traced())),
             _ => None,
         };
@@ -1918,6 +1918,27 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk
         if super::heat::enabled() {
             g.heat.get_or_insert_with(|| super::heat::Heat::new(gl)).run(gl, tex, ms, target, colour, clip, &heat);
         }
+        // DLSS (PLAN-RTX.md step 4): the lit picture, its depth and motion vectors; bloom and tone
+        // mapping work on its output
+        let mut mvec = None;
+        if let (Some(vk), Some(cam)) = (vk.as_deref_mut().filter(|_| super::vk::dlss_ready()), next.camera) {
+            let m = g.motion.get_or_insert_with(|| super::motion::Motion::new(gl)).run(gl, tex, ms, target, colour, clip, next.index, cam);
+            mvec = Some(m);
+            let rect = clip.map(|v| v.max(0) as u32);
+            let frame = super::streamline::Frame {
+                index: super::jitter::picture(),
+                view: next.index as u32,
+                rect,
+                out: rect,
+                mode: super::streamline::Mode::Dlaa,
+                jitter: super::jitter::now(),
+                focal: 4096.0 * target.1 as f32 / 1920.0,
+                near: super::vk::DLSS_NEAR,
+                hdr: g.target_hdr,
+                reset: false,
+            };
+            vk.dlss(gl, colour, tex, ms, m, target, clip, &frame);
+        }
         if super::bloom::enabled() {
             g.bloom.get_or_insert_with(|| super::bloom::Bloom::new(gl)).run(gl, tex, ms, target, colour, clip);
         }
@@ -1926,7 +1947,7 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk
             g.tonemap.get_or_insert_with(|| super::tonemap::Pass::new(gl)).run(gl, target, colour, clip, super::tonemap::curve());
         }
         // the motion vectors (PLAN-RTX.md step 3): the camera's, from the depth (after the rest: FCOP_GBUFFER=motion shows them over the picture)
-        if let Some(cam) = next.camera.filter(|_| super::motion::wanted()) {
+        if let Some(cam) = next.camera.filter(|_| super::motion::wanted() && mvec.is_none()) {
             g.motion.get_or_insert_with(|| super::motion::Motion::new(gl)).run(gl, tex, ms, target, colour, clip, next.index, cam);
         }
     }

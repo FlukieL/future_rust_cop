@@ -20,8 +20,14 @@ pub const PHASES: u32 = 8;
 /// The picture's place in the sequence.
 static INDEX: AtomicU32 = AtomicU32::new(0);
 
+/// On with `FCOP_JITTER=1` and whenever DLSS runs.
 pub fn enabled() -> bool {
-    super::debug::flag(super::debug::V::Jitter)
+    super::debug::flag(super::debug::V::Jitter) || super::vk::dlss_ready()
+}
+
+/// The number of the picture being drawn (DLSS's frame index).
+pub fn picture() -> u32 {
+    INDEX.load(Ordering::Relaxed)
 }
 
 /// The radical inverse of `i` in base `b`: 0...1.

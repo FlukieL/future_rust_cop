@@ -587,7 +587,11 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   `slInit` (Vulkan, custom engine, our `PROJECT_ID`, its log into ours), then ash loads the
   interposer as the Vulkan loader; `supported(phys)` after vkCreateDevice. The driver's newer
   OTA plugins (ProgramData/NVIDIA/NGX/models) are taken before ours (ours "duplicate"); NGX
-  loads `nvngx_dlss.dll` (310.9.16) from our folder. Open: sl.common logs its Vulkan hooks
+  loads `nvngx_dlss.dll` (310.9.16) from our folder. The DLSS pass (`Vk::dlss`, called in
+  `glide::post_3d` before bloom and tone mapping; `streamline::evaluate`): so far DLAA at the
+  target's size; GL copies the picture, depth (`vk::DLSS_NEAR` / z) and motion vectors into
+  shared images, Vulkan evaluates into an output GL draws back; jitter and motion vectors are on
+  while `vk::dlss_ready`. Open: sl.common logs its Vulkan hooks
   (CmdBindPipeline, CmdBindDescriptorSets, BeginCommandBuffer) "NOT supported".
 - `jitter.rs`: subpixel jitter for DLSS (PLAN-RTX.md step 3; `FCOP_JITTER=1`, debug menu
   Renderer page, off: without a temporal filter the picture only shakes). Halton (2, 3), 8

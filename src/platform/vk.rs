@@ -31,6 +31,14 @@ pub fn wanted() -> bool {
     })
 }
 
+static DLSS_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// DLSS runs (Streamline started, the device supports it, no error since): jitter and motion
+/// vectors are made for it.
+pub fn dlss_ready() -> bool {
+    DLSS_READY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// DLSS needs Vulkan (`streamline.rs`, Windows only).
 fn dlss_wanted() -> bool {
     #[cfg(windows)]
@@ -159,6 +167,8 @@ struct SunImage {
     gl_memory: u32,
     tex: glow::Texture,
     fbo: glow::Framebuffer,
+    format: vk::Format,
+    usage: vk::ImageUsageFlags,
 }
 
 /// What the sun's rays need besides their image: the semaphores GL to Vulkan and back (Vulkan's
@@ -173,6 +183,55 @@ struct Sun {
     vao: glow::VertexArray,
     image: Option<SunImage>,
 }
+
+/// DLSS (`streamline.rs`, PLAN-RTX.md step 4): per view GL copies the lit 3D picture, its depth
+/// and motion vectors into shared images, Vulkan runs DLSS into `out`, GL draws that back over
+/// the view. Semaphores both ways as the sun's rays.
+struct Dlss {
+    to_vk: (vk::Semaphore, u32),
+    to_gl: (vk::Semaphore, u32),
+    cmd: vk::CommandBuffer,
+    fence: vk::Fence,
+    /// GL's programs: depth and vectors into the inputs (single sampled, multisampled depth), the
+    /// output back over the picture
+    copy: [glow::Program; 2],
+    back: glow::Program,
+    vao: glow::VertexArray,
+    images: Option<DlssImages>,
+}
+
+/// DLSS's images, all as large as the target: colour in (RGBA16F), depth (R32F, near / z),
+/// vectors (RG16F, pixels), colour out (RGBA16F); `inputs` GL's framebuffer on depth and vectors.
+struct DlssImages {
+    colour: SunImage,
+    depth: SunImage,
+    mvec: SunImage,
+    out: SunImage,
+    inputs: glow::Framebuffer,
+}
+
+/// The z of depth 1 given to DLSS (depth = `DLSS_NEAR` / z, inverted: 0 far, 1 at the near plane).
+pub const DLSS_NEAR: f32 = 8.0;
+
+const DLSS_COPY_FS: &str = r#"
+uniform sampler2D mvec;
+uniform float near;
+layout(location = 0) out vec4 d;
+layout(location = 1) out vec4 m;
+void main() {
+    ivec2 q = ivec2(gl_FragCoord.xy);
+    float z = G(q).r;
+    d = vec4(z > 0.0 ? min(near / z, 1.0) : 0.0);
+    m = vec4(texelFetch(mvec, q, 0).rg, 0.0, 0.0);
+}
+"#;
+
+const DLSS_BACK_FS: &str = r#"
+uniform sampler2D src;
+uniform ivec2 shift;    // the output's box less the view's
+out vec4 o;
+void main() { o = texelFetch(src, ivec2(gl_FragCoord.xy) + shift, 0); }
+"#;
 
 const COPY_FS: &str = r#"
 out vec4 o;
@@ -194,6 +253,8 @@ pub struct Vk {
     rt: Option<super::raytrace::Rt>,
     /// the sun's shadow by rays (made with `rt`)
     sun: Option<Sun>,
+    /// DLSS, when Streamline runs and the device supports it
+    dlss: Option<Dlss>,
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     /// signalled by the copy into each swapchain image, waited for by its present
@@ -353,7 +414,11 @@ impl Vk {
             let info = info.enabled_extension_names(&ext_ptrs);
             let device = instance.create_device(phys, &info, None).map_err(err("vkCreateDevice"))?;
             #[cfg(windows)]
-            if interposer.is_some() && super::streamline::supported(vk::Handle::as_raw(phys) as *const c_void) {
+            #[cfg(windows)]
+            let dlss = interposer.is_some() && super::streamline::supported(vk::Handle::as_raw(phys) as *const c_void);
+            #[cfg(not(windows))]
+            let dlss = false;
+            if dlss {
                 super::log!("streamline: DLSS supported on {name}");
             }
             let rt = match rt {
@@ -369,7 +434,7 @@ impl Vk {
                 .create_command_pool(&vk::CommandPoolCreateInfo::default().queue_family_index(family).flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER), None)
                 .map_err(err("command pool"))?;
             let cmds = device
-                .allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(3))
+                .allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(4))
                 .map_err(err("command buffers"))?;
             let frame = |cmd| -> Result<Frame, String> {
                 Ok(Frame {
@@ -425,6 +490,24 @@ impl Vk {
                 None => None,
             };
             super::shadows::set_rays_ready(sun.is_some());
+            let dlss = match dlss {
+                true => {
+                    let prog = |ms: bool| super::gl::compile(gl, super::ao::VS, &format!("{}{}{DLSS_COPY_FS}", if ms { "#define MS
+" } else { "" }, super::ao::COMMON));
+                    Some(Dlss {
+                        to_vk: shared_semaphore()?,
+                        to_gl: shared_semaphore()?,
+                        cmd: cmds[3],
+                        fence: device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).map_err(err("fence"))?,
+                        copy: [prog(false), prog(true)],
+                        back: super::gl::compile(gl, super::ao::VS, DLSS_BACK_FS),
+                        vao: gl.create_vertex_array().map_err(|e| format!("GL vertex array: {e}"))?,
+                        images: None,
+                    })
+                }
+                false => None,
+            };
+            DLSS_READY.store(dlss.is_some(), std::sync::atomic::Ordering::Relaxed);
             let mut v = Vk {
                 _entry: entry,
                 instance,
@@ -450,6 +533,7 @@ impl Vk {
                 gl: gl_fns,
                 rt,
                 sun,
+                dlss,
             };
             let size = win.inner_size();
             v.build_swapchain(size.width, size.height)?;
@@ -619,37 +703,22 @@ impl Vk {
         }
     }
 
-    /// The sun's image made (again) at w x h: shared, in GENERAL layout (GL hands it over and
-    /// takes it back in that one).
-    fn make_sun_image(&mut self, gl: &glow::Context, w: u32, h: u32) -> Result<(), String> {
-        let Some(sun) = &mut self.sun else { return Err("no ray tracing".into()) };
-        let (cmd, fence) = (sun.cmd, sun.fence);
-        let old = sun.image.take();
+    /// A shared image of w x h with a view, a GL framebuffer on it, put into GENERAL layout
+    /// (GL hands it over and takes it back in that one) with `cmd`, waited for by `fence`.
+    #[allow(clippy::too_many_arguments)]
+    fn view_image(&self, gl: &glow::Context, w: u32, h: u32, format: vk::Format, gl_format: u32, usage: vk::ImageUsageFlags, cmd: vk::CommandBuffer, fence: vk::Fence) -> Result<SunImage, String> {
         unsafe {
-            gl.finish();
-            let _ = self.device.device_wait_idle();
-            if let Some(s) = old {
-                gl.delete_framebuffer(s.fbo);
-                gl.delete_texture(s.tex);
-                (self.gl.delete_memory_objects)(1, &s.gl_memory);
-                self.device.destroy_image_view(s.view, None);
-                self.device.destroy_image(s.image, None);
-                self.device.free_memory(s.memory, None);
-            }
-            let format = vk::Format::R32G32B32A32_SFLOAT;
-            let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
-            let (image, memory, gl_memory, tex) = self.shared_image(gl, w, h, format, glow::RGBA32F, usage)?;
+            let (image, memory, gl_memory, tex) = self.shared_image(gl, w, h, format, gl_format, usage)?;
             let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
             let view = self
                 .device
                 .create_image_view(&vk::ImageViewCreateInfo::default().image(image).view_type(vk::ImageViewType::TYPE_2D).format(format).subresource_range(range), None)
-                .map_err(err("sun image view"))?;
+                .map_err(err("shared image view"))?;
             let fbo = gl.create_framebuffer().map_err(|e| format!("GL framebuffer: {e}"))?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
             let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            // into GENERAL once
             let d = &self.device;
             d.reset_fences(&[fence]).map_err(err("fence"))?;
             d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).map_err(err("begin"))?;
@@ -665,12 +734,43 @@ impl Vk {
             let cmds = [cmd];
             d.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&cmds)], fence).map_err(err("submit"))?;
             d.wait_for_fences(&[fence], true, u64::MAX).map_err(err("wait"))?;
-            self.sun.as_mut().unwrap().image = Some(SunImage { image, memory, view, w, h, gl_memory, tex, fbo });
+            let img = SunImage { image, memory, view, w, h, gl_memory, tex, fbo, format, usage };
             if status != glow::FRAMEBUFFER_COMPLETE {
-                return Err(format!("the sun's image is no complete GL framebuffer ({status:#x})"));
+                self.drop_image(gl, img);
+                return Err(format!("a shared image is no complete GL framebuffer ({status:#x})"));
             }
-            Ok(())
+            Ok(img)
         }
+    }
+
+    /// GL's and Vulkan's parts of a shared image deleted (both idle).
+    fn drop_image(&self, gl: &glow::Context, s: SunImage) {
+        unsafe {
+            gl.delete_framebuffer(s.fbo);
+            gl.delete_texture(s.tex);
+            (self.gl.delete_memory_objects)(1, &s.gl_memory);
+            self.device.destroy_image_view(s.view, None);
+            self.device.destroy_image(s.image, None);
+            self.device.free_memory(s.memory, None);
+        }
+    }
+
+    /// The sun's image made (again) at w x h.
+    fn make_sun_image(&mut self, gl: &glow::Context, w: u32, h: u32) -> Result<(), String> {
+        let Some(sun) = &mut self.sun else { return Err("no ray tracing".into()) };
+        let (cmd, fence) = (sun.cmd, sun.fence);
+        let old = sun.image.take();
+        unsafe {
+            gl.finish();
+            let _ = self.device.device_wait_idle();
+        }
+        if let Some(s) = old {
+            self.drop_image(gl, s);
+        }
+        let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+        let img = self.view_image(gl, w, h, vk::Format::R32G32B32A32_SFLOAT, glow::RGBA32F, usage, cmd, fence)?;
+        self.sun.as_mut().unwrap().image = Some(img);
+        Ok(())
     }
 
     /// The sun's shadow by rays for a view of w x h (`shadows::Mode::Rays`): GL copies the
@@ -757,6 +857,163 @@ impl Vk {
             (self.gl.wait_semaphore)(to_gl.1, 0, std::ptr::null(), 1, &tex_name, &GL_LAYOUT_GENERAL);
         }
         Some(tex)
+    }
+
+    /// DLSS's images made (again) at w x h.
+    fn make_dlss_images(&mut self, gl: &glow::Context, w: u32, h: u32) -> Result<(), String> {
+        let Some(d) = &mut self.dlss else { return Err("no DLSS".into()) };
+        let (cmd, fence) = (d.cmd, d.fence);
+        let old = d.images.take();
+        unsafe {
+            gl.finish();
+            let _ = self.device.device_wait_idle();
+        }
+        if let Some(o) = old {
+            unsafe { gl.delete_framebuffer(o.inputs) };
+            for i in [o.colour, o.depth, o.mvec, o.out] {
+                self.drop_image(gl, i);
+            }
+        }
+        let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST;
+        let colour = self.view_image(gl, w, h, vk::Format::R16G16B16A16_SFLOAT, glow::RGBA16F, usage, cmd, fence)?;
+        let depth = self.view_image(gl, w, h, vk::Format::R32_SFLOAT, glow::R32F, usage, cmd, fence)?;
+        let mvec = self.view_image(gl, w, h, vk::Format::R16G16_SFLOAT, glow::RG16F, usage, cmd, fence)?;
+        let out = self.view_image(gl, w, h, vk::Format::R16G16B16A16_SFLOAT, glow::RGBA16F, usage, cmd, fence)?;
+        let inputs = unsafe {
+            let fbo = gl.create_framebuffer().map_err(|e| format!("GL framebuffer: {e}"))?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(depth.tex), 0);
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT1, glow::TEXTURE_2D, Some(mvec.tex), 0);
+            gl.draw_buffers(&[glow::COLOR_ATTACHMENT0, glow::COLOR_ATTACHMENT1]);
+            let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            if status != glow::FRAMEBUFFER_COMPLETE {
+                return Err(format!("the inputs are no complete GL framebuffer ({status:#x})"));
+            }
+            fbo
+        };
+        self.dlss.as_mut().unwrap().images = Some(DlssImages { colour, depth, mvec, out, inputs });
+        Ok(())
+    }
+
+    /// DLSS over a view (`glide::post_3d`, before bloom and tone mapping): `colour` the
+    /// framebuffer with the picture (multisampled with `ms`, as `depth`, the G-buffer's
+    /// attachment), `mvec` the view's motion vectors (`motion.rs`), `size` the target's,
+    /// `clip` the view's box in it. The output is drawn back into that box. False when DLSS
+    /// did not run (an error: logged, off for good).
+    #[allow(clippy::too_many_arguments)]
+    pub fn dlss(&mut self, gl: &glow::Context, colour: glow::Framebuffer, depth: glow::Texture, ms: bool, mvec: glow::Texture, size: (u32, u32), clip: [i32; 4], frame: &super::streamline::Frame) -> bool {
+        if self.dlss.is_none() || clip[2] <= 0 || clip[3] <= 0 {
+            return false;
+        }
+        if self.dlss.as_ref().unwrap().images.as_ref().is_none_or(|i| (i.colour.w, i.colour.h) != size) {
+            if let Err(e) = self.make_dlss_images(gl, size.0, size.1) {
+                super::log!("error: vulkan: DLSS: {e}");
+                self.dlss = None;
+                DLSS_READY.store(false, std::sync::atomic::Ordering::Relaxed);
+                return false;
+            }
+        }
+        let d = self.dlss.as_ref().unwrap();
+        let im = d.images.as_ref().unwrap();
+        let [x, y, w, h] = clip;
+        let all = [&im.colour, &im.depth, &im.mvec, &im.out];
+        let names: Vec<u32> = all.iter().map(|i| i.tex.0.get()).collect();
+        let layouts = [GL_LAYOUT_GENERAL; 4];
+        unsafe {
+            // the picture, resolved
+            gl.disable(glow::SCISSOR_TEST);
+            gl.disable(glow::BLEND);
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(colour));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(im.colour.fbo));
+            gl.blit_framebuffer(x, y, x + w, y + h, x, y, x + w, y + h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+            // depth and vectors
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(im.inputs));
+            gl.viewport(0, 0, size.0 as i32, size.1 as i32);
+            gl.enable(glow::SCISSOR_TEST);
+            gl.scissor(x, y, w, h);
+            gl.bind_vertex_array(Some(d.vao));
+            let p = d.copy[ms as usize];
+            gl.use_program(Some(p));
+            gl.active_texture(glow::TEXTURE1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(mvec));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(if ms { glow::TEXTURE_2D_MULTISAMPLE } else { glow::TEXTURE_2D }, Some(depth));
+            gl.uniform_1_i32(super::gl::uniform(gl, p, "gdepth").as_ref(), 0);
+            gl.uniform_1_i32(super::gl::uniform(gl, p, "mvec").as_ref(), 1);
+            gl.uniform_2_i32(super::gl::uniform(gl, p, "size").as_ref(), size.0 as i32, size.1 as i32);
+            gl.uniform_1_f32(super::gl::uniform(gl, p, "near").as_ref(), DLSS_NEAR);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            (self.gl.signal_semaphore)(d.to_vk.1, 0, std::ptr::null(), 4, names.as_ptr(), layouts.as_ptr());
+            gl.flush();
+
+            // DLSS
+            let dev = &self.device;
+            let (cmd, fence) = (d.cmd, d.fence);
+            let _ = dev.wait_for_fences(&[fence], true, u64::MAX);
+            let _ = dev.reset_fences(&[fence]);
+            let _ = dev.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT));
+            let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+            let own = |src, dst, from, to| -> Vec<vk::ImageMemoryBarrier<'static>> {
+                all.iter()
+                    .map(|i| {
+                        vk::ImageMemoryBarrier::default()
+                            .image(i.image)
+                            .old_layout(vk::ImageLayout::GENERAL)
+                            .new_layout(vk::ImageLayout::GENERAL)
+                            .src_access_mask(src)
+                            .dst_access_mask(dst)
+                            .src_queue_family_index(from)
+                            .dst_queue_family_index(to)
+                            .subresource_range(range)
+                    })
+                    .collect()
+            };
+            let rw = vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE;
+            let any = vk::PipelineStageFlags::ALL_COMMANDS;
+            dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, any, vk::DependencyFlags::empty(), &[], &[], &own(vk::AccessFlags::empty(), rw, vk::QUEUE_FAMILY_EXTERNAL, self.family));
+            let sl = |i: &SunImage| super::streamline::Image {
+                image: vk::Handle::as_raw(i.image),
+                memory: vk::Handle::as_raw(i.memory),
+                view: vk::Handle::as_raw(i.view),
+                w: i.w,
+                h: i.h,
+                format: i.format.as_raw() as u32,
+                usage: i.usage.as_raw(),
+            };
+            let evaluated = super::streamline::evaluate(vk::Handle::as_raw(cmd) as *mut c_void, frame, sl(&im.colour), sl(&im.depth), sl(&im.mvec), sl(&im.out));
+            dev.cmd_pipeline_barrier(cmd, any, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &own(rw, vk::AccessFlags::empty(), self.family, vk::QUEUE_FAMILY_EXTERNAL));
+            let _ = dev.end_command_buffer(cmd);
+            let (waits, signals, cmds) = ([d.to_vk.0], [d.to_gl.0], [cmd]);
+            let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+            let submit = vk::SubmitInfo::default().wait_semaphores(&waits).wait_dst_stage_mask(&stages).command_buffers(&cmds).signal_semaphores(&signals);
+            let submitted = dev.queue_submit(self.queue, &[submit], fence).map_err(err("submit"));
+            if let Err(e) = evaluated.and(submitted) {
+                // GL's signal must still be waited for: nothing more is sent, the device is left to finish
+                super::log!("error: vulkan: DLSS: {e}");
+                let _ = dev.device_wait_idle();
+                self.dlss = None;
+                DLSS_READY.store(false, std::sync::atomic::Ordering::Relaxed);
+                return false;
+            }
+            (self.gl.wait_semaphore)(d.to_gl.1, 0, std::ptr::null(), 4, names.as_ptr(), layouts.as_ptr());
+
+            // the output over the view (its box there at `frame.out`)
+            let [ox, oy, _, _] = frame.out;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(colour));
+            gl.viewport(0, 0, size.0 as i32, size.1 as i32);
+            gl.scissor(x, y, w, h);
+            gl.use_program(Some(d.back));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(im.out.tex));
+            gl.uniform_1_i32(super::gl::uniform(gl, d.back, "src").as_ref(), 0);
+            gl.uniform_2_i32(super::gl::uniform(gl, d.back, "shift").as_ref(), ox as i32 - x, oy as i32 - y);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        }
+        true
     }
 
     /// Before GL draws a picture of w x h: the framebuffer to draw it into.

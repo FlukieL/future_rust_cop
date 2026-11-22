@@ -66,7 +66,19 @@ Next (where to go on after a break):
   started with `FCOP_DLSS=1` (`streamline.rs`), DLSS reported supported. To test: download once
   with `cargo test --release --lib sdk -- --ignored` (lands in target/release/deps/game_files/DLSS:
   move it to target/release/game_files/DLSS), then run with `FCOP_DLSS=1`.
-- Next: the DLSS pass. GL draws the 3D picture at the render size; colour (before the HUD),
+- DLSS pass, first part (2026-11-22, not committed): DLAA at the target's size, per view in
+  `glide::post_3d` after AO/lights/shadows/heat, before bloom and tone mapping (`Vk::dlss`):
+  GL blits the picture (resolved) and draws depth (8 / z, inverted) and the motion vectors into
+  shared images (RGBA16F, R32F, RG16F), signals; Vulkan: `streamline::evaluate`
+  (slGetNewFrameToken with the picture's number, slSetConstants, slDLSSSetOptions,
+  slSetTagForFrame, slEvaluateFeature) into an RGBA16F output, GL waits and draws it back over
+  the view. Jitter and motion vectors are on while DLSS runs (`vk::dlss_ready`). Picture right
+  (upright, edges smooth). ~190 fps against ~430 without (first mission start, 1280x960): ~2.9 ms,
+  far more than DLAA should cost; measure with timestamps (the synchronous hand-over?). Open:
+  jitter sign checked only by eye, validation says Streamline's vkCreatePrivateDataSlot needs the
+  privateData feature, MSAA still on (should be off with DLSS), split screen untested.
+- Next: render size below the output (the 3D picture into a smaller framebuffer, DLSS to the
+  view's box, HUD at full size), the DLSS setting. The plan as it was: GL draws the 3D picture at the render size; colour (before the HUD),
   depth, motion vectors into images shared with Vulkan (as the sun's rays: synchronous,
   semaphores both ways); Streamline: `slGetNewFrameToken`, `slSetConstants` (camera matrices,
   jitter `jitter::now`, mvecScale 1/size), `slDLSSSetOptions` (mode, output size),
