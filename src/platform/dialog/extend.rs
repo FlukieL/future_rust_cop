@@ -124,8 +124,10 @@ const TONEMAP: u32 = FIRST_OURS + 28;
 const SHADOWS_LABEL: u32 = FIRST_OURS + 29;
 const SHADOW_QUALITY_LABEL: u32 = FIRST_OURS + 30;
 const SHADOW_QUALITY: u32 = FIRST_OURS + 31;
-/// Right of the Frame Rate combo (`fps::vsync`).
+/// Below the Frame Rate combo (`fps::vsync`).
 const VSYNC: u32 = FIRST_OURS + 32;
+/// How far the left column's rows below the Display Mode list move for Frame Rate and V-Sync.
+const FRAME_RATE_ROWS: i32 = 30;
 /// Right of Fullscreen: the frame rate display (`stats.rs`).
 const SHOW_FPS: u32 = FIRST_OURS + 33;
 /// Advanced Graphics: the 3D picture's depth test (`zbuffer.rs`).
@@ -362,6 +364,7 @@ pub fn adjust(template: u32, t: &mut Template) {
         let (Some(label), Some(combo)) = (place(PROCESSOR_LABEL), place(PROCESSOR_COMBO)) else { return };
         let filtering = place(FILTERING);
         let display_mode = place(DISPLAY_MODE);
+        let note = place(WINDOW_NOTE);
         let game_fullscreen = place(GAME_FULLSCREEN);
         let group = place(OPTIONS_GROUP);
         let gamma = place(GAMMA);
@@ -400,40 +403,50 @@ pub fn adjust(template: u32, t: &mut Template) {
                 t.items.push(Item { class: Class::Button, id: ADVANCED_BUTTON, text: "Advanced Graphics...".into(), style: VISIBLE | TABSTOP, ex_style: 0, rect });
             }
         }
+        // Frame Rate with V-Sync on its own row below it: under the Display Mode list (and its
+        // note) in the left column, the rows below there moved down; from the pause bar (no
+        // Display Mode) at the top of the left column, emptied there from the Processor Select
+        // label on, each label above its combo
+        let vsync = |t: &mut Template, rect| t.items.push(Item { class: Class::Button, id: VSYNC, text: "V-Sync".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect });
+        let row = |t: &mut Template, label_id, id, text: &str, l, c| {
+            t.items.push(Item { class: Class::Static, id: label_id, text: text.into(), style: VISIBLE, ex_style: 0, rect: l });
+            t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: c });
+        };
+        if paused {
+            let w = display_mode.map_or(115, |m| m[2]);
+            let mut y = label[1];
+            for (label_id, id, text) in [(FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate"), (TEXTURES_LABEL, TEXTURES, "Textures"), (MSAA_LABEL, MSAA, "Anti-alias")] {
+                row(t, label_id, id, text, [combo[0], y, w, 8], [combo[0], y + 10, w, 100]);
+                y += 24;
+                if id == FRAME_RATE {
+                    vsync(t, [combo[0], y, w, 9]);
+                    y += 13;
+                }
+            }
+            return;
+        }
+        if let (Some(m), Some(g)) = (display_mode, group) {
+            let y = note.map_or(m[1] + 16, |n| n[1] + n[3]) + 5;
+            let left = |i: &Item| i.rect[0] < g[0] && i.id != OK && i.id != CANCEL;
+            for i in t.items.iter_mut().filter(|i| left(i) && i.rect[1] >= y) {
+                i.rect[1] += FRAME_RATE_ROWS;
+            }
+            row(t, FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate", [m[0], y + 2, 52, 8], [m[0] + 54, y, m[2] - 54, 100]);
+            vsync(t, [m[0], y + 16, m[2], 9]);
+        }
         if let Some(g) = group {
             // between the group and the OK button's row, the combos up to the group's right
-            // edge, each row moving OK and Cancel down; from the pause bar in the left column,
-            // emptied there, from the Processor Select label on, each label above its combo
-            let rows = [(FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate"), (TEXTURES_LABEL, TEXTURES, "Textures"), (MSAA_LABEL, MSAA, "Anti-alias")];
-            for (k, (label_id, id, text)) in rows.into_iter().enumerate() {
+            // edge, each row after the first moving OK and Cancel down
+            for (k, (label_id, id, text)) in [(TEXTURES_LABEL, TEXTURES, "Textures"), (MSAA_LABEL, MSAA, "Anti-alias")].into_iter().enumerate() {
                 let k = k as i32;
-                let (mut l, mut c) = if paused {
-                    let w = display_mode.map_or(115, |m| m[2]);
-                    let y = label[1] + 24 * k;
-                    ([combo[0], y, w, 8], [combo[0], y + 10, w, 100])
-                } else {
-                    if k > 0 {
-                        for i in t.items.iter_mut().filter(|i| i.id == OK || i.id == CANCEL) {
-                            i.rect[1] += 15;
-                        }
-                        t.rect[3] += 15;
+                if k > 0 {
+                    for i in t.items.iter_mut().filter(|i| i.id == OK || i.id == CANCEL) {
+                        i.rect[1] += 15;
                     }
-                    let y = g[1] + g[3] + 5 + 15 * k;
-                    ([g[0], y + 2, 52, 8], [g[0] + 54, y, g[2] - 54, 100])
-                };
-                if id == FRAME_RATE {
-                    // V-Sync: on the label's line in the pause bar's column, else right of the combo
-                    let rect = if paused {
-                        l[2] -= 44;
-                        [l[0] + l[2] + 4, l[1] - 1, 40, 9]
-                    } else {
-                        c[2] -= 46;
-                        [c[0] + c[2] + 4, c[1] + 2, 42, 9]
-                    };
-                    t.items.push(Item { class: Class::Button, id: VSYNC, text: "V-Sync".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect });
+                    t.rect[3] += 15;
                 }
-                t.items.push(Item { class: Class::Static, id: label_id, text: text.into(), style: VISIBLE, ex_style: 0, rect: l });
-                t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: c });
+                let y = g[1] + g[3] + 5 + 15 * k;
+                row(t, label_id, id, text, [g[0], y + 2, 52, 8], [g[0] + 54, y, g[2] - 54, 100]);
             }
         }
     }
@@ -804,6 +817,29 @@ pub fn ok(d: &mut Dialog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Preferences as `adjust` lays it out (`FCOP_TEST_EXE=<FCopLAPD.exe>`, `FCOP_DLG_PNG=<dir>`;
+    /// skipped without them): written as a picture to look at.
+    #[test]
+    fn preferences_picture() {
+        let (Ok(exe), Ok(dir)) = (std::env::var("FCOP_TEST_EXE"), std::env::var("FCOP_DLG_PNG")) else { return };
+        use crate::image::{Image, ResId, list_resources};
+        let img = Image::load(std::path::Path::new(&exe)).unwrap();
+        let rd = |a: u32| img.byte(a);
+        let (_, at, size) = list_resources(&rd, img.base, ResId::Id(5)).into_iter().find(|r| format!("{:?}", r.0).contains("101")).unwrap();
+        let mut t = Template::parse(&img.read(at, size as usize).unwrap()).unwrap();
+        adjust(PREFERENCES, &mut t);
+        let d = super::super::Dialog::new(0xda0000, PREFERENCES, 1, &t);
+        for c in &d.controls {
+            println!("{} {:?} {:?} visible {}", c.id, c.rect, c.text, c.visible);
+        }
+        let px = super::super::draw::render(&[d]);
+        let rgba: Vec<u8> = px.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+        let f = std::fs::File::create(format!("{dir}/preferences.png")).unwrap();
+        let mut e = png::Encoder::new(std::io::BufWriter::new(f), 640, 480);
+        e.set_color(png::ColorType::Rgba);
+        e.write_header().unwrap().write_image_data(&rgba).unwrap();
+    }
 
     /// Advanced Graphics laid out for a few states; `FCOP_DLG_PNG=<dir>` writes each as a picture.
     #[test]
