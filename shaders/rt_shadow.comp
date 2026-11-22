@@ -3,7 +3,8 @@
 // game's depth gives (R of the shared G-buffer copy, view-space z), one ray toward the sun
 // against the scene's TLAS; G = the share of rays blocked: a few rays into the sun disc give soft
 // edges (penumbras grow with the distance to what casts), their noise is filtered in the AO's
-// last pass. Compiled to rt_shadow.spv by
+// last pass. The strongest dynamic lights' shadows too: one ray from each pixel within a light's
+// reach toward it, G += 2 * a bit per light blocked (the lights' pass, lights.rs). Compiled to rt_shadow.spv by
 // glslc --target-env=vulkan1.2 -O shaders/rt_shadow.comp -o shaders/rt_shadow.spv
 #extension GL_EXT_ray_query : require
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -14,6 +15,10 @@ layout(binding = 2, std430) readonly buffer Pages { uint covered[]; };
 // models' and terrain's triangles: u0 v0 u1 v1 bytes, u2 v2 and the page from bit 16 (0xffff: no keyed texel);
 // an instance's custom index: bit 23 a model, below it its first triangle's + 1
 layout(binding = 3, std430) readonly buffer Materials { uvec2 mats[]; };
+// the lights casting shadows: x of the first how many, y the share of its reach a ray ends short
+// of its light (raytrace.rs LIGHT_SKIP); place (view space, x narrowed by
+// widescreen's k as the lights' pass has it: lens.y) and reach
+layout(binding = 4, std430) readonly buffer Lights { vec4 lcount; vec4 lights[8]; };
 layout(push_constant) uniform View {
     // camera space to world space (columns), the camera's place (model units)
     mat4 axes;
@@ -27,9 +32,9 @@ layout(push_constant) uniform View {
 } v;
 
 // whether a ray from o along d meets something that covers (keyed texels let it through)
-bool blocked(vec3 o, vec3 d) {
+bool blocked(vec3 o, vec3 d, float far) {
     rayQueryEXT rq;
-    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0xff, o, 1.0, d, 1.0e5);
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0xff, o, 1.0, d, far);
     while (rayQueryProceedEXT(rq)) {
         // a triangle with keyed texels: blocks where its texel is not keyed out (black)
         int base = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false) & 0x7fffff;
@@ -69,7 +74,7 @@ void main() {
         vec3 d = normalize(mat3(v.axes) * v.sun.xyz);
         int n = int(v.soft.y);
         if (v.soft.x == 0.0) {
-            shade = blocked(o, d) ? 1.0 : 0.0;
+            shade = blocked(o, d, 1.0e5) ? 1.0 : 0.0;
         } else {
             // n points on the disc in rings of equal area, turned and shifted per pixel by
             // interleaved gradient noise: neighbours sample other points, the filter afterwards
@@ -81,9 +86,23 @@ void main() {
             for (int i = 0; i < n; i++) {
                 float a = float(i) * 2.3999632 + turn;
                 float r = sqrt((float(i) + shift) / float(n)) * v.soft.x;
-                if (blocked(o, normalize(d + r * (cos(a) * t + sin(a) * u)))) shade += 1.0;
+                if (blocked(o, normalize(d + r * (cos(a) * t + sin(a) * u)), 1.0e5)) shade += 1.0;
             }
             shade /= float(n);
+        }
+        // the lights: within reach and not at the light's core (what holds it), as the lights'
+        // pass decides in its space; the ray ends short of the light (what holds it)
+        vec3 pn = vec3(s, z);
+        int count = min(int(lcount.x), 8);
+        for (int i = 0; i < count; i++) {
+            float r = lights[i].w;
+            float dn = distance(lights[i].xyz, pn);
+            if (dn >= r || dn <= 0.1 * r) continue;
+            vec3 lc = vec3(lights[i].x / v.lens.y, lights[i].y, lights[i].z);
+            vec3 to = mat3(v.axes) * lc + v.origin.xyz - o;
+            float len = length(to);
+            float far = len - lcount.y * r;
+            if (far > 1.0 && blocked(o, to / len, far)) shade += float(2 << i);
         }
     }
     imageStore(gbuf, q, vec4(z, shade, 0.0, 0.0));

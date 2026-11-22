@@ -648,9 +648,9 @@ impl Vk {
     /// The sun's shadow by rays for a view of w x h (`shadows::Mode::Rays`): GL copies the
     /// view's depth (`depth`, the G-buffer's attachment, multisampled: sample 0) into the shared
     /// image's R, Vulkan traces a ray per pixel toward the sun (`sun`, the shaders' view space)
-    /// against `frame`'s scene and writes 1 into G where it is blocked, GL waits for that on the
-    /// GPU. The texture holding both, or None (no ray tracing, an error: logged, off for good).
-    pub fn sun_rays(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, (w, h): (u32, u32), frame: &super::scene::Frame, sun: [f32; 3]) -> Option<glow::Texture> {
+    /// against `frame`'s scene and writes the share blocked into G (plus 2 * a bit per light of
+    /// `lights` whose ray is blocked, `raytrace::Rt::shadow`), GL waits for that on the GPU. The texture holding both, or None (no ray tracing, an error: logged, off for good).
+    pub fn sun_rays(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, (w, h): (u32, u32), frame: &super::scene::Frame, sun: [f32; 3], lights: &[[f32; 4]]) -> Option<glow::Texture> {
         if self.rt.is_none() || self.sun.is_none() {
             return None;
         }
@@ -705,7 +705,7 @@ impl Vk {
             let compute = vk::PipelineStageFlags::COMPUTE_SHADER;
             let rw = vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE;
             d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, compute, vk::DependencyFlags::empty(), &[], &[], &own(vk::AccessFlags::empty(), rw, vk::QUEUE_FAMILY_EXTERNAL, self.family));
-            let traced = self.rt.as_mut().unwrap().shadow(cmd, view, w, h, frame, sun);
+            let traced = self.rt.as_mut().unwrap().shadow(cmd, view, w, h, frame, sun, lights);
             let d = &self.device;
             d.cmd_pipeline_barrier(cmd, compute, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &own(vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::empty(), self.family, vk::QUEUE_FAMILY_EXTERNAL));
             let _ = d.end_command_buffer(cmd);

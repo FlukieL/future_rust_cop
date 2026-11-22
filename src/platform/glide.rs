@@ -1874,8 +1874,11 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk
         g.casters = casters;
         g.casters.clear();
         // ray traced: the view's scene (`scene::overlay` above made it) against our depth
+        // (with the dynamic lights' shadows: the strongest lights' rays go with the sun's)
+        let merged = super::lights::merged(&lights, target);
+        let casters = super::lights::casters(&merged);
         let rays = match (super::shadows::mode(), vk) {
-            (super::shadows::Mode::Rays, Some(vk)) => super::scene::take_frame().and_then(|frame| vk.sun_rays(gl, tex, ms, target, &frame, dir)),
+            (super::shadows::Mode::Rays, Some(vk)) => super::scene::take_frame().and_then(|frame| vk.sun_rays(gl, tex, ms, target, &frame, dir, &casters)),
             _ => None,
         };
         let sun = match (super::shadows::mode(), &map, rays) {
@@ -1890,7 +1893,7 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk
             g.ssao.get_or_insert_with(|| super::ao::Ssao::new(gl)).run(gl, tex, ms, target, colour, clip, ao, sun);
         }
         if super::lights::enabled() {
-            let (pos, col) = g.lighting.get_or_insert_with(|| super::lights::Lighting::new(gl)).run(gl, tex, ms, target, colour, clip, &lights);
+            let (pos, col) = g.lighting.get_or_insert_with(|| super::lights::Lighting::new(gl)).run(gl, tex, ms, target, colour, clip, &merged, rays.filter(|_| !casters.is_empty()));
             g.smoke_lights.retain(|l| l.0 != clip);
             // a view's box changes with the window: the oldest go
             if g.smoke_lights.len() >= 4 {

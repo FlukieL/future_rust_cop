@@ -35,6 +35,14 @@ Sun shadows by ray query work (2026-11-21, `Shadows` 3 "Ray Traced", step 5's fi
   `FCOP_RT_SOFT=<degrees>` (0 hard), `FCOP_RT_RAYS=<n>` to compare.
 - GPU times (`FCOP_RT_TIME=1`, timestamps, first mission start 1280x960): the scene's build
   (TLAS, instances) ~98 µs a view, the rays ~42 µs a ray a pixel (hard 47, 4 rays 170).
+- Dynamic lights' shadows by rays (2026-11-22): with `Shadows` 3 and the lights on, the sun's
+  shader also traces the 8 strongest merged lights (`lights::casters`, a storage buffer, binding
+  4): one hard ray from each pixel within a light's reach toward it, ending 0.3 of the reach short
+  (the light's place is pulled toward the camera by up to 0.2 of it; with 0.08 a robot's own
+  police lights left the ground around it dark). Bits in G above the sun's share (G = share + 2 *
+  bits, exact in a float); the lights' pass takes them instead of its screen-space march. The legs
+  cast shadows of the light bar. +~10 µs a view, ~300 -> ~338 fps (1920x1080, the march is
+  gone). `FCOP_RT_LIGHTS=0` (a test) marches again.
 
 Next:
 - Alpha test open points: scrolled terrain textures (tw & 0x800) are tested unscrolled;
@@ -198,7 +206,8 @@ In this order, each with its own setting, each compared against the current effe
 - [x] Keyed texels by an alpha test in the ray query (2026-11-21).
 - [x] Soft edges (2026-11-22).
 - [ ] Replace the shadow map and its ring once the rays look as good everywhere.
-- [ ] Shadows of the dynamic lights (`lights.rs`) by rays instead of the screen ray march.
+- [x] Shadows of the dynamic lights (`lights.rs`) by rays instead of the screen ray march
+      (2026-11-22, hard; soft edges by the light's size would need a filter like the sun's).
 - [ ] RT ambient occlusion instead of SSAO.
 - [ ] Reflections (wet streets, water surfaces, if the levels have them).
 - [ ] Global illumination, at the end path tracing with Ray Reconstruction (4090 supports it).

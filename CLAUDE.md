@@ -313,7 +313,12 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   and shifted per pixel by interleaved gradient noise), G = share blocked, filtered over 5x5
   pixels of like depth in the AO's last pass (`traced`); `FCOP_RT_SOFT=<degrees>` (0 hard),
   `FCOP_RT_RAYS=<n>`. `FCOP_RT_TIME=1` logs GPU timestamps every 2 s: scene build ~98 µs a
-  view, rays ~42 µs a ray.
+  view, rays ~42 µs a ray. With the dynamic lights on, the same shader traces the 8 strongest merged
+  lights too (`lights::casters` -> binding 4: count, `LIGHT_SKIP`, view-space place and reach):
+  one ray from each pixel within reach, ending 0.3 of the reach short of the light (its holder);
+  G = sun share + 2 * a bit per blocked light (ao's `share()` takes the sun's part, the lights'
+  pass reads the bits as `lmask` instead of its march; `lmask` always on unit 4: a 2D sampler on
+  the multisampled depth's unit 0 failed the draw). `FCOP_RT_LIGHTS=0` (a test) marches.
 - `walker.rs`: hook of the Glide display list walker 0x4393e0 (display list layout in its
   header). Precise mode points the resolution's jump table entry (0x43a168) at the plain
   path 0x4397cd, so vertices arrive in 2560x1920 units; text (type 6, game pixels) is drawn in

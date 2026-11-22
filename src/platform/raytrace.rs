@@ -80,7 +80,18 @@ pub struct Rt {
     image: Option<(vk::Image, vk::DeviceMemory, vk::ImageView, u32, u32)>,
     /// `FCOP_RT_TIME=1` (a test): GPU time of the sun's rays, logged every 2 s
     timing: Option<Timing>,
+    /// the dynamic lights whose shadows the sun's shader traces too (`shadow`): a count, then
+    /// place and reach of each (`LIGHTS` at most); written while no rays read it
+    light_buf: Option<Buffer>,
 }
+
+/// The most lights `shadow` traces (bits of the mask's G / 2).
+const LIGHTS: usize = 8;
+const LIGHT_BYTES: u64 = 16 * (1 + LIGHTS as u64);
+/// A light's rays end this share of its reach short of it: its place is pulled toward the camera
+/// by up to 0.2 of it (`lights::view`), and what holds it (a robot's light bar, the robot) must not
+/// shadow it (0.08 left the ground around a robot dark in its own police lights).
+const LIGHT_SKIP: f32 = 0.3;
 
 fn err(what: &str) -> impl Fn(vk::Result) -> String + '_ {
     move |e| format!("{what}: {e}")
@@ -100,6 +111,7 @@ impl Rt {
                 vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
                 vk::DescriptorSetLayoutBinding::default().binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
                 vk::DescriptorSetLayoutBinding::default().binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
+                vk::DescriptorSetLayoutBinding::default().binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
             ];
             let set_layout = device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None).map_err(err("descriptor set layout"))?;
             let ranges = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).size(PUSH)];
@@ -117,7 +129,7 @@ impl Rt {
             let sizes = [
                 vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 2 },
                 vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 2 },
-                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 4 },
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 6 },
             ];
             let pool = device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(2).pool_sizes(&sizes), None).map_err(err("descriptor pool"))?;
             let both = [set_layout, set_layout];
@@ -131,7 +143,7 @@ impl Rt {
                 false => None,
             };
             super::log!("raytrace: ready");
-            Ok(Rt {
+            let mut rt = Rt {
                 device: device.clone(),
                 accel_fn,
                 memory,
@@ -151,7 +163,10 @@ impl Rt {
                 sets: [(sets[0], None), (sets[1], None)],
                 image: None,
                 timing,
-            })
+                light_buf: None,
+            };
+            rt.light_buf = Some(rt.buffer(LIGHT_BYTES, vk::BufferUsageFlags::STORAGE_BUFFER, true)?);
+            Ok(rt)
         }
     }
 
@@ -406,6 +421,7 @@ impl Rt {
     fn set(&mut self, k: usize, view: vk::ImageView) -> vk::DescriptorSet {
         let (set, bound) = self.sets[k];
         let (pages, mats) = (self.pages_buf.as_ref().unwrap().0.buf, self.mat_buf.as_ref().unwrap().0.buf);
+        let lights = self.light_buf.as_ref().unwrap().buf;
         let now = (self.tlas_made, view, pages, mats);
         if bound != Some(now) {
             let accels = [self.tlas.as_ref().unwrap().0.accel];
@@ -413,11 +429,13 @@ impl Rt {
             let images = [vk::DescriptorImageInfo::default().image_view(view).image_layout(vk::ImageLayout::GENERAL)];
             let page_info = [vk::DescriptorBufferInfo::default().buffer(pages).range(vk::WHOLE_SIZE)];
             let mat_info = [vk::DescriptorBufferInfo::default().buffer(mats).range(vk::WHOLE_SIZE)];
+            let light_info = [vk::DescriptorBufferInfo::default().buffer(lights).range(vk::WHOLE_SIZE)];
             let writes = [
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1).push_next(&mut write_as),
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&images),
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&page_info),
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mat_info),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&light_info),
             ];
             unsafe { self.device.update_descriptor_sets(&writes, &[]) };
             self.sets[k].1 = Some(now);
@@ -428,8 +446,19 @@ impl Rt {
     /// The sun's shadow of a view (`frame`) into `view`, an RG32F storage image of w x h in
     /// GENERAL layout holding the view's depth (R): G = 1 where the ray toward the sun (`sun`,
     /// camera space with x narrowed by widescreen's k, as the GL passes have it) is blocked.
+    /// The rays toward `lights` (place in that space, reach; the first `LIGHTS`) too, from
+    /// pixels within their reach: G gets 2 * a bit per light whose ray is blocked.
     /// Recorded into `cmd`; the one recorded before is done.
-    pub fn shadow(&mut self, cmd: vk::CommandBuffer, view: vk::ImageView, w: u32, h: u32, frame: &Frame, sun: [f32; 3]) -> Result<(), String> {
+    pub fn shadow(&mut self, cmd: vk::CommandBuffer, view: vk::ImageView, w: u32, h: u32, frame: &Frame, sun: [f32; 3], lights: &[[f32; 4]]) -> Result<(), String> {
+        // (the rays recorded before are done: the buffer is free)
+        let n = lights.len().min(LIGHTS);
+        let mut data = [0f32; 4 * (1 + LIGHTS)];
+        data[0] = n as f32;
+        data[1] = LIGHT_SKIP;
+        for (i, l) in lights[..n].iter().enumerate() {
+            data[4 + 4 * i..8 + 4 * i].copy_from_slice(l);
+        }
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, self.light_buf.as_ref().unwrap().ptr, LIGHT_BYTES as usize) };
         if let Some(t) = &mut self.timing {
             unsafe { t.begin(&self.device, cmd) };
         }

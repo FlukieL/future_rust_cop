@@ -149,9 +149,30 @@ fn view(l: &Light, target: (u32, u32), focal: f32) -> ([f32; 3], f32, [f32; 3]) 
     (p, reach, l.colour.map(|c| c * k))
 }
 
+/// A merged light as the pass takes it: view space place (x narrowed by widescreen's k, as the
+/// GL passes have it), reach, colour.
+pub type Merged = ([f32; 3], f32, [f32; 3]);
+
+/// The lights of a view of `target` merged (`merge`), as `Lighting::run` takes them.
+pub fn merged(lights: &[Light], target: (u32, u32)) -> Vec<Merged> {
+    merge(lights, target, 4096.0 * target.1 as f32 / 1920.0)
+}
+
+/// The lights that cast shadows (the first `SHADOWED`), place and reach: the ray traced shadows
+/// (`raytrace.rs`) trace them with the sun's rays; empty without shadows (or with
+/// `FCOP_RT_LIGHTS=0`, a test: the screen-space march then).
+pub fn casters(merged: &[Merged]) -> Vec<[f32; 4]> {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let off = *OFF.get_or_init(|| std::env::var("FCOP_RT_LIGHTS").is_ok_and(|v| v == "0"));
+    match super::shadows::enabled() && enabled() && !off {
+        true => merged.iter().take(SHADOWED as usize).map(|l| [l.0[0], l.0[1], l.0[2], l.1]).collect(),
+        false => Vec::new(),
+    }
+}
+
 /// Lights near each other and of a like colour as one (summed colour, their place weighed by
 /// it), the strongest `MAX` (by colour times reach).
-fn merge(lights: &[Light], target: (u32, u32), focal: f32) -> Vec<([f32; 3], f32, [f32; 3])> {
+fn merge(lights: &[Light], target: (u32, u32), focal: f32) -> Vec<Merged> {
     let mut v: Vec<_> = lights.iter().map(|l| view(l, target, focal)).collect();
     let power = |l: &([f32; 3], f32, [f32; 3])| (l.2[0] + l.2[1] + l.2[2]) * l.1;
     v.sort_by(|a, b| power(b).total_cmp(&power(a)));
@@ -194,6 +215,8 @@ uniform float strength;
 uniform int show;         // 0 the light as a factor, 3 the light alone
 uniform float added;      // this much of the light is added (dark surfaces get some too)
 uniform int shadowed;     // the first this many lights cast shadows (shadows.rs)
+uniform int lrays;        // their shadows traced by rays: bit i of lmask's G / 2 (raytrace.rs)
+uniform sampler2D lmask;
 out vec4 o;
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
@@ -204,6 +227,7 @@ void main() {
         vec3 p = P(vec2(q), z);
         vec3 n = N(q, z, p, 1);
         float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        int bits = lrays != 0 ? int(texelFetch(lmask, q, 0).g * 0.5) : 0;
         for (int i = 0; i < count; i++) {
             vec3 l = lpos[i].xyz - p;
             float d = length(l);
@@ -215,7 +239,11 @@ void main() {
             // mostly by the angle, a little all round (the normals are rough)
             float ndl = d > 0.0 ? max(dot(n, l / d), 0.0) : 1.0;
             // blocked on its way (not near the light: what holds it)
-            if (i < shadowed && d > 0.1 * r) a *= 1.0 - shadow(p, n, l / d, d - 0.08 * r, ign, 16, 1.0);
+            if (i < shadowed && d > 0.1 * r) {
+                // traced: faces turned away are the game's own shading, as the march has them
+                if (lrays != 0) { if (((bits >> i) & 1) != 0 && dot(n, l / d) > 0.02) a = 0.0; }
+                else a *= 1.0 - shadow(p, n, l / d, d - 0.08 * r, ign, 16, 1.0);
+            }
             sum += lcol[i] * a * (0.2 + 0.8 * ndl);
         }
         sum *= strength * (1.0 - clamp(g.g, 0.0, 1.0));
@@ -249,14 +277,14 @@ impl Lighting {
     /// The lights over the 3D picture: `depth` the attachment, `target` its size, `out` a
     /// framebuffer with only the picture's colour, `clip` the scissor box. Gives the merged
     /// lights as the shaders take them (`lpos`, `lcol`), for the smoke of the next picture.
-    pub fn run(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, target: (u32, u32), out: glow::Framebuffer, clip: [i32; 4], lights: &[Light]) -> (Vec<f32>, Vec<f32>) {
+    /// `merged` from `merged`; `traced` the ray traced shadows of its `casters` (bits in G / 2).
+    pub fn run(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, target: (u32, u32), out: glow::Framebuffer, clip: [i32; 4], merged: &[Merged], traced: Option<glow::Texture>) -> (Vec<f32>, Vec<f32>) {
         let show = ao::debug_view();
-        if lights.is_empty() && show != 3 || matches!(show, 1 | 2 | 4) {
+        if merged.is_empty() && show != 3 || matches!(show, 1 | 2 | 4) {
             return Default::default();
         }
         let (w, h) = (target.0 as i32, target.1 as i32);
         let focal = 4096.0 * h as f32 / 1920.0;
-        let merged = merge(lights, target, focal);
         let pos: Vec<f32> = merged.iter().flat_map(|l| [l.0[0], l.0[1], l.0[2], l.1]).collect();
         let col: Vec<f32> = merged.iter().flat_map(|l| l.2).collect();
         unsafe {
@@ -277,6 +305,15 @@ impl Lighting {
             gl.uniform_1_i32(u("show").as_ref(), show);
             gl.uniform_1_f32(u("added").as_ref(), 1.0);
             gl.uniform_1_i32(u("shadowed").as_ref(), if super::shadows::enabled() { SHADOWED } else { 0 });
+            gl.uniform_1_i32(u("lrays").as_ref(), traced.is_some() as i32);
+            // (its own unit also unused: a 2D sampler beside the multisampled depth's on unit 0
+            // fails the draw)
+            gl.uniform_1_i32(u("lmask").as_ref(), 4);
+            if let Some(t) = traced {
+                gl.active_texture(glow::TEXTURE4);
+                gl.bind_texture(glow::TEXTURE_2D, Some(t));
+                gl.active_texture(glow::TEXTURE0);
+            }
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(out));
             gl.viewport(0, 0, w, h);
             gl.enable(glow::SCISSOR_TEST);
@@ -298,6 +335,11 @@ impl Lighting {
             }
             gl.disable(glow::BLEND);
             gl.disable(glow::SCISSOR_TEST);
+            if traced.is_some() {
+                gl.active_texture(glow::TEXTURE4);
+                gl.bind_texture(glow::TEXTURE_2D, None);
+                gl.active_texture(glow::TEXTURE0);
+            }
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         }
         (pos, col)
