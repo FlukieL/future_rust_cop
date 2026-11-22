@@ -8,7 +8,8 @@
 //!
 //! The sun's shadow (`shadows::Mode::Rays`, PLAN-RTX.md step 5): `shadow` traces one ray per
 //! pixel of a view toward the sun (`shaders/rt_shadow.comp`) from the place the game's depth
-//! gives, in an RG32F image GL shares (`vk::Vk::sun_rays`).
+//! gives, in an RGBA32F image GL shares (`vk::Vk::sun_rays`); the ambient occlusion's rays too
+//! (`ao::traced`).
 
 use super::scene::{Frame, Instance};
 use ash::{khr, vk};
@@ -472,13 +473,15 @@ impl Rt {
         set
     }
 
-    /// The sun's shadow of a view (`frame`) into `view`, an RG32F storage image of w x h in
+    /// The sun's shadow of a view (`frame`) into `view`, an RGBA32F storage image of w x h in
     /// GENERAL layout holding the view's depth (R): G = 1 where the ray toward the sun (`sun`,
     /// camera space with x narrowed by widescreen's k, as the GL passes have it) is blocked.
     /// The rays toward `lights` (place in that space, reach; the first `LIGHTS`) too, from
-    /// pixels within their reach: G gets 2 * a bit per light whose ray is blocked.
+    /// pixels within their reach: G gets 2 * a bit per light whose ray is blocked. With `ao` the
+    /// AO's rays (`ao::rt_rays`, as long as its radius): B the share open.
     /// Recorded into `cmd`; the one recorded before is done.
-    pub fn shadow(&mut self, cmd: vk::CommandBuffer, view: vk::ImageView, w: u32, h: u32, frame: &Frame, sun: [f32; 3], lights: &[[f32; 4]]) -> Result<(), String> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn shadow(&mut self, cmd: vk::CommandBuffer, view: vk::ImageView, w: u32, h: u32, frame: &Frame, sun: [f32; 3], lights: &[[f32; 4]], ao: bool) -> Result<(), String> {
         // (the rays recorded before are done: the buffer is free)
         let n = lights.len().min(LIGHTS);
         let mut data = [0f32; 4 * (1 + LIGHTS)];
@@ -501,6 +504,10 @@ impl Rt {
         let (radius, rays) = soft();
         push[28] = radius.to_radians().tan();
         push[29] = rays as f32;
+        if ao {
+            push[30] = super::ao::RADIUS;
+            push[31] = super::ao::rt_rays() as f32;
+        }
         unsafe {
             let d = &self.device;
             d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.shadow);

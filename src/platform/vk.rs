@@ -141,7 +141,7 @@ struct Shared {
 }
 
 /// The sun's shadow by rays (`sun_rays`): the image a view's depth goes into (R, written by GL)
-/// and the shadow comes back in (G, written by Vulkan), RG32F, as both APIs see it.
+/// and the shadow comes back in (G, written by Vulkan; B the traced AO), RGBA32F, as both APIs see it.
 struct SunImage {
     image: vk::Image,
     memory: vk::DeviceMemory,
@@ -615,9 +615,9 @@ impl Vk {
                 self.device.destroy_image(s.image, None);
                 self.device.free_memory(s.memory, None);
             }
-            let format = vk::Format::R32G32_SFLOAT;
+            let format = vk::Format::R32G32B32A32_SFLOAT;
             let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
-            let (image, memory, gl_memory, tex) = self.shared_image(gl, w, h, format, glow::RG32F, usage)?;
+            let (image, memory, gl_memory, tex) = self.shared_image(gl, w, h, format, glow::RGBA32F, usage)?;
             let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
             let view = self
                 .device
@@ -656,8 +656,11 @@ impl Vk {
     /// view's depth (`depth`, the G-buffer's attachment, multisampled: sample 0) into the shared
     /// image's R, Vulkan traces a ray per pixel toward the sun (`sun`, the shaders' view space)
     /// against `frame`'s scene and writes the share blocked into G (plus 2 * a bit per light of
-    /// `lights` whose ray is blocked, `raytrace::Rt::shadow`), GL waits for that on the GPU. The texture holding both, or None (no ray tracing, an error: logged, off for good).
-    pub fn sun_rays(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, (w, h): (u32, u32), frame: &super::scene::Frame, sun: [f32; 3], lights: &[[f32; 4]]) -> Option<glow::Texture> {
+    /// `lights` whose ray is blocked, `raytrace::Rt::shadow`), and with `ao` the share of the AO's
+    /// rays open into B; GL waits for that on the GPU. The texture holding them, or None (no ray
+    /// tracing, an error: logged, off for good).
+    #[allow(clippy::too_many_arguments)]
+    pub fn sun_rays(&mut self, gl: &glow::Context, depth: glow::Texture, ms: bool, (w, h): (u32, u32), frame: &super::scene::Frame, sun: [f32; 3], lights: &[[f32; 4]], ao: bool) -> Option<glow::Texture> {
         if self.rt.is_none() || self.sun.is_none() {
             return None;
         }
@@ -713,7 +716,7 @@ impl Vk {
             let compute = vk::PipelineStageFlags::COMPUTE_SHADER;
             let rw = vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE;
             d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, compute, vk::DependencyFlags::empty(), &[], &[], &own(vk::AccessFlags::empty(), rw, vk::QUEUE_FAMILY_EXTERNAL, self.family));
-            let traced = self.rt.as_mut().unwrap().shadow(cmd, view, w, h, frame, sun, lights);
+            let traced = self.rt.as_mut().unwrap().shadow(cmd, view, w, h, frame, sun, lights, ao);
             let d = &self.device;
             d.cmd_pipeline_barrier(cmd, compute, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &own(vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::empty(), self.family, vk::QUEUE_FAMILY_EXTERNAL));
             let _ = d.end_command_buffer(cmd);

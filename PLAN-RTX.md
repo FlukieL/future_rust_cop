@@ -220,7 +220,11 @@ In this order, each with its own setting, each compared against the current effe
       `FCOP_RT_SOFT` / `_RAYS` / `_LIGHTS` variables only override them).
 - [x] Shadows of the dynamic lights (`lights.rs`) by rays instead of the screen ray march
       (2026-11-22, hard; soft edges by the light's size would need a filter like the sun's).
-- [ ] RT ambient occlusion instead of SSAO.
+- [x] RT ambient occlusion instead of SSAO (2026-11-22): with the sun's rays, 4 cosine-weighted
+      rays a pixel into the hemisphere (normal from the depth), 400 units long, B of the shared
+      image; filtered over 7x7 pixels, squared. Sees occluders off the screen and behind others;
+      no SSAO halos at depth edges. ~+290 µs a view (1280x960). Needs Ray Traced shadows: an AO
+      by rays alone (Vulkan without the sun) is open.
 - [ ] Reflections (wet streets, water surfaces, if the levels have them).
 - [ ] Global illumination, at the end path tracing with Ray Reconstruction (4090 supports it).
 

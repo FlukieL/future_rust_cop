@@ -139,6 +139,8 @@ const RT_SOFT: u32 = FIRST_OURS + 36;
 const RT_RAYS_LABEL: u32 = FIRST_OURS + 37;
 const RT_RAYS: u32 = FIRST_OURS + 38;
 const RT_LIGHTS: u32 = FIRST_OURS + 39;
+/// Advanced Graphics: the AO by rays (`ao::rt_chosen`).
+const RT_AO: u32 = FIRST_OURS + 40;
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -214,6 +216,7 @@ pub fn template(id: u32) -> Template {
     add(Class::Static, RT_RAYS_LABEL, "Rays / Pixel", 0, [17, 142, 56, 8]);
     add(Class::ComboBox, RT_RAYS, "", TABSTOP | 3, [76, 140, w - 83, 70]);
     add(Class::Button, RT_LIGHTS, "Light Shadows by Rays", TABSTOP | 3, [17, 155, w - 24, 9]);
+    add(Class::Button, RT_AO, "Ambient Occlusion by Rays", TABSTOP | 3, [17, 155, w - 24, 9]);
     add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 170, 66, 8]);
     add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 168, w - 83, 70]);
     // OK (1, the default) and Cancel (2), bottom right
@@ -224,7 +227,8 @@ pub fn template(id: u32) -> Template {
 
 /// After a change in one of our dialogs: Advanced Graphics shows an option only while what it
 /// needs is on (Lit Smoke: the lights; Quality: the shadow map; Softness, Rays / Pixel: ray traced
-/// shadows, rays only when soft; Light Shadows by Rays: ray traced shadows and the lights), its
+/// shadows, rays only when soft; Light Shadows by Rays: ray traced shadows and the lights; Ambient
+/// Occlusion by Rays: ray traced shadows and the AO), its
 /// shown rows one below the other (dialog units, as the template's spacing), OK and Cancel
 /// below them, the dialog as tall as that.
 pub fn changed(d: &mut Dialog) {
@@ -239,11 +243,12 @@ pub fn changed(d: &mut Dialog) {
         })
     };
     let lights = d.controls.iter().any(|c| c.id == DYNAMIC_LIGHTS && c.check != 0);
+    let ao = d.controls.iter().any(|c| c.id == AMBIENT_OCCLUSION && c.check != 0);
     let mode = sel(d, SHADOWS);
     let (map, rays) = (mode == Some(Mode::Map as u32), mode == Some(Mode::Rays as u32));
     let soft = sel(d, RT_SOFT).is_some_and(|s| s != 0);
     // (controls, each one's offset in its row), the row's height, shown
-    let rows: [(&[(u32, i32)], i32, bool); 14] = [
+    let rows: [(&[(u32, i32)], i32, bool); 15] = [
         (&[(AMBIENT_OCCLUSION, 0)], 12, true),
         (&[(DYNAMIC_LIGHTS, 0)], 12, true),
         (&[(LIT_SMOKE, 0)], 12, lights),
@@ -255,7 +260,8 @@ pub fn changed(d: &mut Dialog) {
         (&[(SHADOW_QUALITY_LABEL, 2), (SHADOW_QUALITY, 0)], 14, map),
         (&[(RT_SOFT_LABEL, 2), (RT_SOFT, 0)], 14, rays),
         (&[(RT_RAYS_LABEL, 2), (RT_RAYS, 0)], 14, rays && soft),
-        (&[(RT_LIGHTS, 1)], 14, rays && lights),
+        (&[(RT_LIGHTS, 1)], 12, rays && lights),
+        (&[(RT_AO, 1)], 12, rays && ao),
         (&[(TONEMAP_LABEL, 2), (TONEMAP, 0)], 14, true),
         (&[(1, 6), (2, 6)], 26, true),
     ];
@@ -524,6 +530,9 @@ pub fn init(d: &mut Dialog) {
         }
         if let Some(c) = d.control(RT_LIGHTS) {
             c.check = crate::platform::lights::rt_shadows() as u32;
+        }
+        if let Some(c) = d.control(RT_AO) {
+            c.check = crate::platform::ao::rt_chosen() as u32;
         }
         if let Some(c) = d.control(LIT_SMOKE) {
             c.check = crate::platform::lights::smoke_chosen() as u32;
@@ -804,6 +813,9 @@ pub fn ok(d: &mut Dialog) {
         if let Some(on) = d.control(RT_LIGHTS).map(|c| c.check != 0) {
             crate::platform::lights::set_rt_shadows(on);
         }
+        if let Some(on) = d.control(RT_AO).map(|c| c.check != 0) {
+            crate::platform::ao::set_rt(on);
+        }
         if let Some(on) = d.control(LIT_SMOKE).map(|c| c.check != 0) {
             crate::platform::lights::set_smoke(on);
         }
@@ -866,7 +878,7 @@ mod tests {
         for (name, lights, mode, soft) in [("off", false, Mode::Off, 2), ("map", true, Mode::Map, 2), ("rays", true, Mode::Rays, 2), ("rays_hard", false, Mode::Rays, 0)] {
             let mut d = super::super::Dialog::new(0xda0000, ADVANCED, 0, &t);
             for c in d.controls.iter_mut() {
-                if c.id == DYNAMIC_LIGHTS {
+                if c.id == DYNAMIC_LIGHTS || c.id == AMBIENT_OCCLUSION {
                     c.check = lights as u32;
                 }
                 if let Kind::Combo { items, sel, .. } = &mut c.kind {
@@ -889,6 +901,7 @@ mod tests {
             assert_eq!(shown(RT_SOFT), mode == Mode::Rays);
             assert_eq!(shown(RT_RAYS), mode == Mode::Rays && soft != 0);
             assert_eq!(shown(RT_LIGHTS), mode == Mode::Rays && lights);
+            assert_eq!(shown(RT_AO), mode == Mode::Rays && lights);
             // shown controls never overlap and stay inside the dialog
             // (a combo's rectangle holds its open list: closed, 14 pixels at most)
             let vis: Vec<_> = d.controls.iter().filter(|c| c.visible).map(|c| {

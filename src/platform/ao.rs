@@ -24,7 +24,11 @@
 //! target pixel is 4096 * height / 1920 pixels per unit at z = 1, in both directions.
 //!
 //! REG_DWORD `AmbientOcclusion` (default off), `FCOP_SSAO=0/1`; in the Advanced Graphics
-//! dialog. `FCOP_GBUFFER=depth` or `=ao` shows the depth or the AO alone instead of the picture.
+//! dialog. With ray traced shadows running (`shadows::rays_ready`) it is traced by rays instead
+//! (`traced`, PLAN-RTX.md step 5): the sun's shader shoots `rt_rays` rays a pixel into the
+//! hemisphere above the surface, as long as `RADIUS`, against the level's scene (things off the
+//! screen and behind others occlude too); the share open (B of the rays' image) is filtered over
+//! 5x5 pixels of like depth in the last pass, as the sun's. `FCOP_GBUFFER=depth` or `=ao` shows the depth or the AO alone instead of the picture.
 
 use super::gl::compile;
 use super::light::Setting;
@@ -37,6 +41,29 @@ static SETTING: Setting = Setting::with_default("AmbientOcclusion", "FCOP_SSAO",
 
 pub fn enabled() -> bool {
     SETTING.get()
+}
+
+/// With ray traced shadows: the AO by rays too (REG_DWORD `RtAmbientOcclusion`, default on,
+/// `FCOP_RT_AO=0/1`), else screen-space. In Advanced Graphics.
+static RT_SETTING: Setting = Setting::with_default("RtAmbientOcclusion", "FCOP_RT_AO", true);
+
+pub fn rt_chosen() -> bool {
+    RT_SETTING.get()
+}
+
+pub fn set_rt(on: bool) {
+    RT_SETTING.set(on);
+}
+
+/// The AO is traced by rays this picture: on, chosen, and the sun's rays running.
+pub fn traced() -> bool {
+    enabled() && rt_chosen() && debug_view() != 4 && super::shadows::mode() == super::shadows::Mode::Rays && super::shadows::rays_ready()
+}
+
+/// The AO's rays a pixel (`FCOP_RT_AO_RAYS=<n>`, 1...16, default 4).
+pub fn rt_rays() -> u32 {
+    static N: OnceLock<u32> = OnceLock::new();
+    *N.get_or_init(|| std::env::var("FCOP_RT_AO_RAYS").ok().and_then(|v| v.parse::<u32>().ok()).map_or(4, |n| n.clamp(1, 16)))
 }
 
 /// Something needs the depth (AO, dynamic lights, shadows, the heat shimmer, the depth buffer).
@@ -242,7 +269,7 @@ pub fn depths(verts: impl ExactSizeIterator<Item = (f32, f32)> + Clone, out: &mu
 }
 
 /// The occlusion's reach in object units, and how strong it darkens (0...1).
-const RADIUS: f32 = 400.0;
+pub(super) const RADIUS: f32 = 400.0;
 const STRENGTH: f32 = 1.0;
 
 /// A rise above a point's surface smaller than this (object units, plus 0.4% of the depth) does
@@ -406,24 +433,29 @@ uniform int show;       // 0 the AO as a factor, 1 the depth, 2 the AO alone
 uniform int use_half;   // the half-resolution pass ran (AO, a half-resolution sun's shadow)
 uniform int use_sun;    // the sun's shadow per pixel: 1 the map (shadows.rs), 2 traced by rays
 uniform float sun_k;
-uniform sampler2D rmask; // traced: G the share of rays toward the sun blocked, plus 2 * the lights' bits
+uniform sampler2D rmask; // traced: G the share of rays toward the sun blocked, plus 2 * the lights' bits, B the AO's share open
 uniform vec3 rsun;       // traced: toward the sun, view space
+uniform int use_rtao;    // the AO from rmask's B
 out vec4 o;
 // traced: the share of rays blocked, filtered over 5x5 pixels on this surface (each pixel turns
 // its rays into the sun disc otherwise: noise); its depth is rmask's R
+// (x the sun's share, y the AO's share open; the AO over 7x7 pixels: its rays scatter more)
 float share(float g) { return g - 2.0 * floor(g * 0.5); }
-float traced(ivec2 q, float z) {
+vec2 traced(ivec2 q, float z) {
     ivec2 size = textureSize(rmask, 0);
     float tol = 0.02 * z + 4.0;
-    float sum = 0.0, wsum = 0.0;
-    for (int j = -2; j <= 2; j++)
-        for (int i = -2; i <= 2; i++) {
-            vec2 m = texelFetch(rmask, clamp(q + ivec2(i, j), ivec2(0), size - 1), 0).rg;
+    vec2 sum = vec2(0.0), wsum = vec2(0.0);
+    int r = use_rtao != 0 ? 3 : 2;
+    for (int j = -r; j <= r; j++)
+        for (int i = -r; i <= r; i++) {
+            vec3 m = texelFetch(rmask, clamp(q + ivec2(i, j), ivec2(0), size - 1), 0).rgb;
             float w = m.r > 0.0 ? max(1.0 - abs(m.r - z) / tol, 0.0) : 0.0;
-            sum += share(m.g) * w;
-            wsum += w;
+            vec2 ww = vec2(max(abs(i), abs(j)) <= 2 ? w : 0.0, w);
+            sum += vec2(share(m.g), m.b) * ww;
+            wsum += ww;
         }
-    return wsum > 1e-4 ? sum / wsum : share(texelFetch(rmask, q, 0).g);
+    vec3 m = texelFetch(rmask, q, 0).rgb;
+    return vec2(wsum.x > 1e-4 ? sum.x / wsum.x : share(m.g), wsum.y > 1e-4 ? sum.y / wsum.y : m.b);
 }
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
@@ -474,8 +506,11 @@ void main() {
         vec3 p = P(vec2(q), z);
         vec3 n = N(q, z, p, 1);
         // traced: faces turned away and those the sun grazes are the game's own shading, as the map's
-        float s = use_sun == 2 ? traced(q, z) * smoothstep(0.02, 0.15, dot(n, normalize(rsun))) : sun_shadow(p, n);
+        vec2 t = use_sun == 2 ? traced(q, z) : vec2(0.0, 1.0);
+        float s = use_sun == 2 ? t.x * smoothstep(0.02, 0.15, dot(n, normalize(rsun))) : sun_shadow(p, n);
         v *= 1.0 - sun_k * s;
+        // (squared: the plain share open was much weaker than the SSAO it replaces)
+        if (use_rtao != 0) v *= t.y * t.y;
     }
     if (show == 2) { o = vec4(vec3(v), 1.0); return; }
     o = vec4(vec3(mix(1.0, v, strength * (1.0 - clamp(g.g, 0.0, 1.0)))), 1.0);
@@ -490,9 +525,9 @@ pub enum Sun<'a> {
     Ray([f32; 3]),
     /// the view's shadow map
     Map(&'a super::shadows::View),
-    /// traced by rays (`vk::Vk::sun_rays`): a texture whose G is 1 where blocked, and toward
-    /// the sun in view space
-    Traced(glow::Texture, [f32; 3]),
+    /// traced by rays (`vk::Vk::sun_rays`): a texture whose G is 1 where blocked, toward the sun
+    /// in view space, and whether its B holds the AO (`traced`)
+    Traced(glow::Texture, [f32; 3], bool),
 }
 
 /// A half-resolution texture and its framebuffer.
@@ -596,6 +631,9 @@ impl Ssao {
             Sun::Map(_) | Sun::Traced(..) => (0, true),
             Sun::None => (0, false),
         };
+        // the AO by rays: in the last pass, not at half resolution
+        let rtao = matches!(sun, Sun::Traced(_, _, true));
+        let ao = ao && !rtao;
         let half_pass = ao || sun_half != 0;
         // the shadow map's uniforms (and texture, on unit 2) for a program
         let set_map = |u: &dyn Fn(&'static str) -> Option<glow::UniformLocation>| {
@@ -704,7 +742,8 @@ impl Ssao {
             if sun_full {
                 set_map(&u);
             }
-            if let Sun::Traced(t, d) = sun {
+            gl.uniform_1_i32(u("use_rtao").as_ref(), rtao as i32);
+            if let Sun::Traced(t, d, _) = sun {
                 gl.active_texture(glow::TEXTURE4);
                 gl.bind_texture(glow::TEXTURE_2D, Some(t));
                 gl.active_texture(glow::TEXTURE0);

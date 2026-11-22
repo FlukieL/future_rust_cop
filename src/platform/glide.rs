@@ -1878,13 +1878,13 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk
         let merged = super::lights::merged(&lights, target);
         let casters = super::lights::casters(&merged);
         let rays = match (super::shadows::mode(), vk) {
-            (super::shadows::Mode::Rays, Some(vk)) => super::scene::take_frame().and_then(|frame| vk.sun_rays(gl, tex, ms, target, &frame, dir, &casters)),
+            (super::shadows::Mode::Rays, Some(vk)) => super::scene::take_frame().and_then(|frame| vk.sun_rays(gl, tex, ms, target, &frame, dir, &casters, super::ao::traced())),
             _ => None,
         };
         let sun = match (super::shadows::mode(), &map, rays) {
             (super::shadows::Mode::ScreenSpace, _, _) => super::ao::Sun::Ray(dir),
             (super::shadows::Mode::Map, Some(v), _) => super::ao::Sun::Map(v),
-            (super::shadows::Mode::Rays, _, Some(t)) => super::ao::Sun::Traced(t, dir),
+            (super::shadows::Mode::Rays, _, Some(t)) => super::ao::Sun::Traced(t, dir, super::ao::traced()),
             // ray traced chosen, no rays yet (GL presents until the next start): the map
             (super::shadows::Mode::Rays, Some(v), None) => super::ao::Sun::Map(v),
             _ => super::ao::Sun::None,

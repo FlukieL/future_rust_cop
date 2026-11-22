@@ -321,7 +321,14 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   4 / 8, default 4; `shadows::rt_choice`), "Ray-Traced Light Shadows" (`RtLightShadows`, default
   on, `lights::rt_shadows`); `FCOP_RT_SOFT=<degrees>`, `FCOP_RT_RAYS=<n>`, `FCOP_RT_LIGHTS=0/1`
   override (tests). `FCOP_RT_TIME=1` logs GPU timestamps every 2 s (scene, TLAS alone,
-  rays, instance counts): rays ~42 µs a ray. With the dynamic lights on, the same shader traces the 8 strongest merged
+  rays, instance counts): rays ~42 µs a ray. RT ambient occlusion (`ao::traced`: AO on, REG_DWORD
+  `RtAmbientOcclusion` default on, "Ambient Occlusion by Rays" in Advanced Graphics below Light
+  Shadows by Rays, `FCOP_RT_AO=0/1`; only while the sun's rays run): the same shader shoots
+  `ao::rt_rays` (4, `FCOP_RT_AO_RAYS`) cosine-weighted rays a pixel into the hemisphere above the
+  surface (normal from the depth, as `ao::COMMON`'s N), as long as `ao::RADIUS`, B of the image
+  (RGBA32F) = share open; the AO's last pass filters it over 7x7 pixels of like depth and takes
+  its square (the plain share was much weaker than SSAO); the half-resolution SSAO is skipped.
+  ~+290 µs a view at 1280x960. With the dynamic lights on, the same shader traces the 8 strongest merged
   lights too (`lights::casters` -> binding 4: count, `LIGHT_SKIP`, view-space place and reach):
   one ray from each pixel within reach, ending 0.3 of the reach short of the light (its holder);
   G = sun share + 2 * a bit per blocked light (ao's `share()` takes the sun's part, the lights'

@@ -4,12 +4,14 @@
 // against the scene's TLAS; G = the share of rays blocked: a few rays into the sun disc give soft
 // edges (penumbras grow with the distance to what casts), their noise is filtered in the AO's
 // last pass. The strongest dynamic lights' shadows too: one ray from each pixel within a light's
-// reach toward it, G += 2 * a bit per light blocked (the lights' pass, lights.rs). Compiled to rt_shadow.spv by
+// reach toward it, G += 2 * a bit per light blocked (the lights' pass, lights.rs). The ambient
+// occlusion too (ao.rs, `RtAmbientOcclusion`): rays into the hemisphere above the pixel's surface
+// (its normal from the depth), B = the share open within the AO's radius. Compiled to rt_shadow.spv by
 // glslc --target-env=vulkan1.2 -O shaders/rt_shadow.comp -o shaders/rt_shadow.spv
 #extension GL_EXT_ray_query : require
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform accelerationStructureEXT tlas;
-layout(binding = 1, rg32f) uniform image2D gbuf;
+layout(binding = 1, rgba32f) uniform image2D gbuf;
 // the mission's texture pages, a bit per texel (1 covers; 2048 words a page)
 layout(binding = 2, std430) readonly buffer Pages { uint covered[]; };
 // models' and terrain's triangles: u0 v0 u1 v1 bytes, u2 v2 and the page from bit 16 (0xffff: no keyed texel);
@@ -27,7 +29,7 @@ layout(push_constant) uniform View {
     vec4 lens;
     // toward the sun in camera space (unscaled x)
     vec4 sun;
-    // x tan of the sun disc's radius, y rays a pixel
+    // x tan of the sun disc's radius, y rays a pixel; z the AO's radius (0: none), w its rays a pixel
     vec4 soft;
 } v;
 
@@ -57,12 +59,43 @@ bool blocked(vec3 o, vec3 d, float far) {
     return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
+// camera space (unscaled x) of pixel q at depth z (GL's first row is the bottom: y up)
+vec3 C(ivec2 q, float z) {
+    vec2 s = (vec2(q) + 0.5 - vec2(imageSize(gbuf)) * 0.5) * z / v.lens.x;
+    return vec3(s.x / v.lens.y, s.y, z);
+}
+float Z(ivec2 q) {
+    ivec2 size = imageSize(gbuf);
+    return all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, size)) ? imageLoad(gbuf, q).r : 0.0;
+}
+// one axis of the surface at q along e, as ao.rs's T: from the side whose two pixels continue to
+// q best in 1/z (not across an edge), both sides where q stands out and they fit each other
+vec3 T(ivec2 q, float z, vec3 p, ivec2 e) {
+    float za = Z(q + e), zb = Z(q - e), za2 = Z(q + 2 * e), zb2 = Z(q - 2 * e);
+    if (za <= 0.0 && zb <= 0.0) return C(q + e, z) - p;
+    if (zb <= 0.0) return C(q + e, za) - p;
+    if (za <= 0.0) return p - C(q - e, zb);
+    float iz = 1.0 / z;
+    float pa = za2 > 0.0 ? 2.0 / za - 1.0 / za2 : 1.0 / za;
+    float pb = zb2 > 0.0 ? 2.0 / zb - 1.0 / zb2 : 1.0 / zb;
+    float ea = abs(pa - iz), eb = abs(pb - iz);
+    if (min(ea, eb) > 0.002 * iz && abs(pa - pb) < 0.5 * min(ea, eb))
+        return 0.5 * (C(q + e, za) - C(q - e, zb));
+    return ea < eb ? C(q + e, za) - p : p - C(q - e, zb);
+}
+// the surface's normal at q in camera space, facing the camera
+vec3 N(ivec2 q, float z, vec3 p) {
+    vec3 n = cross(T(q, z, p, ivec2(1, 0)), T(q, z, p, ivec2(0, 1)));
+    n = length(n) > 0.0 ? normalize(n) : vec3(0.0, 0.0, -1.0);
+    return dot(n, p) > 0.0 ? -n : n;
+}
+
 void main() {
     ivec2 q = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(gbuf);
     if (any(greaterThanEqual(q, size))) return;
     float z = imageLoad(gbuf, q).r;
-    float shade = 0.0;
+    float shade = 0.0, open = 1.0;
     if (z > 0.0) {
         // GL's first row is the bottom: camera space has y up
         vec2 s = (vec2(q) + 0.5 - vec2(size) * 0.5) * z / v.lens.x;
@@ -90,6 +123,26 @@ void main() {
             }
             shade /= float(n);
         }
+        // the AO: n rays cosine-weighted into the hemisphere above the surface, from a little
+        // above it (the same rounding as toward the sun), each as long as the radius; turned
+        // and shifted per pixel as the sun's, the noise filtered in the AO's last pass
+        int an = int(v.soft.w);
+        if (v.soft.z > 0.0 && an > 0) {
+            vec3 nw = normalize(mat3(v.axes) * N(q, z, c));
+            vec3 ao = o + nw * (2.0 + 0.002 * z);
+            vec3 t = normalize(cross(nw, abs(nw.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+            vec3 u = cross(nw, t);
+            float turn = 6.2831853 * fract(52.9829189 * fract(dot(vec2(q) + vec2(13.0, 71.0), vec2(0.06711056, 0.00583715))));
+            float shift = fract(52.9829189 * fract(dot(vec2(q) + vec2(89.0, 5.0), vec2(0.00583715, 0.06711056))));
+            float hits = 0.0;
+            for (int i = 0; i < an; i++) {
+                float a = float(i) * 2.3999632 + turn;
+                float r = sqrt((float(i) + shift) / float(an));
+                vec3 d = r * (cos(a) * t + sin(a) * u) + sqrt(max(1.0 - r * r, 0.0)) * nw;
+                if (blocked(ao, normalize(d), v.soft.z)) hits += 1.0;
+            }
+            open = 1.0 - hits / float(an);
+        }
         // the lights: within reach and not at the light's core (what holds it), as the lights'
         // pass decides in its space; the ray ends short of the light (what holds it)
         vec3 pn = vec3(s, z);
@@ -105,5 +158,5 @@ void main() {
             if (far > 1.0 && blocked(o, to / len, far)) shade += float(2 << i);
         }
     }
-    imageStore(gbuf, q, vec4(z, shade, 0.0, 0.0));
+    imageStore(gbuf, q, vec4(z, shade, open, 0.0));
 }
