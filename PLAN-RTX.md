@@ -222,7 +222,8 @@ In this order, each with its own setting, each compared against the current effe
       (2026-11-22, hard; soft edges by the light's size would need a filter like the sun's).
 - [x] RT ambient occlusion instead of SSAO (2026-11-22): with the sun's rays, 4 cosine-weighted
       rays a pixel into the hemisphere (normal from the depth), 400 units long, B of the shared
-      image; filtered over 7x7 pixels, squared. Sees occluders off the screen and behind others;
+      image; blurred along its surface (17 pixels across and down, rt_ao_blur.comp: a 7x7
+      filter alone was grainy), squared. Sees occluders off the screen and behind others;
       no SSAO halos at depth edges. ~+290 µs a view (1280x960). Needs Ray Traced shadows: an AO
       by rays alone (Vulkan without the sun) is open.
 - [ ] Reflections (wet streets, water surfaces, if the levels have them).

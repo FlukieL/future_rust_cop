@@ -1,0 +1,42 @@
+#version 460
+// The traced AO's noise blurred away (ao.rs `traced`, after rt_shadow.comp): along `dir`, 17
+// pixels, neighbours counted by how well they lie on the pixel's surface (1/z is linear across a
+// plane on the screen: its slope, from the nearer neighbour, predicts theirs), as ao.rs's BLUR_FS.
+// Across (dir 1, 0): B (the share open) into A; down (0, 1): A back into B. Compiled by
+// glslc --target-env=vulkan1.2 -O shaders/rt_ao_blur.comp -o shaders/rt_ao_blur.spv
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 1, rgba32f) uniform image2D gbuf;
+layout(push_constant) uniform Blur { ivec2 dir; } b;
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(gbuf);
+    if (any(greaterThanEqual(q, size))) return;
+    bool across = b.dir.x != 0;
+    vec4 m = imageLoad(gbuf, q);
+    float c = across ? m.b : m.a;
+    float z = m.r;
+    float r = c;
+    if (z > 0.0) {
+        float iz = 1.0 / z;
+        float za = imageLoad(gbuf, clamp(q + b.dir, ivec2(0), size - 1)).r;
+        float zb = imageLoad(gbuf, clamp(q - b.dir, ivec2(0), size - 1)).r;
+        float ga = za > 0.0 ? 1.0 / za - iz : 1e9, gb = zb > 0.0 ? iz - 1.0 / zb : 1e9;
+        float g = abs(ga) < abs(gb) ? ga : gb;
+        if (abs(g) > 1e8) g = 0.0;
+        float sum = c, wsum = 1.0;
+        for (int k = -8; k <= 8; k++) {
+            ivec2 s = q + b.dir * k;
+            if (k == 0 || any(lessThan(s, ivec2(0))) || any(greaterThanEqual(s, size))) continue;
+            vec4 n = imageLoad(gbuf, s);
+            if (n.r <= 0.0) continue;
+            float e = abs(1.0 / n.r - (iz + g * float(k))) / iz;
+            float w = exp(-float(k * k) / 32.0) * max(1.0 - e / 0.02, 0.0);
+            sum += (across ? n.b : n.a) * w;
+            wsum += w;
+        }
+        r = sum / wsum;
+    }
+    if (across) m.a = r; else m.b = r;
+    imageStore(gbuf, q, m);
+}

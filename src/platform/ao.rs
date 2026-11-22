@@ -27,8 +27,9 @@
 //! dialog. With ray traced shadows running (`shadows::rays_ready`) it is traced by rays instead
 //! (`traced`, PLAN-RTX.md step 5): the sun's shader shoots `rt_rays` rays a pixel into the
 //! hemisphere above the surface, as long as `RADIUS`, against the level's scene (things off the
-//! screen and behind others occlude too); the share open (B of the rays' image) is filtered over
-//! 5x5 pixels of like depth in the last pass, as the sun's. `FCOP_GBUFFER=depth` or `=ao` shows the depth or the AO alone instead of the picture.
+//! screen and behind others occlude too); the share open (B of the rays' image) is blurred along
+//! its surface by the rays' pass (`shaders/rt_ao_blur.comp`, 17 pixels across and down) and
+//! filtered over 5x5 pixels of like depth in the last pass, as the sun's. `FCOP_GBUFFER=depth` or `=ao` shows the depth or the AO alone instead of the picture.
 
 use super::gl::compile;
 use super::light::Setting;
@@ -439,23 +440,22 @@ uniform int use_rtao;    // the AO from rmask's B
 out vec4 o;
 // traced: the share of rays blocked, filtered over 5x5 pixels on this surface (each pixel turns
 // its rays into the sun disc otherwise: noise); its depth is rmask's R
-// (x the sun's share, y the AO's share open; the AO over 7x7 pixels: its rays scatter more)
+// (x the sun's share, y the AO's share open, already blurred by the rays' pass)
 float share(float g) { return g - 2.0 * floor(g * 0.5); }
 vec2 traced(ivec2 q, float z) {
     ivec2 size = textureSize(rmask, 0);
     float tol = 0.02 * z + 4.0;
-    vec2 sum = vec2(0.0), wsum = vec2(0.0);
-    int r = use_rtao != 0 ? 3 : 2;
-    for (int j = -r; j <= r; j++)
-        for (int i = -r; i <= r; i++) {
+    vec2 sum = vec2(0.0);
+    float wsum = 0.0;
+    for (int j = -2; j <= 2; j++)
+        for (int i = -2; i <= 2; i++) {
             vec3 m = texelFetch(rmask, clamp(q + ivec2(i, j), ivec2(0), size - 1), 0).rgb;
             float w = m.r > 0.0 ? max(1.0 - abs(m.r - z) / tol, 0.0) : 0.0;
-            vec2 ww = vec2(max(abs(i), abs(j)) <= 2 ? w : 0.0, w);
-            sum += vec2(share(m.g), m.b) * ww;
-            wsum += ww;
+            sum += vec2(share(m.g), m.b) * w;
+            wsum += w;
         }
     vec3 m = texelFetch(rmask, q, 0).rgb;
-    return vec2(wsum.x > 1e-4 ? sum.x / wsum.x : share(m.g), wsum.y > 1e-4 ? sum.y / wsum.y : m.b);
+    return wsum > 1e-4 ? sum / wsum : vec2(share(m.g), m.b);
 }
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);

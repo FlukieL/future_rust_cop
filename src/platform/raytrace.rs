@@ -20,6 +20,7 @@ pub const EXTENSIONS: [&std::ffi::CStr; 3] = [khr::acceleration_structure::NAME,
 
 const DEBUG_SPV: &[u8] = include_bytes!("../../shaders/rt_debug.spv");
 const SHADOW_SPV: &[u8] = include_bytes!("../../shaders/rt_shadow.spv");
+const AO_BLUR_SPV: &[u8] = include_bytes!("../../shaders/rt_ao_blur.spv");
 /// An instance's custom index: bit 23 a model (else terrain), below it its first material + 1.
 const MODEL: u32 = 1 << 23;
 /// The shaders' push constants (bytes).
@@ -74,6 +75,8 @@ pub struct Rt {
     layout: vk::PipelineLayout,
     debug: vk::Pipeline,
     shadow: vk::Pipeline,
+    /// the traced AO's blur (`shaders/rt_ao_blur.comp`), after the sun's rays
+    ao_blur: vk::Pipeline,
     /// the debug picture's and the sun's descriptor sets, and what each was written with (TLAS,
     /// storage image, pages, materials)
     sets: [(vk::DescriptorSet, Option<(u64, vk::ImageView, vk::Buffer, vk::Buffer)>); 2],
@@ -131,7 +134,7 @@ impl Rt {
                 device.destroy_shader_module(module, None);
                 Ok(p.map_err(|e| format!("compute pipeline: {}", e.1))?[0])
             };
-            let (debug, shadow) = (pipeline(DEBUG_SPV)?, pipeline(SHADOW_SPV)?);
+            let (debug, shadow, ao_blur) = (pipeline(DEBUG_SPV)?, pipeline(SHADOW_SPV)?, pipeline(AO_BLUR_SPV)?);
             let sizes = [
                 vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 2 },
                 vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 2 },
@@ -166,6 +169,7 @@ impl Rt {
                 layout,
                 debug,
                 shadow,
+                ao_blur,
                 sets: [(sets[0], None), (sets[1], None)],
                 image: None,
                 timing,
@@ -514,6 +518,17 @@ impl Rt {
             d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[set], &[]);
             d.cmd_push_constants(cmd, self.layout, vk::ShaderStageFlags::COMPUTE, 0, std::slice::from_raw_parts(push.as_ptr() as *const u8, PUSH as usize));
             d.cmd_dispatch(cmd, w.div_ceil(8), h.div_ceil(8), 1);
+            if ao {
+                // the AO's noise blurred: across (B into A), then down (A into B)
+                let compute = vk::PipelineStageFlags::COMPUTE_SHADER;
+                let barrier = [vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)];
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.ao_blur);
+                for dir in [[1i32, 0], [0, 1]] {
+                    d.cmd_pipeline_barrier(cmd, compute, compute, vk::DependencyFlags::empty(), &barrier, &[], &[]);
+                    d.cmd_push_constants(cmd, self.layout, vk::ShaderStageFlags::COMPUTE, 0, std::slice::from_raw_parts(dir.as_ptr() as *const u8, 8));
+                    d.cmd_dispatch(cmd, w.div_ceil(8), h.div_ceil(8), 1);
+                }
+            }
             if let Some(t) = &self.timing {
                 d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, t.pool, 2);
             }

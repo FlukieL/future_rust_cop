@@ -326,8 +326,10 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   Shadows by Rays, `FCOP_RT_AO=0/1`; only while the sun's rays run): the same shader shoots
   `ao::rt_rays` (4, `FCOP_RT_AO_RAYS`) cosine-weighted rays a pixel into the hemisphere above the
   surface (normal from the depth, as `ao::COMMON`'s N), as long as `ao::RADIUS`, B of the image
-  (RGBA32F) = share open; the AO's last pass filters it over 7x7 pixels of like depth and takes
-  its square (the plain share was much weaker than SSAO); the half-resolution SSAO is skipped.
+  (RGBA32F) = share open; blurred along its surface in two more dispatches
+  (`shaders/rt_ao_blur.comp`: 17 pixels across, B into A, then down, A into B, weights by 1/z
+  predicted by its slope as `ao.rs`'s BLUR_FS; 7x7 in the last pass was still grainy), the AO's
+  last pass filters it over 5x5 as the sun's and takes its square (the plain share was much weaker than SSAO); the half-resolution SSAO is skipped.
   ~+290 µs a view at 1280x960. With the dynamic lights on, the same shader traces the 8 strongest merged
   lights too (`lights::casters` -> binding 4: count, `LIGHT_SKIP`, view-space place and reach):
   one ray from each pixel within reach, ending 0.3 of the reach short of the light (its holder);
