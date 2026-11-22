@@ -127,7 +127,7 @@ const SHADOW_QUALITY: u32 = FIRST_OURS + 31;
 /// Below Fullscreen (`fps::vsync`).
 const VSYNC: u32 = FIRST_OURS + 32;
 /// The room Frame Rate takes below the Display Mode list (the left column's rows below follow).
-const FRAME_RATE_ROWS: i32 = 22;
+const FRAME_RATE_ROWS: i32 = 30;
 /// Right of Fullscreen: the frame rate display (`stats.rs`).
 const SHOW_FPS: u32 = FIRST_OURS + 33;
 /// Advanced Graphics: the 3D picture's depth test (`zbuffer.rs`).
@@ -434,8 +434,8 @@ pub fn adjust(template: u32, t: &mut Template) {
                 }
             }
             let y = match (glide, note) {
-                (false, Some(n)) => n[1] + n[3] + 5,
-                _ => m[1] + 16,
+                (false, Some(n)) => n[1] + n[3] + 6,
+                _ => m[1] + 18,
             };
             // the left column's rows below: their first one goes below Frame Rate
             let left = |i: &Item| i.rect[0] < g[0] && ![OK, CANCEL, WINDOW_NOTE, DISPLAY_MODE, RESOLUTION, DISPLAY_MODE_LABEL].contains(&i.id);
@@ -446,7 +446,8 @@ pub fn adjust(template: u32, t: &mut Template) {
                     i.rect[1] += shift;
                 }
             }
-            row(t, FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate", [m[0], y + 2, 52, 8], [m[0] + 54, y, m[2] - 54, 100]);
+            // label above the list as Display Mode's ("Original (37.5)" did not fit beside it)
+            row(t, FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate", [m[0], y, m[2], 8], [m[0], y + 10, m[2], 100]);
         }
         if let Some(g) = group {
             // between the group and the OK button's row, the combos up to the group's right
