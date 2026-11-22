@@ -669,23 +669,22 @@ impl Timing {
     }
 }
 
-/// Soft edges of the sun's shadow: the sun disc's radius in degrees (`FCOP_RT_SOFT`, 0 hard)
-/// and the rays a pixel shoots into it (`FCOP_RT_RAYS`, 1...16); tests, the defaults are the
-/// setting.
+/// Soft edges of the sun's shadow: the sun disc's radius in degrees (0 hard) and the rays a pixel
+/// shoots into it, as chosen in Advanced Graphics (`shadows::rt_choice`; applies at once; default
+/// 1 degree and 4: the real sun's radius is 0.27 degrees, nearly as hard as one ray; the noise
+/// between them is filtered in the AO's last pass). `FCOP_RT_SOFT=<degrees>`, `FCOP_RT_RAYS=<n>`
+/// (1...16) override (tests).
 fn soft() -> (f32, u32) {
-    static S: std::sync::OnceLock<(f32, u32)> = std::sync::OnceLock::new();
-    *S.get_or_init(|| {
+    static ENV: std::sync::OnceLock<(Option<f32>, Option<u32>)> = std::sync::OnceLock::new();
+    let env = *ENV.get_or_init(|| {
         let var = |n: &str| std::env::var(n).ok().and_then(|v| v.parse::<f32>().ok());
-        let radius = var("FCOP_RT_SOFT").unwrap_or(SUN_RADIUS).max(0.0);
-        let rays = if radius == 0.0 { 1 } else { var("FCOP_RT_RAYS").map_or(SUN_RAYS, |n| n as u32).clamp(1, 16) };
-        (radius, rays)
-    })
+        (var("FCOP_RT_SOFT").map(|r| r.max(0.0)), var("FCOP_RT_RAYS").map(|n| (n as u32).clamp(1, 16)))
+    });
+    let (s, r) = super::shadows::rt_choice();
+    let radius = env.0.unwrap_or(super::shadows::RT_SOFTNESS[s].0);
+    let rays = if radius == 0.0 { 1 } else { env.1.unwrap_or(super::shadows::RT_RAYS[r].0) };
+    (radius, rays)
 }
-
-/// The sun disc's radius in degrees (the real sun's is 0.27: shadows nearly as hard as one ray's)
-/// and the rays into it; the noise between them is filtered in the AO's last pass.
-const SUN_RADIUS: f32 = 1.0;
-const SUN_RAYS: u32 = 4;
 
 /// `FCOP_RT_HIGH=<model units>` (a test): the rays' picture from that high above the camera.
 fn high() -> Option<f32> {

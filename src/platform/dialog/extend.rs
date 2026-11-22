@@ -130,6 +130,13 @@ const VSYNC: u32 = FIRST_OURS + 32;
 const SHOW_FPS: u32 = FIRST_OURS + 33;
 /// Advanced Graphics: the 3D picture's depth test (`zbuffer.rs`).
 const DEPTH_BUFFER: u32 = FIRST_OURS + 34;
+/// Advanced Graphics: the ray traced shadows' softness and rays a pixel (`shadows::rt_choice`),
+/// the lights' shadows by rays (`lights::rt_shadows`).
+const RT_SOFT_LABEL: u32 = FIRST_OURS + 35;
+const RT_SOFT: u32 = FIRST_OURS + 36;
+const RT_RAYS_LABEL: u32 = FIRST_OURS + 37;
+const RT_RAYS: u32 = FIRST_OURS + 38;
+const RT_LIGHTS: u32 = FIRST_OURS + 39;
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -203,6 +210,13 @@ pub fn template(id: u32) -> Template {
     } else {
         14
     };
+    // the ray traced shadows' own choices (used with "Ray Traced")
+    add(Class::Static, RT_SOFT_LABEL, "RT Softness", 0, [7, 128 - up, 66, 8]);
+    add(Class::ComboBox, RT_SOFT, "", TABSTOP | 3, [76, 126 - up, w - 83, 70]);
+    add(Class::Static, RT_RAYS_LABEL, "RT Rays / Pixel", 0, [7, 142 - up, 66, 8]);
+    add(Class::ComboBox, RT_RAYS, "", TABSTOP | 3, [76, 140 - up, w - 83, 70]);
+    add(Class::Button, RT_LIGHTS, "Ray-Traced Light Shadows", TABSTOP | 3, [7, 155 - up, w - 14, 9]);
+    let up = up - 42;
     add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 128 - up, 66, 8]);
     add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 126 - up, w - 83, 70]);
     // OK (1, the default) and Cancel (2), bottom right
@@ -411,6 +425,22 @@ pub fn init(d: &mut Dialog) {
                 *items = crate::platform::shadows::QUALITIES.iter().map(|&(k, name)| (name.into(), k as u32)).collect();
                 *sel = crate::platform::shadows::quality() as i32;
             }
+        }
+        let (soft, rays) = crate::platform::shadows::rt_choice();
+        if let Some(c) = d.control(RT_SOFT) {
+            if let Kind::Combo { items, sel, .. } = &mut c.kind {
+                *items = crate::platform::shadows::RT_SOFTNESS.iter().enumerate().map(|(i, &(_, name))| (name.into(), i as u32)).collect();
+                *sel = soft as i32;
+            }
+        }
+        if let Some(c) = d.control(RT_RAYS) {
+            if let Kind::Combo { items, sel, .. } = &mut c.kind {
+                *items = crate::platform::shadows::RT_RAYS.iter().enumerate().map(|(i, &(_, name))| (name.into(), i as u32)).collect();
+                *sel = rays as i32;
+            }
+        }
+        if let Some(c) = d.control(RT_LIGHTS) {
+            c.check = crate::platform::lights::rt_shadows() as u32;
         }
         if let Some(c) = d.control(LIT_SMOKE) {
             c.check = crate::platform::lights::smoke_chosen() as u32;
@@ -684,6 +714,12 @@ pub fn ok(d: &mut Dialog) {
         }
         if let Some(&(q, _)) = chosen(SHADOW_QUALITY).and_then(|v| crate::platform::shadows::QUALITIES.get(v as usize)) {
             crate::platform::shadows::set_quality(q);
+        }
+        if let (Some(s), Some(r)) = (chosen(RT_SOFT), chosen(RT_RAYS)) {
+            crate::platform::shadows::set_rt_choice(s as usize, r as usize);
+        }
+        if let Some(on) = d.control(RT_LIGHTS).map(|c| c.check != 0) {
+            crate::platform::lights::set_rt_shadows(on);
         }
         if let Some(on) = d.control(LIT_SMOKE).map(|c| c.check != 0) {
             crate::platform::lights::set_smoke(on);

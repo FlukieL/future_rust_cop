@@ -315,14 +315,18 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   1280x960, MSAA 8, AO on: ~530 fps against the shadow map's ~320. Soft edges: 4 rays a pixel
   into a sun disc of 1° radius (`raytrace::SUN_RADIUS` / `SUN_RAYS`; equal-area rings turned
   and shifted per pixel by interleaved gradient noise), G = share blocked, filtered over 5x5
-  pixels of like depth in the AO's last pass (`traced`); `FCOP_RT_SOFT=<degrees>` (0 hard),
-  `FCOP_RT_RAYS=<n>`. `FCOP_RT_TIME=1` logs GPU timestamps every 2 s (scene, TLAS alone,
+  pixels of like depth in the AO's last pass (`traced`). Advanced Graphics (below Shadow
+  Quality, applying at once): "RT Softness" (REG_DWORD `RtSoftness` 0...3 Hard / Soft / Softer /
+  Softest = 0 / 0.5 / 1 / 2 degrees, default Softer), "RT Rays / Pixel" (`RtRays` 0...3 = 1 / 2 /
+  4 / 8, default 4; `shadows::rt_choice`), "Ray-Traced Light Shadows" (`RtLightShadows`, default
+  on, `lights::rt_shadows`); `FCOP_RT_SOFT=<degrees>`, `FCOP_RT_RAYS=<n>`, `FCOP_RT_LIGHTS=0/1`
+  override (tests). `FCOP_RT_TIME=1` logs GPU timestamps every 2 s (scene, TLAS alone,
   rays, instance counts): rays ~42 µs a ray. With the dynamic lights on, the same shader traces the 8 strongest merged
   lights too (`lights::casters` -> binding 4: count, `LIGHT_SKIP`, view-space place and reach):
   one ray from each pixel within reach, ending 0.3 of the reach short of the light (its holder);
   G = sun share + 2 * a bit per blocked light (ao's `share()` takes the sun's part, the lights'
   pass reads the bits as `lmask` instead of its march; `lmask` always on unit 4: a 2D sampler on
-  the multisampled depth's unit 0 failed the draw). `FCOP_RT_LIGHTS=0` (a test) marches. The TLAS
+  the multisampled depth's unit 0 failed the draw). "Ray-Traced Light Shadows" off: the march. The TLAS
   (ALLOW_UPDATE) is refitted in place while its instances name the same BLAS in the same order as
   at its last build (`Rt::refs`; other BLAS in a slot lost the device), else and every `REBUILD`
   (30) pictures built anew: ~98 -> ~24 µs a view.

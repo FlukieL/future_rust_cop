@@ -29,6 +29,18 @@ pub fn enabled() -> bool {
     SETTING.get()
 }
 
+/// With ray traced shadows: the lights' shadows by rays too (REG_DWORD `RtLightShadows`, default
+/// on, `FCOP_RT_LIGHTS=0/1`), else by the screen-space march. In Advanced Graphics.
+static RT_SHADOWS: Setting = Setting::with_default("RtLightShadows", "FCOP_RT_LIGHTS", true);
+
+pub fn rt_shadows() -> bool {
+    RT_SHADOWS.get()
+}
+
+pub fn set_rt_shadows(on: bool) {
+    RT_SHADOWS.set(on);
+}
+
 /// The Advanced Graphics dialog's OK: saved, and used from the next frame on.
 pub fn set_enabled(on: bool) {
     SETTING.set(on);
@@ -159,12 +171,10 @@ pub fn merged(lights: &[Light], target: (u32, u32)) -> Vec<Merged> {
 }
 
 /// The lights that cast shadows (the first `SHADOWED`), place and reach: the ray traced shadows
-/// (`raytrace.rs`) trace them with the sun's rays; empty without shadows (or with
-/// `FCOP_RT_LIGHTS=0`, a test: the screen-space march then).
+/// (`raytrace.rs`) trace them with the sun's rays; empty without shadows (or with `RT_SHADOWS`
+/// off: the screen-space march then).
 pub fn casters(merged: &[Merged]) -> Vec<[f32; 4]> {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let off = *OFF.get_or_init(|| std::env::var("FCOP_RT_LIGHTS").is_ok_and(|v| v == "0"));
-    match super::shadows::enabled() && enabled() && !off {
+    match super::shadows::enabled() && enabled() && RT_SHADOWS.get() {
         true => merged.iter().take(SHADOWED as usize).map(|l| [l.0[0], l.0[1], l.0[2], l.1]).collect(),
         false => Vec::new(),
     }

@@ -215,7 +215,9 @@ In this order, each with its own setting, each compared against the current effe
 - [x] Soft edges (2026-11-22).
 - [x] A setting (2026-11-22): "Ray Traced" always in the Shadows combo beside Screen-Space and
       Shadow Map, which stays (the user: never remove it). Vulkan presents from the next start
-      when chosen; until then (or without ray queries) the map is drawn.
+      when chosen; until then (or without ray queries) the map is drawn. Its switches in
+      Advanced Graphics too: RT Softness, RT Rays / Pixel, Ray-Traced Light Shadows (the
+      `FCOP_RT_SOFT` / `_RAYS` / `_LIGHTS` variables only override them).
 - [x] Shadows of the dynamic lights (`lights.rs`) by rays instead of the screen ray march
       (2026-11-22, hard; soft edges by the light's size would need a filter like the sun's).
 - [ ] RT ambient occlusion instead of SSAO.

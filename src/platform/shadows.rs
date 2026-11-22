@@ -96,7 +96,7 @@ impl Choice {
         if v != u32::MAX {
             return v;
         }
-        let env = std::env::var(self.env).ok().and_then(|e| e.parse().ok().or_else(|| self.names.iter().position(|n| n.eq_ignore_ascii_case(&e)).map(|i| i as u32)));
+        let env = std::env::var(self.env).ok().filter(|_| !self.env.is_empty()).and_then(|e| e.parse().ok().or_else(|| self.names.iter().position(|n| n.eq_ignore_ascii_case(&e)).map(|i| i as u32)));
         let stored = || advapi32::value("", self.value).and_then(|(_, d)| Some(u32::from_le_bytes(d.get(..4)?.try_into().ok()?)));
         let v = env.or_else(stored).filter(|&v| (v as usize) < self.names.len()).unwrap_or(self.default);
         self.v.store(v, Relaxed);
@@ -146,6 +146,24 @@ pub fn set_rays_ready(on: bool) {
 /// The Advanced Graphics dialog's OK: saved, and used from the next frame on.
 pub fn set_mode(m: Mode) {
     MODE.set(m as u32);
+}
+
+/// The ray traced sun's soft edges (REG_DWORD `RtSoftness`; `FCOP_RT_SOFT=<degrees>` overrides,
+/// `raytrace::soft`): the sun disc's radius in degrees by choice.
+pub const RT_SOFTNESS: [(f32, &str); 4] = [(0.0, "Hard"), (0.5, "Soft"), (1.0, "Softer"), (2.0, "Softest")];
+static RT_SOFT: Choice = Choice { v: AtomicU32::new(u32::MAX), value: "RtSoftness", env: "", names: &["hard", "soft", "softer", "softest"], default: 2 };
+/// The rays a pixel shoots into the sun disc (REG_DWORD `RtRays`; `FCOP_RT_RAYS=<n>` overrides).
+pub const RT_RAYS: [(u32, &str); 4] = [(1, "1"), (2, "2"), (4, "4"), (8, "8")];
+static RT_RAY_COUNT: Choice = Choice { v: AtomicU32::new(u32::MAX), value: "RtRays", env: "", names: &["1", "2", "4", "8"], default: 2 };
+
+/// The chosen softness and rays (indices into `RT_SOFTNESS`, `RT_RAYS`).
+pub fn rt_choice() -> (usize, usize) {
+    (RT_SOFT.get() as usize % RT_SOFTNESS.len(), RT_RAY_COUNT.get() as usize % RT_RAYS.len())
+}
+
+pub fn set_rt_choice(soft: usize, rays: usize) {
+    RT_SOFT.set(soft as u32);
+    RT_RAY_COUNT.set(rays as u32);
 }
 
 pub fn quality() -> Quality {
