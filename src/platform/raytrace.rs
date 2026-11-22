@@ -83,10 +83,15 @@ pub struct Rt {
     /// the dynamic lights whose shadows the sun's shader traces too (`shadow`): a count, then
     /// place and reach of each (`LIGHTS` at most); written while no rays read it
     light_buf: Option<Buffer>,
+    /// the BLAS the TLAS's instances named at its last build, in order, and the refits since
+    refs: Vec<u64>,
+    refits: u32,
 }
 
 /// The most lights `shadow` traces (bits of the mask's G / 2).
 const LIGHTS: usize = 8;
+/// The TLAS is built anew at least every this many pictures (refitted in between).
+const REBUILD: u32 = 30;
 const LIGHT_BYTES: u64 = 16 * (1 + LIGHTS as u64);
 /// A light's rays end this share of its reach short of it: its place is pulled toward the camera
 /// by up to 0.2 of it (`lights::view`), and what holds it (a robot's light bar, the robot) must not
@@ -136,9 +141,9 @@ impl Rt {
             let sets = device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&both)).map_err(err("descriptor set"))?;
             let timing = match std::env::var("FCOP_RT_TIME").is_ok_and(|v| v == "1") {
                 true => {
-                    let pool = device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(3), None).map_err(err("query pool"))?;
+                    let pool = device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(4), None).map_err(err("query pool"))?;
                     let period = instance.get_physical_device_properties(phys).limits.timestamp_period as f64;
-                    Some(Timing { pool, period, pending: false, sum: [0.0; 2], count: 0, since: std::time::Instant::now() })
+                    Some(Timing { pool, period, pending: false, sum: [0.0; 3], count: 0, instances: (0, 0), since: std::time::Instant::now() })
                 }
                 false => None,
             };
@@ -164,6 +169,8 @@ impl Rt {
                 image: None,
                 timing,
                 light_buf: None,
+                refs: Vec::new(),
+                refits: 0,
             };
             rt.light_buf = Some(rt.buffer(LIGHT_BYTES, vk::BufferUsageFlags::STORAGE_BUFFER, true)?);
             Ok(rt)
@@ -212,13 +219,13 @@ impl Rt {
         Ok(b)
     }
 
-    /// Storage and scratch for an acceleration structure of `kind` with `geometries` (room for
-    /// `max` primitives each); the build of `counts` recorded into `cmd`.
-    fn build(&self, cmd: vk::CommandBuffer, kind: vk::AccelerationStructureTypeKHR, geometries: &[vk::AccelerationStructureGeometryKHR], counts: &[u32], max: &[u32], mut bufs: Vec<Buffer>) -> Result<Accel, String> {
+    /// Storage and scratch (for a build and an update) for an acceleration structure of `kind`
+    /// with `geometries` (room for `max` primitives each); the build of `counts` recorded into `cmd`.
+    fn build(&self, cmd: vk::CommandBuffer, kind: vk::AccelerationStructureTypeKHR, flags: vk::BuildAccelerationStructureFlagsKHR, geometries: &[vk::AccelerationStructureGeometryKHR], counts: &[u32], max: &[u32], mut bufs: Vec<Buffer>) -> Result<Accel, String> {
         unsafe {
             let mut info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(kind)
-                .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                .flags(flags)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .geometries(geometries);
             let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
@@ -229,7 +236,7 @@ impl Rt {
                 .create_acceleration_structure(&vk::AccelerationStructureCreateInfoKHR::default().buffer(storage.buf).size(sizes.acceleration_structure_size).ty(kind), None)
                 .map_err(err("acceleration structure"))?;
             // scratch addresses aligned to 256 (more than any device asks)
-            let scratch = self.buffer(sizes.build_scratch_size + 256, vk::BufferUsageFlags::STORAGE_BUFFER, false)?;
+            let scratch = self.buffer(sizes.build_scratch_size.max(sizes.update_scratch_size) + 256, vk::BufferUsageFlags::STORAGE_BUFFER, false)?;
             info = info.dst_acceleration_structure(accel).scratch_data(vk::DeviceOrHostAddressKHR { device_address: (scratch.addr + 255) & !255 });
             let ranges: Vec<_> = counts.iter().map(|&c| vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(c)).collect();
             self.accel_fn.cmd_build_acceleration_structures(cmd, &[info], &[&ranges]);
@@ -266,7 +273,7 @@ impl Rt {
             geometries.push(vk::AccelerationStructureGeometryKHR::default().geometry_type(vk::GeometryTypeKHR::TRIANGLES).geometry(vk::AccelerationStructureGeometryDataKHR { triangles: tri }).flags(flags));
             counts.push(count);
         }
-        self.build(cmd, vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL, &geometries, &counts, &counts, vec![vb, ib]).map(Some)
+        self.build(cmd, vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL, vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE, &geometries, &counts, &counts, vec![vb, ib]).map(Some)
     }
 
     /// A mesh's BLAS (`scene::model_mesh` / `block_mesh`) and its instances' custom index: `kind`
@@ -311,6 +318,8 @@ impl Rt {
             }
             self.mats.clear();
             self.mats_sent = 0;
+            // (freed BLAS addresses come back for others)
+            self.refs.clear();
             self.generation = frame.generation;
         }
         // the mission's pages (the device is idle when they change: a new mission)
@@ -352,6 +361,9 @@ impl Rt {
         if built > 0 {
             self.barrier(cmd, (build, aw), (build, ar));
         }
+        if let Some(t) = &mut self.timing {
+            t.instances = (frame.blocks.len(), instances.len() - frame.blocks.len().min(instances.len()));
+        }
         // new materials: behind those the rays in flight read, or all into a larger buffer
         if self.mat_buf.as_ref().is_none_or(|b| b.1 < self.mats.len()) {
             unsafe { self.device.device_wait_idle().map_err(err("wait"))? };
@@ -383,16 +395,32 @@ impl Rt {
         let geometry = vk::AccelerationStructureGeometryKHR::default().geometry_type(vk::GeometryTypeKHR::INSTANCES).geometry(vk::AccelerationStructureGeometryDataKHR {
             instances: vk::AccelerationStructureGeometryInstancesDataKHR::default().data(vk::DeviceOrHostAddressConstKHR { device_address: ib.addr }),
         });
-        // the TLAS built anew each picture into the same storage; a larger one when it grew
+        if let Some(t) = &self.timing {
+            unsafe { self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_COMMANDS, t.pool, 3) };
+        }
+        // The TLAS in the same storage each picture: refitted (UPDATE: new transforms, the tree
+        // kept) while the instances name the same BLAS in the same order as at its last build,
+        // which they mostly do (the game's lists keep their order), else built anew; anew every
+        // `REBUILD` pictures too, as moved things loosen a refitted tree. A larger one when it grew.
+        // (A build took ~98 µs a view at the first mission's start, ~310 instances; a refit ~30.)
+        let refs: Vec<u64> = instances.iter().map(|i| unsafe { i.acceleration_structure_reference.device_handle }).collect();
         let n = instances.len() as u32;
         let top = vk::AccelerationStructureTypeKHR::TOP_LEVEL;
+        let flags = vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE;
         match &self.tlas {
             Some((t, scratch, cap)) if *cap >= instances.len() => {
                 let geometries = [geometry];
+                self.refits += 1;
+                let update = self.refits < REBUILD && refs == self.refs;
+                if !update {
+                    self.refs = refs;
+                    self.refits = 0;
+                }
                 let info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                     .ty(top)
-                    .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-                    .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                    .flags(flags)
+                    .mode(if update { vk::BuildAccelerationStructureModeKHR::UPDATE } else { vk::BuildAccelerationStructureModeKHR::BUILD })
+                    .src_acceleration_structure(if update { t.accel } else { vk::AccelerationStructureKHR::null() })
                     .geometries(&geometries)
                     .dst_acceleration_structure(t.accel)
                     .scratch_data(vk::DeviceOrHostAddressKHR { device_address: (scratch.addr + 255) & !255 });
@@ -406,8 +434,9 @@ impl Rt {
                     self.free(scratch);
                 }
                 let cap = instances.len().max(256).next_power_of_two();
-                let mut tlas = self.build(cmd, top, &[geometry], &[n], &[cap as u32], vec![])?;
+                let mut tlas = self.build(cmd, top, flags, &[geometry], &[n], &[cap as u32], vec![])?;
                 let scratch = tlas.bufs.pop().unwrap();
+                (self.refs, self.refits) = (refs, 0);
                 self.tlas = Some((tlas, scratch, cap));
                 self.tlas_made += 1;
             }
@@ -608,8 +637,10 @@ struct Timing {
     period: f64,
     /// timestamps written by the last recording (done when the next one starts: `sun_rays` waits)
     pending: bool,
-    sum: [f64; 2],
+    sum: [f64; 3],
     count: u32,
+    /// the last scene's terrain blocks and model instances
+    instances: (usize, usize),
     since: std::time::Instant,
 }
 
@@ -618,19 +649,20 @@ impl Timing {
     unsafe fn begin(&mut self, d: &ash::Device, cmd: vk::CommandBuffer) {
         unsafe {
             if self.pending {
-                let mut t = [0u64; 3];
+                let mut t = [0u64; 4];
                 if d.get_query_pool_results(self.pool, 0, &mut t, vk::QueryResultFlags::TYPE_64).is_ok() {
                     self.sum[0] += (t[1] - t[0]) as f64 * self.period;
                     self.sum[1] += (t[2] - t[1]) as f64 * self.period;
+                    self.sum[2] += (t[1] - t[3]) as f64 * self.period;
                     self.count += 1;
                 }
             }
             if self.since.elapsed().as_secs_f64() >= 2.0 && self.count > 0 {
                 let n = self.count as f64 * 1000.0;
-                super::log!("raytrace: µs a view: scene {:.0}, sun's rays {:.0}", self.sum[0] / n, self.sum[1] / n);
-                (self.sum, self.count, self.since) = ([0.0; 2], 0, std::time::Instant::now());
+                super::log!("raytrace: µs a view: scene {:.0} (TLAS {:.0}), sun's rays {:.0} ({} blocks, {} models)", self.sum[0] / n, self.sum[2] / n, self.sum[1] / n, self.instances.0, self.instances.1);
+                (self.sum, self.count, self.since) = ([0.0; 3], 0, std::time::Instant::now());
             }
-            d.cmd_reset_query_pool(cmd, self.pool, 0, 3);
+            d.cmd_reset_query_pool(cmd, self.pool, 0, 4);
             d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, self.pool, 0);
             self.pending = true;
         }

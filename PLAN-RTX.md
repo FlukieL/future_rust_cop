@@ -43,13 +43,21 @@ Sun shadows by ray query work (2026-11-21, `Shadows` 3 "Ray Traced", step 5's fi
   bits, exact in a float); the lights' pass takes them instead of its screen-space march. The legs
   cast shadows of the light bar. +~10 µs a view, ~300 -> ~338 fps (1920x1080, the march is
   gone). `FCOP_RT_LIGHTS=0` (a test) marches again.
+- TLAS refit (2026-11-22): the ~98 µs were all the TLAS build (~310 instances: 169 terrain
+  blocks, ~150 models; ~30 µs even for 10 instances, coincident boxes far worse). Now built with
+  ALLOW_UPDATE and refitted (UPDATE in place) while the instances name the same BLAS in the same
+  order as at its last build (~95% of pictures: the game's lists keep their order; a refit with
+  other BLAS in a slot lost the device), anew on any change and every 30 pictures: ~24 µs a view,
+  the rays as fast as before. Tried without effect: instances in device memory, PREFER_FAST_BUILD
+  (~92), the build before GL's semaphore (GL's and Vulkan's work do not overlap on the GPU).
+  GPU time counts here: the sun's rays are synchronous (~150 µs less GPU time gave ~402 -> ~432
+  fps); fps from run to run varied by ±7%, the timestamps (`FCOP_RT_TIME=1`, now with the TLAS
+  alone and the instance counts) are the measure.
 
 Next:
 - Alpha test open points: scrolled terrain textures (tw & 0x800) are tested unscrolled;
   semi-transparent faces (glass, PS1 STP) still cast fully; HD replacement textures' coverage
   is not used (the original page's).
-- The scene's build (~98 µs a view) is now more than one ray: TLAS update instead of rebuild,
-  instances kept between pictures.
 - Compare in more levels and at night/evening suns (`sun` cheat); the two dark lines at block
   borders seen from above (step 2) may show as thin shadow lines.
 
