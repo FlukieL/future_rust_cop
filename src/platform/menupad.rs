@@ -49,8 +49,7 @@ const REPEAT: Duration = Duration::from_millis(160);
 const STICK: f32 = 0.5;
 
 fn trace() -> bool {
-    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("FCOP_PAD_LOG").is_some_and(|v| v != "0"))
+    crate::platform::debug::flag(crate::platform::debug::V::PadLog)
 }
 
 struct State {

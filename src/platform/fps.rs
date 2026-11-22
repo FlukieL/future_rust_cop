@@ -702,15 +702,13 @@ pub fn clock(c: &mut Cpu) {
 }
 
 fn logging() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("FCOP_FPS").is_some_and(|v| v != "0"))
+    crate::platform::debug::flag(crate::platform::debug::V::Fps)
 }
 
 /// `FCOP_PHASES=1` (with `FCOP_FPS=1`): time the phases below (the timers cost a little
 /// themselves, so plain fps are measured without).
 fn timing() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| logging() && std::env::var_os("FCOP_PHASES").is_some_and(|v| v != "0"))
+    logging() && crate::platform::debug::flag(crate::platform::debug::V::Phases)
 }
 
 /// Parts of the effects' CPU work timed under `FCOP_PHASES=1`.

@@ -164,8 +164,7 @@ pub fn set_value(sub: &str, name: &str, t: u32, data: &[u8]) {
 }
 
 fn trace() -> bool {
-    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("FCOP_TRACE_REG").is_some())
+    crate::platform::debug::flag(crate::platform::debug::V::TraceReg)
 }
 
 fn reg_open_key_ex(c: &mut Cpu) -> u32 {

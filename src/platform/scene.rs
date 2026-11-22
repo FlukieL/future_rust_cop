@@ -242,15 +242,13 @@ fn terrain_point(sect: u32, b: &Block, i: u16) -> Option<[f64; 3]> {
 
 /// `FCOP_GBUFFER=scene`: the overlay.
 fn overlay_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("FCOP_GBUFFER").is_ok_and(|v| v == "scene"))
+    super::debug::choice(super::debug::V::GBuffer) == "scene"
 }
 
 /// `FCOP_GBUFFER=rt`: the window shows rays from the camera against the scene's acceleration
 /// structures instead of the picture (`raytrace.rs`).
 pub fn rt_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("FCOP_GBUFFER").is_ok_and(|v| v == "rt"))
+    super::debug::choice(super::debug::V::GBuffer) == "rt"
 }
 
 /// The rays need the whole level's scene: their debug picture, or the sun's shadow by rays.
@@ -436,8 +434,7 @@ fn material(uv: [u32; 3], page: u32) -> Material {
 }
 
 fn log_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("FCOP_SCENE_LOG").is_ok_and(|v| v == "1"))
+    super::debug::flag(super::debug::V::SceneLog)
 }
 
 /// Hook of model_draw 0x4280a0.

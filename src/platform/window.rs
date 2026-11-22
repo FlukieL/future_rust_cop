@@ -36,6 +36,8 @@ pub enum Input {
     Cheat(usize),
     /// scripted only: a control of the scripted pad (`dinput::CONTROLS`) and its value
     Pad(usize, f32),
+    /// scripted only: Ctrl+Shift+D, the debug menu (`dialog::debug`)
+    DebugMenu,
 }
 
 struct App {
@@ -51,6 +53,12 @@ struct App {
     /// an Alt key is held (Alt+Enter toggles fullscreen)
     alt: bool,
     shift: bool,
+    ctrl: bool,
+    /// window messages for the debug menu (`dialog::debug`; msg 0: Ctrl+Shift+D), handled after
+    /// the pump (outside the host's borrow)
+    panel: Vec<(u32, u32, u32)>,
+    /// the last scripted move while the debug menu is open (its clicks' place)
+    scripted_at: u32,
     focused: bool,
     /// the cursor as last set on the window: hidden and kept inside it
     cursor_caught: bool,
@@ -116,6 +124,9 @@ fn with_host<R>(f: impl FnOnce(&mut Host) -> R) -> R {
                     cursor: PhysicalPosition::new(0.0, 0.0),
                     alt: false,
                     shift: false,
+                    ctrl: false,
+                    panel: Vec::new(),
+                    scripted_at: 0,
                     focused: true,
                     cursor_caught: false,
                     cursor_hidden: false,
@@ -146,7 +157,7 @@ pub fn pump(wait: Duration) {
     if !on_main() {
         return;
     }
-    with_host(|h| {
+    let panel = with_host(|h| {
         if let Some((px, w, hh)) = PENDING.lock().unwrap().take() {
             h.app.frame(&px, w, hh);
         }
@@ -158,7 +169,7 @@ pub fn pump(wait: Duration) {
         }
         let _ = h.event_loop.pump_app_events(Some(wait), &mut h.app);
         h.app.catch_cursor();
-        scripted(&mut h.app.input);
+        scripted(&mut h.app);
         // a pad's Start is the Escape key (pause)
         if let Some(down) = super::dinput::poll() {
             let (vk, scan) = vk_of(KeyCode::Escape).unwrap();
@@ -173,7 +184,30 @@ pub fn pump(wait: Duration) {
             h.app.draw();
         }
         h.app.catch_cursor();
+        std::mem::take(&mut h.app.panel)
     });
+    debug_menu(panel);
+}
+
+/// The debug menu's messages from the pump: Ctrl+Shift+D opens or closes it (the game's keys
+/// held then are let go), the rest is its input; then the overlay and the cursor (free while it
+/// is open) anew.
+fn debug_menu(msgs: Vec<(u32, u32, u32)>) {
+    if msgs.is_empty() {
+        return;
+    }
+    for (msg, wp, lp) in msgs {
+        if msg == 0 {
+            super::dialog::debug::toggle();
+            if super::dialog::debug::open() {
+                with_host(|h| h.app.input.push_back(Input::Focus(false)));
+            }
+        } else {
+            super::dialog::debug::input(msg, wp, lp);
+        }
+    }
+    set_overlay(super::dialog::overlay());
+    with_host(|h| h.app.catch_cursor());
 }
 
 /// FCOP_INPUT="9000:click@484,303 12000:Enter 15000:Up*3000": input at fixed times (ms
@@ -187,17 +221,30 @@ pub fn pump(wait: Duration) {
 /// hex), `pad@A*500` (a control of the scripted pad held, `dinput::CONTROLS`), `pad@LX=-1*1000`
 /// (its stick at a value, -1...1, y up). `FCOP_INPUT=@file.txt` reads the items from a file (as
 /// `FCOP_RECORD` writes them, `record.rs`); `#` starts a comment to the end of the line.
-fn scripted(input: &mut VecDeque<Input>) {
+fn scripted(app: &mut App) {
     static SCRIPT: Mutex<Option<VecDeque<(u64, Input)>>> = Mutex::new(None);
     let mut s = SCRIPT.lock().unwrap();
     let script = s.get_or_insert_with(|| parse_script(script_text()));
     let now = super::kernel32::start_time().elapsed().as_millis() as u64;
+    // while the debug menu is open, moves, left clicks and keys are its own (as real ones)
+    let mut menu = super::dialog::debug::open();
     while script.front().is_some_and(|e| e.0 <= now) {
         match script.pop_front().unwrap().1 {
             Input::Poke(a, v) => super::mem().wr32(a, v),
             Input::Cheat(k) => super::cheats::request(k),
             Input::Pad(k, v) => super::dinput::script(k, v),
-            i => input.push_back(i),
+            Input::DebugMenu => {
+                menu = !menu;
+                app.panel.push((0, 0, 0));
+            }
+            Input::Move(x, y) if menu => {
+                app.scripted_at = (x as u32 & 0xffff) | (y as u32) << 16;
+                app.panel.push((0x200, 0, app.scripted_at));
+            }
+            Input::Button(0, down) if menu => app.panel.push((if down { 0x201 } else { 0x202 }, down as u32, app.scripted_at)),
+            Input::Key { vk, scan, down, .. } if menu => app.panel.push((if down { 0x100 } else { 0x101 }, vk as u32, (scan as u32) << 16 | 1)),
+            Input::Char(ch) if menu => app.panel.push((0x102, ch as u32, 0)),
+            i => app.input.push_back(i),
         }
     }
 }
@@ -264,6 +311,8 @@ fn parse_script(text: &str) -> VecDeque<(u64, Input)> {
             };
             ev.push((t + 30, Input::Button(b, true)));
             ev.push((t + 30 + hold, Input::Button(b, false)));
+        } else if what == "debugmenu" {
+            ev.push((t, Input::DebugMenu));
         } else if what == "close" {
             ev.push((t, Input::Close));
         } else if what == "blur" || what == "focus" {
@@ -743,6 +792,10 @@ impl ApplicationHandler for App {
                 }
                 self.cursor = position;
                 let (x, y) = self.frame_pos();
+                if super::dialog::debug::open() {
+                    self.panel.push((0x200, 0, (x as u32 & 0xffff) | (y as u32) << 16));
+                    return;
+                }
                 self.push(Input::Move(x, y));
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -750,6 +803,9 @@ impl ApplicationHandler for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y.round() as i32,
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.y / 40.0).round() as i32,
                 };
+                if super::dialog::debug::open() {
+                    return;
+                }
                 if lines != 0 {
                     self.push(Input::Wheel(lines));
                 }
@@ -763,11 +819,20 @@ impl ApplicationHandler for App {
                     MouseButton::Forward | MouseButton::Other(5) => 4,
                     _ => return,
                 };
+                if super::dialog::debug::open() {
+                    if b == 0 {
+                        let (x, y) = self.frame_pos();
+                        let msg = if state == ElementState::Pressed { 0x201 } else { 0x202 };
+                        self.panel.push((msg, 1, (x as u32 & 0xffff) | (y as u32) << 16));
+                    }
+                    return;
+                }
                 self.push(Input::Button(b, state == ElementState::Pressed));
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.alt = m.state().alt_key();
                 self.shift = m.state().shift_key();
+                self.ctrl = m.state().control_key();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let down = event.state == ElementState::Pressed;
@@ -783,6 +848,25 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if let PhysicalKey::Code(code) = event.physical_key {
+                    // Ctrl+Shift+D: the debug menu in a `--features cheats` build (`dialog::debug`);
+                    // while it is open the keys are its own (the game does not see them)
+                    if cfg!(feature = "cheats") && self.ctrl && self.shift && code == KeyCode::KeyD {
+                        if down && !event.repeat {
+                            self.panel.push((0, 0, 0));
+                        }
+                        return;
+                    }
+                    if super::dialog::debug::open() {
+                        if let Some((vk, scan)) = vk_of(code) {
+                            self.panel.push((if down { 0x100 } else { 0x101 }, vk as u32, (scan as u32) << 16 | 1));
+                        }
+                        if down && let Some(t) = &event.text {
+                            for ch in t.chars().filter(|&c| (c as u32) >= 32 && (c as u32) < 256) {
+                                self.panel.push((0x102, ch as u32, 0));
+                            }
+                        }
+                        return;
+                    }
                     // Shift+F<n>: a debug cheat in a `--features cheats` build (the game does not see the key)
                     let f = FN.iter().position(|&k| k == code).map(|i| i as u8 + 1);
                     if let Some(k) = f.filter(|_| self.shift).and_then(super::cheats::by_key) {
@@ -886,6 +970,6 @@ fn vk_of(k: KeyCode) -> Option<(u8, u8)> {
 /// The cursor is never caught nor hidden in scripted runs (`FCOP_INPUT`) or with
 /// `FCOP_GRAB=0`: tests and debugging leave the mouse to the user.
 fn free_cursor() -> bool {
-    static FREE: OnceLock<bool> = OnceLock::new();
-    *FREE.get_or_init(|| std::env::var_os("FCOP_INPUT").is_some() || std::env::var_os("FCOP_GRAB").is_some_and(|v| v == "0"))
+    static SCRIPTED: OnceLock<bool> = OnceLock::new();
+    *SCRIPTED.get_or_init(|| std::env::var_os("FCOP_INPUT").is_some()) || !super::debug::flag(super::debug::V::Grab) || super::dialog::debug::open()
 }

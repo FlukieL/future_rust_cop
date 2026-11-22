@@ -76,8 +76,7 @@ pub fn logging() -> bool {
 
 /// `FCOP_GBUFFER=effects`: the 3D picture's primitives coloured by their kind.
 pub fn showing() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("FCOP_GBUFFER").is_ok_and(|v| v == "effects"))
+    super::debug::choice(super::debug::V::GBuffer) == "effects"
 }
 
 /// Something needs the primitives' records.

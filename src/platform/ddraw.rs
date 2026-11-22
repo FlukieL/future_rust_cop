@@ -78,8 +78,7 @@ fn dd() -> MutexGuard<'static, DirectDraw> {
 }
 
 fn trace() -> bool {
-    static T: OnceLock<bool> = OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("FCOP_DD_LOG").is_some())
+    super::debug::flag(super::debug::V::DdLog)
 }
 
 const RMASK: u32 = 0x7c00;

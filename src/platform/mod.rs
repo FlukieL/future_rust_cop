@@ -12,6 +12,7 @@ pub mod camera;
 pub mod bloom;
 pub mod cheats;
 pub mod ddraw;
+pub mod debug;
 pub mod dialog;
 pub mod dinput;
 pub mod display;
@@ -500,15 +501,13 @@ pub fn guest_call(c: &mut Cpu, addr: u32, args: &[u32]) -> u32 {
 }
 
 fn trace_api() -> bool {
-    static T: OnceLock<bool> = OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("FCOP_TRACE_API").is_some())
+    debug::flag(debug::V::TraceApi)
 }
 
 /// `FCOP_PROF=1`: time spent in imports (and waiting for the turn after them), per import,
 /// logged every 2 s with the share of the wall time.
 fn prof() -> bool {
-    static P: OnceLock<bool> = OnceLock::new();
-    *P.get_or_init(|| std::env::var_os("FCOP_PROF").is_some_and(|v| v != "0"))
+    debug::flag(debug::V::Prof)
 }
 
 fn prof_add(k: usize, call: std::time::Duration, wait: std::time::Duration) {
@@ -844,10 +843,13 @@ pub fn run_game(img: &Image, game_dir: PathBuf) -> u32 {
     rt::set_handler(on_event);
     rt::set_yield(turn_yield);
     catch_faults();
-    if std::env::var_os("FCOP_WATCH").is_some() {
-        // where the game is, every 2 s (for hangs)
+    {
+        // where the game is, every 2 s (for hangs; the debug menu turns it on while running)
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
+            if !debug::flag(debug::V::Watch) {
+                continue;
+            }
             let t = *lock(&TURN.tickets);
             log!("watch: last import call returned to {:#x}, turn {}/{}, poll {}", LAST_CALL.load(Ordering::Relaxed), t.1, t.0, rt::POLL.load(Ordering::Relaxed));
         });

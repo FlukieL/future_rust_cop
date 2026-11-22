@@ -10,8 +10,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 fn on() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("FCOP_SAMPLE").is_some_and(|v| v != "0"))
+    super::debug::flag(super::debug::V::Sample)
 }
 
 /// Start sampling the calling thread (once).
@@ -52,6 +51,11 @@ fn sample(h: windows_sys::Win32::Foundation::HANDLE) {
     log!("sample: started");
     loop {
         std::thread::sleep(std::time::Duration::from_micros(500));
+        // (off again in the debug menu: paused)
+        if !on() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            continue;
+        }
         let mut ctx: CONTEXT = unsafe { std::mem::zeroed() };
         ctx.ContextFlags = CONTEXT_FULL_AMD64;
         let ours = |a: u64| (lo..hi).contains(&(a as usize)) || (own_text().0..own_text().1).contains(&(a as usize));

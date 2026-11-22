@@ -696,6 +696,19 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   level's sun by mission file, in order M2c M3a M3b Ov M1a1 Un Lax1 Lax2 M4a1 (table 0x488254;
   Lax2 is level 7's second part, 0x40a6ae), others `SUN`, until the next mission). (The user's Cheat
   Engine address 0x80FF0344 was guest 0x1000344 with the guest base at 0x7FFF0000.)
+- Debug switches (`debug.rs`): the `FCOP_*` test variables without a setting of their own in the
+  game's menus and without files of their own (no recordings, shots, scripts, dumps) are read
+  through `debug::flag` / `choice` / `num` at every use (`debug::V`, table `VARS`: environment
+  name, label, page, kind), starting from their environment variable. The debug menu
+  (`dialog/debug.rs`, Ctrl+Shift+D, only in a `--features cheats` build) changes them while the
+  game runs: no modal dialog, the game goes on beneath it (changes seen at once), its input goes to
+  the menu while it is open (`window.rs` collects it during the pump, handles it after: the host is
+  borrowed during the pump; the game's held keys are let go when it opens; the cursor is free),
+  drawn over the game's dialogs (`dialog::overlay`). Pages Views, Renderer, Shadows, Logs,
+  Performance; each change is logged (`debug: FCOP_X = v`). Esc or Close end it, Enter only
+  applies. `FCOP_INPUT` item `debugmenu` toggles it (scripted moves, left clicks and keys go to it
+  while open); test `dialog::debug::tests::pages` (`FCOP_DLG_PNG=<dir>` writes the pages). New
+  test switches go into `VARS`, not `std::env::var`.
 - Savestates (`savestate.rs`, test tool): cheats `save` / `load` (Shift+F7 / F8, FCOP_INPUT
   "20000:save 30000:load"), one slot: `savestate.bin` in the game folder (kept by `setup`),
   loadable after a restart. In the frame wait: recompiled code returns through the host stack

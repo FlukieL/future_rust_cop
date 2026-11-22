@@ -84,6 +84,8 @@ pub struct Rt {
     image: Option<(vk::Image, vk::DeviceMemory, vk::ImageView, u32, u32)>,
     /// `FCOP_RT_TIME=1` (a test): GPU time of the sun's rays, logged every 2 s
     timing: Option<Timing>,
+    /// this recording writes timestamps (`FCOP_RT_TIME`, the sun's rays only)
+    timed: bool,
     /// the dynamic lights whose shadows the sun's shader traces too (`shadow`): a count, then
     /// place and reach of each (`LIGHTS` at most); written while no rays read it
     light_buf: Option<Buffer>,
@@ -143,13 +145,11 @@ impl Rt {
             let pool = device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(2).pool_sizes(&sizes), None).map_err(err("descriptor pool"))?;
             let both = [set_layout, set_layout];
             let sets = device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&both)).map_err(err("descriptor set"))?;
-            let timing = match std::env::var("FCOP_RT_TIME").is_ok_and(|v| v == "1") {
-                true => {
-                    let pool = device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(4), None).map_err(err("query pool"))?;
-                    let period = instance.get_physical_device_properties(phys).limits.timestamp_period as f64;
-                    Some(Timing { pool, period, pending: false, sum: [0.0; 3], count: 0, instances: (0, 0), since: std::time::Instant::now() })
-                }
-                false => None,
+            // (always made: the debug menu turns the times on while running, `timed`)
+            let timing = {
+                let pool = device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(4), None).map_err(err("query pool"))?;
+                let period = instance.get_physical_device_properties(phys).limits.timestamp_period as f64;
+                Some(Timing { pool, period, pending: false, sum: [0.0; 3], count: 0, instances: (0, 0), since: std::time::Instant::now() })
             };
             super::log!("raytrace: ready");
             let mut rt = Rt {
@@ -173,6 +173,7 @@ impl Rt {
                 sets: [(sets[0], None), (sets[1], None)],
                 image: None,
                 timing,
+                timed: false,
                 light_buf: None,
                 refs: Vec::new(),
                 refits: 0,
@@ -366,7 +367,7 @@ impl Rt {
         if built > 0 {
             self.barrier(cmd, (build, aw), (build, ar));
         }
-        if let Some(t) = &mut self.timing {
+        if let Some(t) = self.timing.as_mut().filter(|_| self.timed) {
             t.instances = (frame.blocks.len(), instances.len() - frame.blocks.len().min(instances.len()));
         }
         // new materials: behind those the rays in flight read, or all into a larger buffer
@@ -400,7 +401,7 @@ impl Rt {
         let geometry = vk::AccelerationStructureGeometryKHR::default().geometry_type(vk::GeometryTypeKHR::INSTANCES).geometry(vk::AccelerationStructureGeometryDataKHR {
             instances: vk::AccelerationStructureGeometryInstancesDataKHR::default().data(vk::DeviceOrHostAddressConstKHR { device_address: ib.addr }),
         });
-        if let Some(t) = &self.timing {
+        if let Some(t) = self.timing.as_ref().filter(|_| self.timed) {
             unsafe { self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_COMMANDS, t.pool, 3) };
         }
         // The TLAS in the same storage each picture: refitted (UPDATE: new transforms, the tree
@@ -495,11 +496,16 @@ impl Rt {
             data[4 + 4 * i..8 + 4 * i].copy_from_slice(l);
         }
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, self.light_buf.as_ref().unwrap().ptr, LIGHT_BYTES as usize) };
-        if let Some(t) = &mut self.timing {
+        self.timed = super::debug::flag(super::debug::V::RtTime);
+        if !self.timed && let Some(t) = &mut self.timing {
+            // (turned off: the last times are never read)
+            t.pending = false;
+        }
+        if let Some(t) = self.timing.as_mut().filter(|_| self.timed) {
             unsafe { t.begin(&self.device, cmd) };
         }
         self.scene(cmd, 2, frame)?;
-        if let Some(t) = &self.timing {
+        if let Some(t) = self.timing.as_ref().filter(|_| self.timed) {
             unsafe { self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_COMMANDS, t.pool, 1) };
         }
         let set = self.set(1, view);
@@ -529,7 +535,7 @@ impl Rt {
                     d.cmd_dispatch(cmd, w.div_ceil(8), h.div_ceil(8), 1);
                 }
             }
-            if let Some(t) = &self.timing {
+            if let Some(t) = self.timing.as_ref().filter(|_| self.timed) {
                 d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, t.pool, 2);
             }
         }
@@ -540,6 +546,7 @@ impl Rt {
     /// `slot`); the image is left in TRANSFER_SRC_OPTIMAL for the present to copy.
     pub fn record(&mut self, cmd: vk::CommandBuffer, slot: usize, w: u32, h: u32, frame: &Frame) -> Result<vk::Image, String> {
         let compute = vk::PipelineStageFlags::COMPUTE_SHADER;
+        self.timed = false;
         self.scene(cmd, slot, frame)?;
         if self.image.as_ref().is_none_or(|i| (i.3, i.4) != (w, h)) {
             self.make_image(w, h)?;
@@ -710,6 +717,5 @@ fn soft() -> (f32, u32) {
 
 /// `FCOP_RT_HIGH=<model units>` (a test): the rays' picture from that high above the camera.
 fn high() -> Option<f32> {
-    static H: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
-    *H.get_or_init(|| std::env::var("FCOP_RT_HIGH").ok().and_then(|v| v.parse().ok()))
+    Some(super::debug::num(super::debug::V::RtHigh)).filter(|&h| h > 0.0)
 }

@@ -30,8 +30,7 @@ static SETTING: Setting = Setting::with_default("DepthBuffer", "FCOP_ZBUFFER", t
 /// lie 0.25...0.4% of their depth above the ground: 0.2% left notches in them).
 /// `FCOP_ZSLACK` for tests.
 pub fn slack() -> f32 {
-    static S: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *S.get_or_init(|| std::env::var("FCOP_ZSLACK").ok().and_then(|v| v.parse().ok()).unwrap_or(0.001))
+    super::debug::num(super::debug::V::ZSlack)
 }
 /// Blended primitives' depth (test only) is pulled nearer by this share.
 pub const TEST_BIAS: f32 = 0.004;

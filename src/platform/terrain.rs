@@ -16,7 +16,6 @@
 use super::{log, mem, wide};
 use crate::rt::{Cpu, ESP, Memory, call_original};
 use crate::ver::Us;
-use std::sync::OnceLock;
 
 pub const BLOCK_VERTICES: Us = Us(0x4534f0);
 /// Nonzero in split screen.
@@ -32,12 +31,11 @@ enum Mode {
 }
 
 fn mode() -> Mode {
-    static M: OnceLock<Mode> = OnceLock::new();
-    *M.get_or_init(|| match std::env::var("FCOP_TERRAIN").as_deref() {
-        Ok("0") => Mode::Game,
-        Ok("check") => Mode::Check,
+    match super::debug::choice(super::debug::V::Terrain) {
+        "0" => Mode::Game,
+        "check" => Mode::Check,
         _ => Mode::Rust,
-    })
+    }
 }
 
 /// Our terrain pass runs (not the game's, nor the check of both).
@@ -315,8 +313,7 @@ pub fn render_terrain(c: &mut Cpu) {
             }
         }
     }
-    static ON: OnceLock<bool> = OnceLock::new();
-    let on = *ON.get_or_init(|| std::env::var("FCOP_SHADOW_TERRAIN").map_or(true, |v| v != "0"));
+    let on = super::debug::choice(super::debug::V::ShadowTerrain) != "0";
     if on && ours() && m.rd8(SPLIT.at()) == 0 && super::shadows::keep_hidden() && super::walker::precise() {
         ring(m, entries, view);
     }
@@ -342,8 +339,7 @@ fn ring(m: &Memory, entries: u32, view: u32) {
     let len = |a: [i32; 3]| (a.iter().map(|&c| (c as f32) * (c as f32)).sum::<f32>()).sqrt();
     let (cell, hu) = (len(step).max(len(cs)), len(up) / 256.0);
     // `FCOP_SHADOW_TERRAIN=all` (a test): every group of the window casts
-    static ALL: OnceLock<bool> = OnceLock::new();
-    let all = *ALL.get_or_init(|| std::env::var("FCOP_SHADOW_TERRAIN").is_ok_and(|v| v == "all"));
+    let all = super::debug::choice(super::debug::V::ShadowTerrain) == "all";
     let (map, blocks) = (m.rd32(MAP.at()), m.rd32(BLOCKS.at()));
     let width = m.rd32(map + 4) as i32;
     let (w0, w1) = (m.rd8(WINDOW.at() + 2 * v) as i8 as i32, m.rd8(WINDOW.at() + 2 * v + 1) as i8 as i32);

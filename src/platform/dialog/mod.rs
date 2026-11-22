@@ -5,6 +5,7 @@
 //! `extend` can change a dialog before it is built and add our own controls (ids from
 //! `FIRST_OURS`), which we handle ourselves: the game's procedure never sees them.
 
+pub mod debug;
 pub mod draw;
 pub mod extend;
 pub mod font;
@@ -19,8 +20,7 @@ use std::time::Duration;
 use template::{Class, Item, Template};
 
 fn trace() -> bool {
-    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("FCOP_DLG_LOG").is_some())
+    crate::platform::debug::flag(crate::platform::debug::V::DlgLog)
 }
 
 /// Our own controls' ids start here.
@@ -916,11 +916,14 @@ fn deliver(c: &mut Cpu, out: Vec<Notify>) {
 }
 
 fn redraw() {
-    let mut s = stack();
-    s.dirty = false;
-    let img = if s.dialogs.is_empty() { None } else { Some((draw::render(&s.dialogs), OV_W as u32, OV_H as u32)) };
-    drop(s);
-    super::window::set_overlay(img);
+    stack().dirty = false;
+    super::window::set_overlay(overlay());
+}
+
+/// The overlay: the open dialogs, the debug menu over them (`debug`).
+pub fn overlay() -> Option<(Vec<u32>, u32, u32)> {
+    let s = stack();
+    debug::overlay_image(&s.dialogs).map(|px| (px, OV_W as u32, OV_H as u32))
 }
 
 fn is_input(msg: u32) -> bool {

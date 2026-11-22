@@ -91,8 +91,7 @@ const DATA: u8 = 6; // from, to, bytes
 const TO_HOST: u32 = u32::MAX;
 
 fn trace() -> bool {
-    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var("FCOP_NET_LOG").is_ok_and(|v| v != "0"))
+    crate::platform::debug::flag(crate::platform::debug::V::NetLog)
 }
 
 macro_rules! net_log {

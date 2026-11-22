@@ -83,15 +83,17 @@ pub fn robot_camera(c: &mut Cpu) {
         if pressed {
             s.last[p] = Some(now);
         }
-        // FCOP_CAMERA=first / behind: player 1 starts with that camera (tests)
-        static START: std::sync::Once = std::sync::Once::new();
-        START.call_once(|| {
-            s.mode[0] = match std::env::var("FCOP_CAMERA").as_deref() {
-                Ok("first") => Mode::FirstPerson,
-                Ok("behind") => Mode::Behind,
+        // FCOP_CAMERA=first / behind (debug menu): player 1 gets that camera, at start and
+        // whenever the choice changes (tests)
+        static CHOSEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+        let chosen = super::debug::get(super::debug::V::Camera);
+        if CHOSEN.swap(chosen, std::sync::atomic::Ordering::Relaxed) != chosen {
+            s.mode[0] = match super::debug::choice(super::debug::V::Camera) {
+                "first" => Mode::FirstPerson,
+                "behind" => Mode::Behind,
                 _ => Mode::Game,
             }
-        });
+        }
         if pressed {
             // ours come after the game's last mode (it skips 5 and 6 when their view is
             // blocked, back to 0 at once), then its first again. First person is left out

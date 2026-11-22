@@ -11,15 +11,14 @@
 //! Redrawn 60 times a second; not in FCOP_SHOT's pictures.
 use super::dialog::draw::glyph;
 use std::collections::VecDeque;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// "Show Frame Rate" in Advanced Graphics (REG_DWORD `ShowFps`, default off; `FCOP_STATS=0/1`).
 static SHOW: super::light::Setting = super::light::Setting::with_default("ShowFps", "FCOP_STATS", false);
 
 pub fn on() -> bool {
-    static SAMPLE: OnceLock<bool> = OnceLock::new();
-    SHOW.get() || *SAMPLE.get_or_init(|| std::env::var_os("FCOP_SAMPLE").is_some_and(|v| v != "0"))
+    SHOW.get() || super::debug::flag(super::debug::V::Sample)
 }
 
 /// The box: saved, and shown (or not) from the next picture on, counting afresh.

@@ -77,14 +77,12 @@ fn graph() -> MutexGuard<'static, Option<Graph>> {
 }
 
 fn trace() -> bool {
-    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("FCOP_VIDEO_LOG").is_some())
+    crate::platform::debug::flag(crate::platform::debug::V::VideoLog)
 }
 
 /// `FCOP_NO_VIDEO=1`: videos end at once, as if played to their end (for debugging).
 fn no_video() -> bool {
-    static N: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *N.get_or_init(|| std::env::var("FCOP_NO_VIDEO").is_ok_and(|v| v != "0"))
+    crate::platform::debug::flag(crate::platform::debug::V::NoVideo)
 }
 
 /// The end of a video: EC_COMPLETE queued, the notify message posted.

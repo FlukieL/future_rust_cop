@@ -17,7 +17,6 @@ use super::glide::{self, Call};
 use super::{light, log, mem};
 use crate::rt::{Cpu, ESP, Memory, call_original};
 use crate::ver::Us;
-use std::sync::OnceLock;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -32,12 +31,11 @@ pub fn ours() -> bool {
 }
 
 fn mode() -> Mode {
-    static M: OnceLock<Mode> = OnceLock::new();
-    *M.get_or_init(|| match std::env::var("FCOP_WALK").as_deref() {
-        Ok("0") => Mode::Game,
-        Ok("check") => Mode::Check,
+    match super::debug::choice(super::debug::V::Walk) {
+        "0" => Mode::Game,
+        "check" => Mode::Check,
         _ => Mode::Rust,
-    })
+    }
 }
 
 /// The game's resolution index; the modes' widths and heights (20 bytes a mode).

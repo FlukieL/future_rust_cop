@@ -48,9 +48,7 @@ fn index() -> &'static Index {
     static INDEX: OnceLock<Index> = OnceLock::new();
     INDEX.get_or_init(|| {
         let mut files = HashMap::new();
-        if std::env::var_os("FCOP_HD").is_none_or(|v| v != "0") {
-            scan(&folder(), &mut files);
-        }
+        scan(&folder(), &mut files);
         // the widest replacement gives the scale (pages are 256 wide)
         let widest = files.values().filter_map(|p| png_size(p)).map(|(w, _)| w).max().unwrap_or(256);
         let scale = (widest / 256).clamp(1, MAX_SCALE).next_power_of_two().min(MAX_SCALE);
@@ -111,6 +109,10 @@ pub fn hash(format: u32, w: u32, h: u32, texels: &[u8]) -> u64 {
 /// export` wrote and nobody changed) is none.
 pub fn find(key: u64, w: u32, h: u32, original: &[u8]) -> Option<Arc<Image>> {
     static CACHE: Mutex<VecDeque<(u64, Option<Arc<Image>>)>> = Mutex::new(VecDeque::new());
+    // (off in the debug menu: new downloads keep the original)
+    if !super::debug::flag(super::debug::V::Hd) {
+        return None;
+    }
     let path = index().files.get(&key)?;
     let mut cache = CACHE.lock().unwrap();
     if let Some(k) = cache.iter().position(|(h, _)| *h == key) {

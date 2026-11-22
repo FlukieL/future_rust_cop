@@ -36,7 +36,6 @@ use super::light::Setting;
 use glow::HasContext;
 use std::collections::HashMap;
 use std::cell::RefCell;
-use std::sync::OnceLock;
 
 static SETTING: Setting = Setting::with_default("AmbientOcclusion", "FCOP_SSAO", false);
 
@@ -63,8 +62,7 @@ pub fn traced() -> bool {
 
 /// The AO's rays a pixel (`FCOP_RT_AO_RAYS=<n>`, 1...16, default 4).
 pub fn rt_rays() -> u32 {
-    static N: OnceLock<u32> = OnceLock::new();
-    *N.get_or_init(|| std::env::var("FCOP_RT_AO_RAYS").ok().and_then(|v| v.parse::<u32>().ok()).map_or(4, |n| n.clamp(1, 16)))
+    super::debug::num(super::debug::V::RtAoRays) as u32
 }
 
 /// Something needs the depth (AO, dynamic lights, shadows, the heat shimmer, the depth buffer).
@@ -80,14 +78,13 @@ pub fn set_enabled(on: bool) {
 /// `FCOP_GBUFFER`: 0 the picture, 1 the depth, 2 the AO (with the sun's shadow), 3 the dynamic
 /// lights, 4 the sun's shadow alone.
 pub(super) fn debug_view() -> i32 {
-    static V: OnceLock<i32> = OnceLock::new();
-    *V.get_or_init(|| match std::env::var("FCOP_GBUFFER").as_deref() {
-        Ok("depth") => 1,
-        Ok("ao") => 2,
-        Ok("lights") => 3,
-        Ok("shadows") => 4,
+    match super::debug::choice(super::debug::V::GBuffer) {
+        "depth" => 1,
+        "ao" => 2,
+        "lights" => 3,
+        "shadows" => 4,
         _ => 0,
-    })
+    }
 }
 
 /// A fast hash for the points' keys (std's SipHash cost most of the time spent here).
@@ -276,8 +273,7 @@ const STRENGTH: f32 = 1.0;
 /// A rise above a point's surface smaller than this (object units, plus 0.4% of the depth) does
 /// not occlude it (`FCOP_AO_STEP` for tests).
 fn step() -> f32 {
-    static S: OnceLock<f32> = OnceLock::new();
-    *S.get_or_init(|| std::env::var("FCOP_AO_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(8.0))
+    super::debug::num(super::debug::V::AoStep)
 }
 
 pub(super) const VS: &str = r#"

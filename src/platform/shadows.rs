@@ -209,7 +209,7 @@ pub const SUN_LENGTH: f32 = 900.0;
 /// own drawing in its usual view from above (casters there reach ~20000, half of them past
 /// 8000): 12000 cut a sixth of them and faded the shadow out from 9600, the upper half of the
 /// picture, so shadows faded in as the camera came nearer (walking forward).
-const FAR: f32 = 40000.0;
+pub(super) const FAR: f32 = 40000.0;
 
 /// The cameras of this frame's views, in the order they were first projected with: the
 /// camera's address, the sun in its view space and the view's translation (object units).
@@ -332,10 +332,6 @@ thread_local! {
 }
 
 /// A test switch (`FCOP_<name>=0` off).
-fn switch(name: &str, cell: &'static std::sync::OnceLock<bool>) -> bool {
-    *cell.get_or_init(|| std::env::var(name).map_or(true, |v| v != "0"))
-}
-
 /// The display list has room to spare (the game never checks it).
 fn room() -> bool {
     let m = mem();
@@ -350,8 +346,7 @@ fn room() -> bool {
 pub fn nclip(c: &mut crate::rt::Cpu) {
     use crate::rt::EAX;
     crate::rt::call_original(c, NCLIP.at());
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if c.r[EAX] == 0 || !switch("FCOP_SHADOW_FACES", &ON) || !map() || !super::walker::precise() || !super::walk::ours() || !room() {
+    if c.r[EAX] == 0 || !super::debug::flag(super::debug::V::ShadowFaces) || !map() || !super::walker::precise() || !super::walk::ours() || !room() {
         return;
     }
     // the face's record is the next one (0x428690 makes it right after)
@@ -364,8 +359,7 @@ pub fn nclip(c: &mut crate::rt::Cpu) {
 /// seen from their back threw no shadow until turned toward the camera): on with the turned-away
 /// faces, our terrain pass (not its check), only while the display list has room.
 pub fn keep_hidden() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    switch("FCOP_SHADOW_FACES", &ON) && map() && super::walker::precise() && super::walk::ours() && super::terrain::ours() && room()
+    super::debug::flag(super::debug::V::ShadowFaces) && map() && super::walker::precise() && super::walk::ours() && super::terrain::ours() && room()
 }
 
 /// The next record (at the display list's end) is a turned-away terrain tile: only casting.
@@ -406,8 +400,7 @@ pub fn actors_draw(c: &mut crate::rt::Cpu) {
     let m = mem();
     let view = m.rd32(c.r[crate::rt::ESP] + 4);
     crate::rt::call_original(c, ACTORS_DRAW.at());
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !switch("FCOP_SHADOW_RING", &ON) || !map() || !super::walker::precise() || !super::walk::ours() || m.rd32(SPLIT.at()) != 0 || view > 3 {
+    if !(super::debug::choice(super::debug::V::ShadowRing) != "0") || !map() || !super::walker::precise() || !super::walk::ours() || m.rd32(SPLIT.at()) != 0 || view > 3 {
         return;
     }
     let (n, list) = (m.rd32(VISIBLE_COUNT.at() + 4 * view) as i32, m.rd32(VISIBLE_LIST.at() + 4 * view));
@@ -470,8 +463,7 @@ const RING_CELLS: i32 = 2;
 fn static_objects(c: &mut crate::rt::Cpu, view: u32) -> u32 {
     let m = mem();
     let grid = m.rd32(GRID.at());
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if grid == 0 || !switch("FCOP_SHADOW_STATIC", &ON) {
+    if grid == 0 || !super::debug::flag(super::debug::V::ShadowStatic) {
         return 0;
     }
     let (w, h) = (m.rd32(GRID_WIDTH.at()) as i32, m.rd32(GRID_HEIGHT.at()) as i32);
@@ -526,25 +518,22 @@ pub fn ring_shown() -> bool {
 /// `FCOP_SHADOW_RING=all` (a test): the ring draws the visible actors and static objects too, its shadows
 /// should lie exactly on theirs.
 fn ring_all() -> bool {
-    static A: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *A.get_or_init(|| std::env::var("FCOP_SHADOW_RING").is_ok_and(|v| v == "all"))
+    super::debug::choice(super::debug::V::ShadowRing) == "all"
 }
 
 /// How far beyond a thing the ring looks for its shadow along the sun's rays (object units, on
 /// top of 2.3 radii): a thing this high above the ground throws its shadow ~1.1 times as far.
 /// `FCOP_SHADOW_REACH` for tests.
-const RING_REACH: f32 = 2000.0;
+pub(super) const RING_REACH: f32 = 2000.0;
 
 pub fn ring_reach() -> f32 {
-    static R: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *R.get_or_init(|| std::env::var("FCOP_SHADOW_REACH").ok().and_then(|v| v.parse().ok()).unwrap_or(RING_REACH))
+    super::debug::num(super::debug::V::ShadowReach)
 }
 
 /// `FCOP_SHADOW_RING=wide` (a test): the ring draws everything beyond the near plane, not only
 /// what may cast into the view; the shadows should be the same.
 pub fn ring_wide() -> bool {
-    static A: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *A.get_or_init(|| std::env::var("FCOP_SHADOW_RING").is_ok_and(|v| v == "wide"))
+    super::debug::choice(super::debug::V::ShadowRing) == "wide"
 }
 
 /// `glide` kept an extra triangle of `kind` (`cast_kind`) as a caster, or not.
@@ -571,9 +560,8 @@ pub fn cast_kind(record: u32) -> u8 {
 
 /// The picture is drawn: the list is made anew.
 pub fn forget_faces() {
-    static LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let log = *LOG.get_or_init(|| std::env::var("FCOP_SHADOW_LOG").is_ok_and(|v| v != "0")) && N.fetch_add(1, Relaxed) % 300 == 0;
+    let log = super::debug::flag(super::debug::V::ShadowLog) && N.fetch_add(1, Relaxed) % 300 == 0;
     EXTRA.with_borrow_mut(|e| {
         if log {
             let peak = PEAK.swap(0, Relaxed);
@@ -673,8 +661,7 @@ pub fn next_strength() {
 
 /// The far end of the casters (`FCOP_SHADOW_FAR` for tests).
 pub fn far() -> f32 {
-    static F: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var("FCOP_SHADOW_FAR").ok().and_then(|v| v.parse().ok()).unwrap_or(FAR))
+    super::debug::num(super::debug::V::ShadowFar)
 }
 
 /// GLSL after `ao::COMMON`: how much of the way from p (normal n) toward `dir` (view space,

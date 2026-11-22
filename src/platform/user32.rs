@@ -112,8 +112,7 @@ pub fn key_down(vk: u8) -> bool {
 }
 
 fn trace_msg() -> bool {
-    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("FCOP_TRACE_MSG").is_some())
+    crate::platform::debug::flag(crate::platform::debug::V::TraceMsg)
 }
 
 /// Call a window's procedure.
@@ -192,7 +191,7 @@ fn poll(wait: Duration) {
                     }
                 }
             }
-            Input::Focus(true) | Input::Poke(..) | Input::Cheat(_) | Input::Pad(..) => {}
+            Input::Focus(true) | Input::Poke(..) | Input::Cheat(_) | Input::Pad(..) | Input::DebugMenu => {}
         }
     }
     let now = super::kernel32::ms_since_start();

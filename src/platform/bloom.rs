@@ -118,8 +118,7 @@ void main() {
 
 /// The glow alone (`FCOP_GBUFFER=bloom`): the picture replaced.
 fn showing() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("FCOP_GBUFFER").as_deref() == Ok("bloom"))
+    super::debug::choice(super::debug::V::GBuffer) == "bloom"
 }
 
 /// The passes' programs and textures.

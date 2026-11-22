@@ -30,7 +30,6 @@ use crate::ver::Us;
 use super::glide::{self, View};
 use super::{light, mem, wide};
 use crate::rt::{Cpu, ESP, call_original};
-use std::sync::OnceLock;
 
 pub const GLIDE_WALKER: Us = Us(0x4393e0);
 /// The walker's jump table of resolution cases (indices 4..10) and its unscaled path.
@@ -49,8 +48,7 @@ const GAME_STATE: Us = Us(0x511fb8);
 const ENDING: u32 = 0xd;
 
 pub fn precise() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("FCOP_PRECISE").map_or(true, |v| v != "0"))
+    super::debug::flag(super::debug::V::Precise)
 }
 
 struct Record {
