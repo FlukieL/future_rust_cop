@@ -221,6 +221,9 @@ struct Camera {
     t: [f32; 3],
     /// the shadow map's x and y axes (world-fixed) in view space
     axes: [[f32; 3]; 2],
+    /// the camera's matrix (rows) and translation (`motion.rs`)
+    rot: [[f32; 3]; 3],
+    mt: [f32; 3],
 }
 
 /// Two axes across the direction `az` (unit): right and up of a view along it.
@@ -254,7 +257,13 @@ pub fn camera() {
     let axes = [view(ax), view(ay)];
     // the view's translation: -(matrix * position), 20.12 = camera space; object units / 16
     let t = [0, 1, 2].map(|i| m.rd32(cam + TRANSLATION + 4 * i) as i32 as f32 / 16.0);
-    v.push(Camera { cam, sun: d, t, axes });
+    // for the motion vectors: camera space = (world - c / 16) * C (`scene.rs`), as rows R = C^T
+    // and translation -R c / 16
+    let c = |k: u32| m.rd32(cam + 0x28 + 4 * k) as i32 as f32 / 65536.0;
+    let place = [0, 1, 2].map(|k| m.rd32(cam + 0x7c + 4 * k) as i32 as f32 / 16.0);
+    let rot: [[f32; 3]; 3] = std::array::from_fn(|j| std::array::from_fn(|i| c(3 * i as u32 + j as u32)));
+    let mt = [0, 1, 2].map(|j| -(0..3).map(|i| rot[j][i] * place[i]).sum::<f32>());
+    v.push(Camera { cam, sun: d, t, axes, rot, mt });
 }
 
 /// Toward the sun (unit) in the view space of the camera in use (x right, y up, z ahead: the
@@ -283,22 +292,27 @@ pub struct NextView {
     pub sun: [f32; 3],
     pub origin: [f32; 3],
     pub axes: [[f32; 3]; 2],
+    /// which view of the picture this is (0...3), and its camera (`motion.rs`; None: none seen)
+    pub index: usize,
+    pub camera: Option<super::motion::Camera>,
 }
 
 pub fn next_view() -> NextView {
     let mut done = DONE.lock().unwrap();
     let v = VIEWS.lock().unwrap();
+    let index = (*done).min(3);
     let l = v.get(*done).or(v.last());
     *done += 1;
     let k = super::wide::k();
     let Some(l) = l else {
         let (ax, ay) = sun_axes([0.0, -1.0, 0.0]);
-        return NextView { sun: [0.0, 1.0, 0.0], origin: [0.0; 3], axes: [ax, ay] };
+        return NextView { sun: [0.0, 1.0, 0.0], origin: [0.0; 3], axes: [ax, ay], index, camera: None };
     };
     let (d, t) = (l.sun, l.t);
     // x / k on the axes: dot(K p, K^-1 a) = dot(p, a)
     let a = l.axes.map(|a| [a[0] / k, a[1], a[2]]);
-    NextView { sun: unit([d[0] * k, d[1], d[2]]), origin: [t[0] * k, t[1], t[2]], axes: a }
+    let camera = Some(super::motion::Camera { rot: l.rot, t: l.mt, k });
+    NextView { sun: unit([d[0] * k, d[1], d[2]]), origin: [t[0] * k, t[1], t[2]], axes: a, index, camera }
 }
 
 /// A model face's winding test (called by 0x428690, model_face_draw, for its triangles and

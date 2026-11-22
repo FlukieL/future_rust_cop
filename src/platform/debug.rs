@@ -42,7 +42,7 @@ macro_rules! vars {
 const WALK: &[(&str, &str)] = &[("", "Ours"), ("0", "Game's"), ("check", "Check")];
 
 vars! {
-    GBuffer: "FCOP_GBUFFER", "G-buffer view", 0, Kind::Choice(&[("", "Picture"), ("depth", "Depth"), ("ao", "AO"), ("lights", "Lights"), ("shadows", "Shadows"), ("scene", "Scene lines"), ("rt", "Ray traced (Vulkan)"), ("effects", "Effects"), ("bloom", "Bloom")]);
+    GBuffer: "FCOP_GBUFFER", "G-buffer view", 0, Kind::Choice(&[("", "Picture"), ("depth", "Depth"), ("ao", "AO"), ("lights", "Lights"), ("shadows", "Shadows"), ("scene", "Scene lines"), ("rt", "Ray traced (Vulkan)"), ("effects", "Effects"), ("bloom", "Bloom"), ("motion", "Motion vectors"), ("reproject", "Reprojection check")]);
     RtHigh: "FCOP_RT_HIGH", "RT view from above", 0, Kind::Num(0.0, 0.0, 100000.0);
     Camera: "FCOP_CAMERA", "Player 1 camera", 0, Kind::Choice(&[("", "Game's"), ("first", "First person"), ("behind", "Chase")]);
     NoVideo: "FCOP_NO_VIDEO", "Skip videos", 0, Kind::Flag(false);

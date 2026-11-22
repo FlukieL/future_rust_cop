@@ -67,7 +67,7 @@ pub fn rt_rays() -> u32 {
 
 /// Something needs the depth (AO, dynamic lights, shadows, the heat shimmer, the depth buffer).
 pub fn depth_wanted() -> bool {
-    enabled() || super::zbuffer::enabled() || super::lights::enabled() || super::shadows::enabled() || super::heat::enabled() || super::bloom::enabled() || super::glide::perspective()
+    enabled() || super::motion::wanted() || super::zbuffer::enabled() || super::lights::enabled() || super::shadows::enabled() || super::heat::enabled() || super::bloom::enabled() || super::glide::perspective()
 }
 
 /// The Advanced Graphics dialog's OK: saved, and used from the next frame on.

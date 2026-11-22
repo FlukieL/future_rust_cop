@@ -176,11 +176,15 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
 
 ## Step 3: motion vectors and jitter
 
-- [ ] Motion vectors per pixel: our scene rasterized with this picture's and the last
+- [x] The camera's motion (2026-11-22, `motion.rs`): per pixel from the depth into the last
+      picture's view (true inverse of the camera matrix: the game's are not orthonormal);
+      `FCOP_GBUFFER=reproject` black when walking and turning but for moving things.
+- [ ] Moving things' motion per pixel: our scene rasterized with this picture's and the last
       picture's transforms and cameras. Used where its depth matches the game's depth.
       Elsewhere (effects, sprites, things the scene lacks) only the camera's motion from
       the depth.
-- [ ] Vectors between shown pictures, not between game frames (pictures come between frames).
+- [x] Vectors between shown pictures, not between game frames (pictures come between frames):
+      the interpolated camera of each picture.
 - [ ] Jitter: a Halton (2, 3) subpixel offset added in the projection hooks (0x457340
       objects, 0x453740 terrain, 0x457140 sprites) in 2560x1920 units. The HUD stays still.
 - [ ] Check: `FCOP_GBUFFER=motion` (colour by direction). A reprojected last picture must

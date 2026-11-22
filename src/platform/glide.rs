@@ -233,6 +233,7 @@ struct Glide {
     heat: Option<super::heat::Heat>,
     /// the bloom's pass (`bloom.rs`)
     bloom: Option<super::bloom::Bloom>,
+    motion: Option<super::motion::Motion>,
     tonemap: Option<super::tonemap::Pass>,
 }
 
@@ -845,6 +846,7 @@ impl Glide {
                 heat_sources: Vec::new(),
                 heat: None,
                 bloom: None,
+                motion: None,
                 tonemap: None,
             }
         }
@@ -1745,6 +1747,9 @@ fn sst_win_close(_: &mut Cpu) -> u32 {
         if let Some(mut s) = g.bloom.take() {
             s.delete(gl);
         }
+        if let Some(mut s) = g.motion.take() {
+            s.delete(gl);
+        }
         if let Some(mut s) = g.tonemap.take() {
             s.delete(gl);
         }
@@ -1912,6 +1917,10 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk
         // last: the picture back into 0..1 (the HUD follows unmapped)
         if g.target_hdr {
             g.tonemap.get_or_insert_with(|| super::tonemap::Pass::new(gl)).run(gl, target, colour, clip, super::tonemap::curve());
+        }
+        // the motion vectors (PLAN-RTX.md step 3): the camera's, from the depth (after the rest: FCOP_GBUFFER=motion shows them over the picture)
+        if let Some(cam) = next.camera.filter(|_| super::motion::wanted()) {
+            g.motion.get_or_insert_with(|| super::motion::Motion::new(gl)).run(gl, tex, ms, target, colour, clip, next.index, cam);
         }
     }
 }

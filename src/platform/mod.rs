@@ -32,6 +32,7 @@ pub mod kernel32;
 pub mod light;
 pub mod lights;
 pub mod menupad;
+pub mod motion;
 pub mod misc;
 pub mod record;
 pub mod sample;

@@ -554,6 +554,18 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   affine (oow = 1.0). With the depth (`ao::depths`, which returns whether every vertex is a
   projected point) the shader interpolates s/z, t/z, 1/z and divides; primitives with a
   borrowed z stay affine (vertex mode bit 3).
+- `motion.rs`: motion vectors (PLAN-RTX.md step 3), so far the camera's: per pixel of a view where
+  its point was in the last picture shown (pixels, last minus now; RG16F). Each view's camera
+  (`shadows::camera`: C +0x28, c +0x7c, camera space = (world - c / 16) * C as `scene.rs`; the
+  matrix +0x58 with the translation +0x4c did not fit together while turning) kept per view
+  (`NextView::index` / `camera`); the pictures between frames set the interpolated camera, so
+  vectors are between pictures shown. Place from the depth (`ao::COMMON`'s P), into the last
+  view by m = R0 * R1^-1 (true inverse in f64: the matrices are not orthonormal, 16.16 and
+  linearly interpolated; R1^T moved turning pictures by up to 14 pixels). No depth: infinitely
+  far. Made when wanted (`motion::wanted`, the depth then too), at the end of `glide::post_3d`.
+  `FCOP_GBUFFER=motion` colours them (hue direction, brightness length up to 16 px),
+  `=reproject` shows the last picture moved by them less this one (x4): black where right
+  (moving things not yet: the robot shows).
 - `wide.rs`: widescreen (Hor+). k = (4/3) / aspect scales camera-space x before the
   projections (0x453740 terrain vertex, 0x457340 object points, 0x457140 sprites) and the
   sphere view tests (0x452fd0 terrain cells, 0x4572a0 objects); target markers (0x435330,
