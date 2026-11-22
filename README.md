@@ -56,14 +56,36 @@ What is new compared to the original:
 - Mouse buttons, including Back/X1 and Forward/X2, can be assigned in the Keyboard dialog:
   right, middle and side buttons after selecting an action; assign left by clicking the already
   selected action a second time
-- Network play over TCP/IP (Host Game / Join Game; port 47624, type the host's address in
-  the Join dialog)
+- Network play over TCP/IP (Host Game / Join Game), see below
 - The arrow keys for player 1, and a camera close behind the robot
 - Replacement textures (HD textures), see below
 - Videos as large as the window allows, centred, with their own aspect
 - `fcop export-sounds` (in a terminal, in fcop's folder) writes the missions' sound effects,
   voices and music to `game_files/Sounds` as WAV files, each different one once
   (`sounds.txt` lists which missions use it)
+
+### Network play
+
+One computer chooses Host Game, the others Join Game. Only the host needs open ports,
+incoming:
+
+- TCP 47624: the players who join connect here; all game data goes this way
+- UDP 47624: the Join dialog looks for games on the local network
+
+The computers that join only connect outwards; they need no open ports.
+
+On Windows, the first time you host, Windows asks whether fcop may use the network: allow it
+for private networks, and that is all. If you declined, add the rules by hand (PowerShell as
+administrator):
+
+```powershell
+New-NetFirewallRule -DisplayName "Future Cop TCP" -Direction Inbound -Protocol TCP -LocalPort 47624 -Action Allow -Profile Private
+New-NetFirewallRule -DisplayName "Future Cop UDP" -Direction Inbound -Protocol UDP -LocalPort 47624 -Action Allow -Profile Private
+```
+
+If Join Game does not find the host (another subnet, a VPN), type the host's IP address into
+"Host Address" in the Join dialog: it then asks that computer directly. Over the internet the
+host's router has to forward TCP and UDP 47624 to the host.
 
 ### Replacement textures
 
