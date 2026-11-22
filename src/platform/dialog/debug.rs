@@ -4,7 +4,7 @@
 //! it instead of the game (`window.rs`). Drawn over the game's own dialogs (`overlay_image`).
 
 use super::template::{Class, Item, Template};
-use super::{Dialog, Kind, Msg, Notify, OV_H};
+use super::{Dialog, Kind, Msg, Notify, OV_H, OV_W};
 use crate::platform::debug::{self, PAGES, VARS};
 use std::sync::Mutex;
 
@@ -86,7 +86,7 @@ fn init(d: &mut Dialog) {
 }
 
 /// Only the chosen page's rows shown, one below the other, Close below them; the panel at the
-/// overlay's left edge (the picture stays visible beside it).
+/// overlay's right edge (the picture stays visible beside it; the frame rate display is top left).
 fn relayout(d: &mut Dialog, page: &mut usize) {
     *page = d.controls.iter().find(|c| c.id == PAGE).and_then(|c| match &c.kind {
         Kind::Combo { sel, .. } => Some(*sel as usize),
@@ -116,8 +116,8 @@ fn relayout(d: &mut Dialog, page: &mut usize) {
         c.rect[3] = c.rect[1] + h;
     }
     d.rect[3] = at(y + 24);
-    // at the left edge, from the top
-    let (dx, dy) = (8 - d.rect[0], 8 - d.rect[1]);
+    // at the right edge, from the top
+    let (dx, dy) = (OV_W - 8 - d.rect[2], 8 - d.rect[1]);
     d.rect = [d.rect[0] + dx, d.rect[1] + dy, d.rect[2] + dx, (d.rect[3] + dy).min(OV_H - 8)];
     for c in &mut d.controls {
         c.rect = [c.rect[0] + dx, c.rect[1] + dy, c.rect[2] + dx, c.rect[3] + dy];

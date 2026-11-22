@@ -704,7 +704,8 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   game runs: no modal dialog, the game goes on beneath it (changes seen at once), its input goes to
   the menu while it is open (`window.rs` collects it during the pump, handles it after: the host is
   borrowed during the pump; the game's held keys are let go when it opens; the cursor is free),
-  drawn over the game's dialogs (`dialog::overlay`). Pages Views, Renderer, Shadows, Logs,
+  drawn over the game's dialogs (`dialog::overlay`) at the overlay's right edge (the frame rate display is
+  top left). Pages Views, Renderer, Shadows, Logs,
   Performance; each change is logged (`debug: FCOP_X = v`). Esc or Close end it, Enter only
   applies. `FCOP_INPUT` item `debugmenu` toggles it (scripted moves, left clicks and keys go to it
   while open); test `dialog::debug::tests::pages` (`FCOP_DLG_PNG=<dir>` writes the pages). New
