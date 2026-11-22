@@ -134,8 +134,9 @@ fn swap_interval(vsync: bool) -> SwapInterval {
 }
 
 impl Gl {
-    /// Create the window with an OpenGL 3.3 context.
-    pub fn new(el: &ActiveEventLoop, attrs: WindowAttributes) -> (Window, Gl) {
+    /// Create the window with an OpenGL 3.3 context. `vsync` is passed in: the Linux start
+    /// window (`fcop --splash`, a process of its own) has no game folder to read settings from.
+    pub fn new(el: &ActiveEventLoop, attrs: WindowAttributes, vsync: bool) -> (Window, Gl) {
         let template = glutin::config::ConfigTemplateBuilder::new().with_alpha_size(8);
         let (win, config) = glutin_winit::DisplayBuilder::new()
             .with_window_attributes(Some(attrs))
@@ -153,7 +154,6 @@ impl Gl {
         let surface = unsafe { display.create_window_surface(&config, &sattrs) }.expect("cannot create the GL surface");
         let context = context.make_current(&surface).expect("cannot make the GL context current");
         // the game paces itself, with V-Sync up to the screen's rate (`fps::vsync`)
-        let vsync = super::fps::vsync();
         match surface.set_swap_interval(&context, swap_interval(vsync)) {
             Ok(()) => super::log!("gl: V-Sync {}", if vsync { "on" } else { "off" }),
             Err(e) => super::log!("warn: V-Sync {}: {e}", if vsync { "on" } else { "off" }),
@@ -204,9 +204,10 @@ impl Gl {
     }
 
     /// Draw the shown picture and the overlay into the window (w x h), letterboxed; with `shot`,
-    /// read back the picture's area as 0RGB pixels.
-    pub fn draw(&mut self, w: u32, h: u32, shot: bool) -> Option<(Vec<u32>, u32, u32)> {
-        let stats = super::stats::on().then(super::stats::pixels);
+    /// read back the picture's area as 0RGB pixels; with `stats`, the frame rate display on top
+    /// (passed in, as `new`'s V-Sync: the start window has no settings).
+    pub fn draw(&mut self, w: u32, h: u32, shot: bool, stats: bool) -> Option<(Vec<u32>, u32, u32)> {
+        let stats = stats.then(super::stats::pixels);
         let gl = &self.gl;
         let (tex, fw, fh, words, gamma) = self.shown;
         let (ox, oy, s) = super::window::fit(fw, fh, w, h);

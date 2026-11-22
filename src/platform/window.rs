@@ -622,7 +622,7 @@ impl App {
         }
         let want_shot = shot_due(self.overlay_changed);
         let mark = self.mark_shot.take();
-        if let Some((px, w, h)) = gl.draw(size.width, size.height, want_shot || mark.is_some()) {
+        if let Some((px, w, h)) = gl.draw(size.width, size.height, want_shot || mark.is_some(), super::stats::on()) {
             if want_shot {
                 write_shot(&px, w, h);
                 self.overlay_changed = false;
@@ -653,7 +653,7 @@ impl App {
             Some((w, h)) => attrs.with_inner_size(winit::dpi::PhysicalSize::new(w, h)),
             None => attrs.with_inner_size(LogicalSize::new(1280.0, 960.0)),
         };
-        let (win, gl) = Gl::new(el, attrs);
+        let (win, gl) = Gl::new(el, attrs, super::fps::vsync());
         // to the front, while our start window still has the foreground (Windows lets only the
         // foreground's process bring a window forward)
         win.focus_window();
