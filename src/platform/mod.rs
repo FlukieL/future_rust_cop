@@ -50,6 +50,8 @@ pub mod raytrace;
 pub mod scene;
 #[cfg(windows)]
 pub mod sdk;
+#[cfg(windows)]
+pub mod streamline;
 pub mod vk;
 pub mod window;
 pub mod zbuffer;

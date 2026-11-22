@@ -27,8 +27,16 @@ pub fn wanted() -> bool {
     *W.get_or_init(|| match std::env::var("FCOP_VULKAN").as_deref() {
         Ok("1") => true,
         Ok("0") => false,
-        _ => super::shadows::mode() == super::shadows::Mode::Rays,
+        _ => super::shadows::mode() == super::shadows::Mode::Rays || dlss_wanted(),
     })
+}
+
+/// DLSS needs Vulkan (`streamline.rs`, Windows only).
+fn dlss_wanted() -> bool {
+    #[cfg(windows)]
+    return super::streamline::wanted();
+    #[cfg(not(windows))]
+    false
 }
 
 #[cfg(windows)]
@@ -225,7 +233,16 @@ impl Vk {
     pub fn new(win: &Window, gl: &glow::Context, get: &dyn Fn(&CStr) -> *const c_void) -> Result<Vk, String> {
         let gl_fns = GlFns::load(get)?;
         unsafe {
-            let entry = ash::Entry::load().map_err(|e| format!("no Vulkan loader: {e}"))?;
+            // with DLSS Streamline's interposer is the loader (`streamline.rs`)
+            #[cfg(windows)]
+            let interposer = super::streamline::init();
+            #[cfg(not(windows))]
+            let interposer: Option<std::path::PathBuf> = None;
+            let entry = match &interposer {
+                Some(p) => ash::Entry::load_from(p),
+                None => ash::Entry::load(),
+            }
+            .map_err(|e| format!("no Vulkan loader: {e}"))?;
             let version = entry.try_enumerate_instance_version().ok().flatten().unwrap_or(vk::API_VERSION_1_0);
             if version < vk::API_VERSION_1_1 {
                 return Err("Vulkan 1.1 is needed".into());
@@ -335,6 +352,10 @@ impl Vk {
             }
             let info = info.enabled_extension_names(&ext_ptrs);
             let device = instance.create_device(phys, &info, None).map_err(err("vkCreateDevice"))?;
+            #[cfg(windows)]
+            if interposer.is_some() && super::streamline::supported(vk::Handle::as_raw(phys) as *const c_void) {
+                super::log!("streamline: DLSS supported on {name}");
+            }
             let rt = match rt {
                 true => super::raytrace::Rt::new(&instance, &device, phys).map_err(|e| super::log!("error: raytrace: {e}")).ok(),
                 false => None,

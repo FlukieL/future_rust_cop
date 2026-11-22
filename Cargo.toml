@@ -43,7 +43,9 @@ required-features = ["difftest"]
 [target.'cfg(windows)'.dependencies]
 # HTTPS for the DLSS download (`platform::sdk`, Windows only as Streamline)
 ureq = { version = "3", default-features = false, features = ["rustls"] }
-windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+# Streamline's sl.interposer.dll (`platform::streamline`)
+libloading = "0.8"
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_Security", "Win32_Security_WinTrust", "Win32_Security_Cryptography"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

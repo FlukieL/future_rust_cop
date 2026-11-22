@@ -51,6 +51,7 @@ vars! {
     Walk: "FCOP_WALK", "Display list walker", 1, Kind::Choice(WALK);
     Terrain: "FCOP_TERRAIN", "Terrain pass", 1, Kind::Choice(WALK);
     Hd: "FCOP_HD", "Replacement textures", 1, Kind::Flag(true);
+    Dlss: "FCOP_DLSS", "DLSS (next start)", 1, Kind::Flag(false);
     Jitter: "FCOP_JITTER", "Jitter (for DLSS)", 1, Kind::Flag(false);
     ZSlack: "FCOP_ZSLACK", "Depth slack", 1, Kind::Num(0.001, 0.0, 0.1);
     AoStep: "FCOP_AO_STEP", "AO step", 1, Kind::Num(8.0, 0.0, 100.0);
