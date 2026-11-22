@@ -298,7 +298,9 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   synchronously: GL copies the G-buffer depth (R; MS: sample 0) into a shared RG32F image
   (`vk::Vk::sun_rays`, GL handle closed after glTexStorageMem2DEXT as the present's), signals a
   semaphore; Vulkan builds the view's scene (`scene::take_frame`) and runs
-  `shaders/rt_shadow.comp` (place from depth, pulled toward the camera by 2 + 0.002 z, one ray
+  `shaders/rt_shadow.comp` (place from depth, pulled toward the camera and off the surface along its
+  normal from the depth by 2 + 0.002 z each (toward the camera alone: shadow flicker on ground seen
+  at a flat angle), one ray
   toward the sun, terminate on first hit) writing G = 1 where blocked, signals back; GL waits on
   the GPU, the AO's last pass (`ao::Sun::Traced`, `use_sun` 2) takes G times the N·L fade the
   map has. Keyed texels (lattices, railings, trees) let light through: each triangle's material
@@ -325,7 +327,9 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   `RtAmbientOcclusion` default on, "Ambient Occlusion by Rays" in Advanced Graphics below Light
   Shadows by Rays, `FCOP_RT_AO=0/1`; only while the sun's rays run): the same shader shoots
   `ao::rt_rays` (4, `FCOP_RT_AO_RAYS`) cosine-weighted rays a pixel into the hemisphere above the
-  surface (normal from the depth, as `ao::COMMON`'s N), as long as `ao::RADIUS`, B of the image
+  surface (normal from the depth, as `ao::COMMON`'s N; turned by a hash of the world cell the pixel
+  shows, a power of 2 at most a pixel wide, so a place keeps its rays while the view turns), as
+  long as `ao::RADIUS`, B of the image
   (RGBA32F) = share open; blurred along its surface in two more dispatches
   (`shaders/rt_ao_blur.comp`: 17 pixels across, B into A, then down, A into B, weights by 1/z
   predicted by its slope as `ao.rs`'s BLUR_FS; 7x7 in the last pass was still grainy), the AO's
