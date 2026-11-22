@@ -54,7 +54,20 @@ Sun shadows by ray query work (2026-11-21, `Shadows` 3 "Ray Traced", step 5's fi
   fps); fps from run to run varied by ±7%, the timestamps (`FCOP_RT_TIME=1`, now with the TLAS
   alone and the instance counts) are the measure.
 
-Next:
+Since (2026-11-22, pushed): RT ambient occlusion (step 5, done: 4 hemisphere rays a pixel,
+blurred along the surface, rays turned by world cell: no wandering), shadow rays start off the
+surface along its normal (no flicker on ground seen at a flat angle), the debug menu
+(Ctrl+Shift+D in `--features cheats` builds, `debug.rs`), and step 3's first part: the camera's
+motion vectors (`motion.rs`, `FCOP_GBUFFER=motion` / `reproject`).
+
+Next (where to go on after a break):
+- Step 3, second part: moving things' own motion (robots, vehicles, enemies; in
+  `FCOP_GBUFFER=reproject` the robot is still bright). Idea: the scene's instances
+  (`scene::Instance`, models by their record / actor) need last picture's transform and must
+  be recognised from picture to picture; either our scene rasterized with both transforms, or
+  in the rays' pass a primary ray per pixel (instance hit, object-space point, last transform)
+  where its depth fits the game's. Then jitter (Halton 2,3 in the projection hooks), then
+  step 4 DLSS.
 - Alpha test open points: scrolled terrain textures (tw & 0x800) are tested unscrolled;
   semi-transparent faces (glass, PS1 STP) still cast fully; HD replacement textures' coverage
   is not used (the original page's).
