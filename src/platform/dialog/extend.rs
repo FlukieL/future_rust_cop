@@ -124,11 +124,10 @@ const TONEMAP: u32 = FIRST_OURS + 28;
 const SHADOWS_LABEL: u32 = FIRST_OURS + 29;
 const SHADOW_QUALITY_LABEL: u32 = FIRST_OURS + 30;
 const SHADOW_QUALITY: u32 = FIRST_OURS + 31;
-/// Below the Frame Rate combo (`fps::vsync`).
+/// Below Fullscreen (`fps::vsync`).
 const VSYNC: u32 = FIRST_OURS + 32;
-/// The rows Frame Rate and V-Sync take below the Display Mode list (the left column's rows below
-/// follow them).
-const FRAME_RATE_ROWS: i32 = 34;
+/// The room Frame Rate takes below the Display Mode list (the left column's rows below follow).
+const FRAME_RATE_ROWS: i32 = 22;
 /// Right of Fullscreen: the frame rate display (`stats.rs`).
 const SHOW_FPS: u32 = FIRST_OURS + 33;
 /// Advanced Graphics: the 3D picture's depth test (`zbuffer.rs`).
@@ -386,6 +385,10 @@ pub fn adjust(template: u32, t: &mut Template) {
             // on the same row, where Widescreen is below Filtering
             let x = filtering.map_or(x + 58, |f| f[0] + 58);
             t.items.push(Item { class: Class::Button, id: SHOW_FPS, text: "Show FPS".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, y, 70, r[3] - 1] });
+            // V-Sync below Fullscreen (where the game's own Texture Coloring box, hidden with
+            // Glide, was)
+            let x = filtering.map_or(r[0], |f| f[0]);
+            t.items.push(Item { class: Class::Button, id: VSYNC, text: "V-Sync".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, y + 13, 70, r[3] - 1] });
         }
         if let Some(f) = filtering {
             // an auto check box (BS_AUTOCHECKBOX) right of Filtering
@@ -404,11 +407,9 @@ pub fn adjust(template: u32, t: &mut Template) {
                 t.items.push(Item { class: Class::Button, id: ADVANCED_BUTTON, text: "Advanced Graphics...".into(), style: VISIBLE | TABSTOP, ex_style: 0, rect });
             }
         }
-        // Frame Rate with V-Sync on its own row below it: under the Display Mode list (and its
-        // note) in the left column, the rows below there moved down; from the pause bar (no
-        // Display Mode) at the top of the left column, emptied there from the Processor Select
-        // label on, each label above its combo
-        let vsync = |t: &mut Template, rect| t.items.push(Item { class: Class::Button, id: VSYNC, text: "V-Sync".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect });
+        // Frame Rate: under the Display Mode list (and its note) in the left column, the rows
+        // below there moved down; from the pause bar (no Display Mode) at the top of the left
+        // column, emptied there from the Processor Select label on, each label above its combo
         let row = |t: &mut Template, label_id, id, text: &str, l, c| {
             t.items.push(Item { class: Class::Static, id: label_id, text: text.into(), style: VISIBLE, ex_style: 0, rect: l });
             t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: c });
@@ -419,10 +420,6 @@ pub fn adjust(template: u32, t: &mut Template) {
             for (label_id, id, text) in [(FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate"), (TEXTURES_LABEL, TEXTURES, "Textures"), (MSAA_LABEL, MSAA, "Anti-alias")] {
                 row(t, label_id, id, text, [combo[0], y, w, 8], [combo[0], y + 10, w, 100]);
                 y += 24;
-                if id == FRAME_RATE {
-                    vsync(t, [combo[0], y, w, 9]);
-                    y += 13;
-                }
             }
             return;
         }
@@ -440,7 +437,7 @@ pub fn adjust(template: u32, t: &mut Template) {
                 (false, Some(n)) => n[1] + n[3] + 5,
                 _ => m[1] + 16,
             };
-            // the left column's rows below: their first one goes below V-Sync
+            // the left column's rows below: their first one goes below Frame Rate
             let left = |i: &Item| i.rect[0] < g[0] && ![OK, CANCEL, WINDOW_NOTE, DISPLAY_MODE, RESOLUTION, DISPLAY_MODE_LABEL].contains(&i.id);
             let next = t.items.iter().filter(|i| left(i) && i.rect[1] >= y).map(|i| i.rect[1]).min();
             if let Some(next) = next {
@@ -450,7 +447,6 @@ pub fn adjust(template: u32, t: &mut Template) {
                 }
             }
             row(t, FRAME_RATE_LABEL, FRAME_RATE, "Frame Rate", [m[0], y + 2, 52, 8], [m[0] + 54, y, m[2] - 54, 100]);
-            vsync(t, [m[0], y + 16, m[2], 9]);
         }
         if let Some(g) = group {
             // between the group and the OK button's row, the combos up to the group's right

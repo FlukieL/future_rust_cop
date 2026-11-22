@@ -589,7 +589,7 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   moves it on), places put back after the second view's 0x4114c0; not while a player's view
   shows 0x405cb0 instead of the world. Only with Glide, playing ([0x511fb8] = 4), not paused. Choices 60 ... 300 and unlimited (REG_DWORD
   `FrameRate`, 0 = original 37.5, 0xffffffff unlimited: ~950 fps in the first mission; our combo in Preferences right under the Display Mode list (with Glide the game's note "* Only supported in a window" is hidden; else below it), the left column's rows below moved down; from the pause bar at the top of its left column).
-  V-Sync (REG_DWORD `VSync`, default on, `FCOP_VSYNC=0/1`, box on its own row below the Frame Rate combo):
+  V-Sync (REG_DWORD `VSync`, default on, `FCOP_VSYNC=0/1`, box below Fullscreen in Preferences):
   swap interval 1; a rate at 97% of the display's refresh (`window::refresh_hz`) or above, and
   unlimited, then draws pictures one after another and the swap paces them (our clock beside the
   screen's: a picture 1.4 ms late after the game's own frame missed its refresh, shown twice /
