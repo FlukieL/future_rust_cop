@@ -61,13 +61,8 @@ surface along its normal (no flicker on ground seen at a flat angle), the debug 
 motion vectors (`motion.rs`, `FCOP_GBUFFER=motion` / `reproject`).
 
 Next (where to go on after a break):
-- Step 3, second part: moving things' own motion (robots, vehicles, enemies; in
-  `FCOP_GBUFFER=reproject` the robot is still bright). Idea: the scene's instances
-  (`scene::Instance`, models by their record / actor) need last picture's transform and must
-  be recognised from picture to picture; either our scene rasterized with both transforms, or
-  in the rays' pass a primary ray per pixel (instance hit, object-space point, last transform)
-  where its depth fits the game's. Then jitter (Halton 2,3 in the projection hooks), then
-  step 4 DLSS.
+- Step 3, second part done (moving things' motion, `motion.rs`). Next: jitter (Halton 2,3 in
+  the projection hooks), then step 4 DLSS.
 - Alpha test open points: scrolled terrain textures (tw & 0x800) are tested unscrolled;
   semi-transparent faces (glass, PS1 STP) still cast fully; HD replacement textures' coverage
   is not used (the original page's).
@@ -192,10 +187,12 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
 - [x] The camera's motion (2026-11-22, `motion.rs`): per pixel from the depth into the last
       picture's view (true inverse of the camera matrix: the game's are not orthonormal);
       `FCOP_GBUFFER=reproject` black when walking and turning but for moving things.
-- [ ] Moving things' motion per pixel: our scene rasterized with this picture's and the last
-      picture's transforms and cameras. Used where its depth matches the game's depth.
-      Elsewhere (effects, sprites, things the scene lacks) only the camera's motion from
-      the depth.
+- [x] Moving things' motion per pixel (2026-11-22): the drawn models and parts whose world
+      transform changed, rasterized with this picture's and the last picture's transforms and
+      cameras, where their depth matches the game's. Elsewhere (effects, sprites) only the
+      camera's motion from the depth. In `reproject` the walking, turning robot is dark but
+      for its edges (disocclusion), its light bar's glows and the shading that turns with it.
+      Not followed: vertex animation (models with frames).
 - [x] Vectors between shown pictures, not between game frames (pictures come between frames):
       the interpolated camera of each picture.
 - [ ] Jitter: a Halton (2, 3) subpixel offset added in the projection hooks (0x457340

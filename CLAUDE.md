@@ -564,8 +564,13 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   linearly interpolated; R1^T moved turning pictures by up to 14 pixels). No depth: infinitely
   far. Made when wanted (`motion::wanted`, the depth then too), at the end of `glide::post_3d`.
   `FCOP_GBUFFER=motion` colours them (hue direction, brightness length up to 16 px),
-  `=reproject` shows the last picture moved by them less this one (x4): black where right
-  (moving things not yet: the robot shows).
+  `=reproject` shows the last picture moved by them less this one (x4): black where right.
+  Moving things: the models and parts the game drew (`scene::take_drawn`, world transforms from
+  `scene::check`, whose camera inverse is the true one, `scene::inverse`) are kept per view by
+  record, part number and how often drawn before in the picture (some records are drawn twice);
+  those whose transform changed are rasterized over the camera's vectors with both transforms,
+  only where the game's depth is the triangle's (1% + 4 units). Not followed: vertex animation
+  (frames), effects and sprites (camera's motion only).
 - `wide.rs`: widescreen (Hor+). k = (4/3) / aspect scales camera-space x before the
   projections (0x453740 terrain vertex, 0x457340 object points, 0x457140 sprites) and the
   sphere view tests (0x452fd0 terrain cells, 0x4572a0 objects); target markers (0x435330,

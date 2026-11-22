@@ -61,6 +61,8 @@ thread_local! {
     static BLOCKS: RefCell<HashMap<u32, Block>> = RefCell::new(HashMap::new());
     /// the terrain tiles kept for the view: sect and corners
     static TILES: RefCell<Vec<(u32, [u16; 4])>> = const { RefCell::new(Vec::new()) };
+    /// the models and parts drawn for the last view (`take_drawn`)
+    static MOTION_DRAWN: RefCell<Vec<Instance>> = const { RefCell::new(Vec::new()) };
     /// the last view's scene for the rays
     static LAST: RefCell<Option<Frame>> = const { RefCell::new(None) };
     static GENERATION: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -93,9 +95,21 @@ fn camera() -> ([f64; 9], [f64; 3]) {
     (std::array::from_fn(|k| rd(cam + 0x28 + 4 * k as u32) / 65536.0), std::array::from_fn(|k| rd(cam + 0x7c + 4 * k as u32) / 16.0))
 }
 
-/// x * C^T: a camera-space vector in world space.
+/// x * C^-1: a camera-space vector in world space. The true inverse, not the transpose: the
+/// game's matrices are not quite orthonormal (16.16; pictures between frames interpolate them
+/// linearly, which shrinks them while turning), and the motion vectors put things back into
+/// camera space with C itself.
 fn untilt(c: &[f64; 9], x: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|j| (0..3).map(|i| x[i] * c[3 * j + i]).sum())
+    let inv = inverse(c);
+    std::array::from_fn(|j| (0..3).map(|i| x[i] * inv[3 * i + j]).sum())
+}
+
+/// The inverse of a 3x3 matrix (row-major), by cofactors.
+fn inverse(a: &[f64; 9]) -> [f64; 9] {
+    let at = |i: usize, j: usize| a[3 * (i % 3) + j % 3];
+    let cof = |i: usize, j: usize| at(i + 1, j + 1) * at(i + 2, j + 2) - at(i + 1, j + 2) * at(i + 2, j + 1);
+    let det = (0..3).map(|j| a[j] * cof(0, j)).sum::<f64>();
+    std::array::from_fn(|k| cof(k % 3, k / 3) / det)
 }
 
 /// Our terrain pass projects block `sect` from camera-space `pos` with `rows` / `columns` steps
@@ -185,6 +199,8 @@ fn record_instance(record: u32) -> Option<Instance> {
     }
     let rd = |a: u32| m.rd32(a) as i32 as f64;
     Some(Instance {
+        record,
+        part: 0,
         model,
         list,
         first: 0,
@@ -258,7 +274,13 @@ pub fn rays() -> bool {
 
 /// Instances are collected (for the log, the overlay or the rays).
 fn wanted() -> bool {
-    log_on() || overlay_on() || rays()
+    log_on() || overlay_on() || rays() || super::motion::wanted()
+}
+
+/// The models and parts the game drew for the last view (`overlay` keeps them; `motion.rs`
+/// takes them).
+pub fn take_drawn() -> Vec<Instance> {
+    MOTION_DRAWN.with_borrow_mut(std::mem::take)
 }
 
 /// A view's scene as `raytrace.rs` takes it: the camera (matrix C, position c / 16), widescreen's
@@ -464,6 +486,11 @@ const PART_POINTS: Us = Us(0x4a0f58);
 /// at `list` (guest), times `matrix` (3x3, row vectors, model units) plus `offset`.
 #[derive(Clone, Copy)]
 pub struct Instance {
+    /// model_draw's record (`record_instance`'s too): with `part` it names the instance from
+    /// picture to picture (`motion.rs`)
+    pub record: u32,
+    /// the part's number (0: a model not in parts)
+    pub part: u32,
     pub model: u32,
     pub list: u32,
     pub first: u32,
@@ -510,18 +537,14 @@ pub fn check(p: u32, n: u32) {
     let gm = MATRICES.at() + 0x30 * number;
     let g: Vec<f64> = (0..9).map(|k| rd(gm + 4 * k) / 65536.0).collect();
     let gt: Vec<f64> = (0..3).map(|k| rd(gm + 36 + 4 * k) / 16.0).collect();
-    let cam = m.rd32(CAMERA.at());
-    let c: Vec<f64> = (0..9).map(|k| rd(cam + 0x28 + 4 * k) / 65536.0).collect();
-    let cp: Vec<f64> = (0..3).map(|k| rd(cam + 0x7c + 4 * k) / 16.0).collect();
-    // x * C^T: (x * C^T)_j = sum_i x_i * C[j][i]
-    let untilt = |x: &[f64]| -> [f64; 3] { std::array::from_fn(|j| (0..3).map(|i| x[i] * c[3 * j + i]).sum()) };
+    let (c, cp) = camera();
     let mut matrix = [0.0; 9];
     for r in 0..3 {
-        matrix[3 * r..3 * r + 3].copy_from_slice(&untilt(&g[3 * r..3 * r + 3]));
+        matrix[3 * r..3 * r + 3].copy_from_slice(&untilt(&c, [g[3 * r], g[3 * r + 1], g[3 * r + 2]]));
     }
-    let t = untilt(&gt);
+    let t = untilt(&c, [gt[0], gt[1], gt[2]]);
     let offset: [f64; 3] = std::array::from_fn(|j| t[j] + cp[j]);
-    let inst = Instance { model, list, first, count: n, matrix, offset };
+    let inst = Instance { record, part: number, model, list, first, count: n, matrix, offset };
     let (mut count, mut max, mut sum, mut since) = STATS.get();
     if !parts {
         // against the record: its matrix and its position
@@ -532,7 +555,7 @@ pub fn check(p: u32, n: u32) {
         max = f64::max(max, dr * 1000.0);
     }
     PICTURE.with_borrow_mut(|v| v.push(inst));
-    VIEW_CAMERA.set(Some((std::array::from_fn(|k| c[k]), std::array::from_fn(|k| cp[k]))));
+    VIEW_CAMERA.set(Some((c, cp)));
     if !log_on() {
         return;
     }
@@ -621,6 +644,9 @@ pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f3
     use glow::HasContext;
     let instances = PICTURE.with_borrow_mut(std::mem::take);
     let camera = VIEW_CAMERA.take();
+    if super::motion::wanted() {
+        MOTION_DRAWN.set(instances.clone());
+    }
     if rays() {
         let drawn = DRAWN.with_borrow_mut(std::mem::take);
         let projected: Vec<(u32, Block)> = BLOCKS.with_borrow_mut(std::mem::take).into_iter().collect();
@@ -731,4 +757,22 @@ pub fn overlay(gl: &glow::Context, fbo: glow::Framebuffer, w: u32, h: u32, k: f3
             gl.draw_arrays(glow::LINES, ground_from as i32, (lines.len() - ground_from) as i32);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A matrix times its inverse is the identity (also one not orthonormal).
+    #[test]
+    fn inverse_3x3() {
+        let a = [0.98, 0.1, -0.2, -0.05, 1.01, 0.3, 0.21, -0.28, 0.97];
+        let inv = inverse(&a);
+        for i in 0..3 {
+            for j in 0..3 {
+                let p: f64 = (0..3).map(|k| a[3 * i + k] * inv[3 * k + j]).sum();
+                assert!((p - (i == j) as u8 as f64).abs() < 1e-12, "{i} {j} {p}");
+            }
+        }
+    }
 }
