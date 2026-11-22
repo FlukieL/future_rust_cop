@@ -753,7 +753,11 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   [0x511fc8], 0 at start; issue #19): `ok` saves them as REG_DWORD `Filtering` / `Gamma`,
   `extend::restore` writes them back into memory before the game runs.
   Advanced Graphics (`extend::ADVANCED`): our own dialog, not from the EXE (`extend::template`,
-  no game procedure: its push buttons end it, OK (id 1) runs `extend::ok` first), opened by
+  no game procedure: its push buttons end it, OK (id 1) runs `extend::ok` first; an option that
+  needs another one is indented below it and shown only while that is on: `extend::changed`
+  after every input stacks the shown rows and sizes the dialog (Lit Smoke: lights; Quality: the
+  map; Softness: rays; Rays / Pixel: rays, not Hard; Light Shadows by Rays: rays and lights);
+  test `advanced_layout`, `FCOP_DLG_PNG=<dir>` writes its pictures), opened by
   the "Advanced Graphics..." button below the lighting boxes (3DFX Options, Glide only;
   `After::Ours`): only for the new effects (PLAN.md 2a): Ambient Occlusion, Dynamic Lights. Every
   setting there applies

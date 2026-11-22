@@ -190,39 +190,94 @@ pub fn template(id: u32) -> Template {
     let w = 190;
     let mut items = Vec::new();
     let mut add = |class, id, text: &str, style, rect| items.push(Item { class, id, text: text.into(), style: VISIBLE | style, ex_style: 0, rect });
-    // the new effects, a box each (PLAN.md 2a)
+    // the new effects, a box each (PLAN.md 2a); options that need another one indented below it,
+    // shown only while it is on (`relayout` places the rows)
     add(Class::Button, AMBIENT_OCCLUSION, "Ambient Occlusion", TABSTOP | 3, [7, 10, w - 14, 9]);
     add(Class::Button, DYNAMIC_LIGHTS, "Dynamic Lights", TABSTOP | 3, [7, 22, w - 14, 9]);
-    add(Class::Button, LIT_SMOKE, "Lit Smoke (with Dynamic Lights)", TABSTOP | 3, [7, 34, w - 14, 9]);
+    add(Class::Button, LIT_SMOKE, "Lit Smoke", TABSTOP | 3, [17, 34, w - 24, 9]);
     add(Class::Button, HEAT, "Heat Distortion", TABSTOP | 3, [7, 46, w - 14, 9]);
     add(Class::Button, BLOOM, "Bloom", TABSTOP | 3, [7, 58, w - 14, 9]);
     add(Class::Button, PERSPECTIVE, "Perspective-Correct Textures", TABSTOP | 3, [7, 70, w - 14, 9]);
     add(Class::Button, DEPTH_BUFFER, "Depth Buffer", TABSTOP | 3, [7, 82, w - 14, 9]);
-    // the shadows (`shadows`) and the tone mapping curve (`tonemap`; a list's height is part
-    // of its combo's)
+    // the shadows (`shadows`), the map's quality, the rays' choices, and the tone mapping curve
+    // (`tonemap`; a list's height is part of its combo's)
     add(Class::Static, SHADOWS_LABEL, "Shadows", 0, [7, 100, 66, 8]);
     add(Class::ComboBox, SHADOWS, "", TABSTOP | 3, [76, 98, w - 83, 60]);
-    // the map's quality only while the map is offered; the rows below move up without it
-    let up = if crate::platform::shadows::MAP_OFFERED {
-        add(Class::Static, SHADOW_QUALITY_LABEL, "Shadow Quality", 0, [7, 114, 66, 8]);
+    if crate::platform::shadows::MAP_OFFERED {
+        add(Class::Static, SHADOW_QUALITY_LABEL, "Quality", 0, [17, 114, 56, 8]);
         add(Class::ComboBox, SHADOW_QUALITY, "", TABSTOP | 3, [76, 112, w - 83, 70]);
-        0
-    } else {
-        14
-    };
-    // the ray traced shadows' own choices (used with "Ray Traced")
-    add(Class::Static, RT_SOFT_LABEL, "RT Softness", 0, [7, 128 - up, 66, 8]);
-    add(Class::ComboBox, RT_SOFT, "", TABSTOP | 3, [76, 126 - up, w - 83, 70]);
-    add(Class::Static, RT_RAYS_LABEL, "RT Rays / Pixel", 0, [7, 142 - up, 66, 8]);
-    add(Class::ComboBox, RT_RAYS, "", TABSTOP | 3, [76, 140 - up, w - 83, 70]);
-    add(Class::Button, RT_LIGHTS, "Ray-Traced Light Shadows", TABSTOP | 3, [7, 155 - up, w - 14, 9]);
-    let up = up - 42;
-    add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 128 - up, 66, 8]);
-    add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 126 - up, w - 83, 70]);
+    }
+    add(Class::Static, RT_SOFT_LABEL, "Softness", 0, [17, 128, 56, 8]);
+    add(Class::ComboBox, RT_SOFT, "", TABSTOP | 3, [76, 126, w - 83, 70]);
+    add(Class::Static, RT_RAYS_LABEL, "Rays / Pixel", 0, [17, 142, 56, 8]);
+    add(Class::ComboBox, RT_RAYS, "", TABSTOP | 3, [76, 140, w - 83, 70]);
+    add(Class::Button, RT_LIGHTS, "Light Shadows by Rays", TABSTOP | 3, [17, 155, w - 24, 9]);
+    add(Class::Static, TONEMAP_LABEL, "Tonemapping", 0, [7, 170, 66, 8]);
+    add(Class::ComboBox, TONEMAP, "", TABSTOP | 3, [76, 168, w - 83, 70]);
     // OK (1, the default) and Cancel (2), bottom right
-    add(Class::Button, 1, "OK", TABSTOP | 1, [w - 116, 146 - up, 50, 14]);
-    add(Class::Button, 2, "Cancel", TABSTOP, [w - 57, 146 - up, 50, 14]);
-    Template { style: 0x00c0_0000, title: "Advanced Graphics".into(), rect: [0, 0, w, 166 - up], font: None, items }
+    add(Class::Button, 1, "OK", TABSTOP | 1, [w - 116, 188, 50, 14]);
+    add(Class::Button, 2, "Cancel", TABSTOP, [w - 57, 188, 50, 14]);
+    Template { style: 0x00c0_0000, title: "Advanced Graphics".into(), rect: [0, 0, w, 208], font: None, items }
+}
+
+/// After a change in one of our dialogs: Advanced Graphics shows an option only while what it
+/// needs is on (Lit Smoke: the lights; Quality: the shadow map; Softness, Rays / Pixel: ray traced
+/// shadows, rays only when soft; Light Shadows by Rays: ray traced shadows and the lights), its
+/// shown rows one below the other (dialog units, as the template's spacing), OK and Cancel
+/// below them, the dialog as tall as that.
+pub fn changed(d: &mut Dialog) {
+    if d.template != ADVANCED {
+        return;
+    }
+    use crate::platform::shadows::Mode;
+    let sel = |d: &Dialog, id| {
+        d.controls.iter().find(|c| c.id == id).and_then(|c| match &c.kind {
+            Kind::Combo { items, sel, .. } => items.get(*sel as usize).map(|i| i.1),
+            _ => None,
+        })
+    };
+    let lights = d.controls.iter().any(|c| c.id == DYNAMIC_LIGHTS && c.check != 0);
+    let mode = sel(d, SHADOWS);
+    let (map, rays) = (mode == Some(Mode::Map as u32), mode == Some(Mode::Rays as u32));
+    let soft = sel(d, RT_SOFT).is_some_and(|s| s != 0);
+    // (controls, each one's offset in its row), the row's height, shown
+    let rows: [(&[(u32, i32)], i32, bool); 14] = [
+        (&[(AMBIENT_OCCLUSION, 0)], 12, true),
+        (&[(DYNAMIC_LIGHTS, 0)], 12, true),
+        (&[(LIT_SMOKE, 0)], 12, lights),
+        (&[(HEAT, 0)], 12, true),
+        (&[(BLOOM, 0)], 12, true),
+        (&[(PERSPECTIVE, 0)], 12, true),
+        (&[(DEPTH_BUFFER, 0)], 16, true),
+        (&[(SHADOWS_LABEL, 2), (SHADOWS, 0)], 14, true),
+        (&[(SHADOW_QUALITY_LABEL, 2), (SHADOW_QUALITY, 0)], 14, map),
+        (&[(RT_SOFT_LABEL, 2), (RT_SOFT, 0)], 14, rays),
+        (&[(RT_RAYS_LABEL, 2), (RT_RAYS, 0)], 14, rays && soft),
+        (&[(RT_LIGHTS, 1)], 14, rays && lights),
+        (&[(TONEMAP_LABEL, 2), (TONEMAP, 0)], 14, true),
+        (&[(1, 6), (2, 6)], 26, true),
+    ];
+    let top = d.rect[1] + if d.caption { 14 } else { 0 };
+    let sy = d.scale.1;
+    let mut y = 10;
+    for (ids, h, shown) in rows {
+        let shown = shown && ids.iter().all(|&(id, _)| d.find(id).is_some());
+        for &(id, dy) in ids {
+            let Some(c) = d.control(id) else { continue };
+            c.visible = shown;
+            let height = c.rect[3] - c.rect[1];
+            c.rect[1] = top + ((y + dy) as f32 * sy).round() as i32;
+            c.rect[3] = c.rect[1] + height;
+        }
+        if shown {
+            y += h;
+        }
+    }
+    d.rect[3] = top + (y as f32 * sy).round() as i32;
+    // the focus never rests on a hidden control
+    if d.focus.is_some_and(|k| !d.controls[k].visible) {
+        d.focus = d.controls.iter().position(|c| c.interactive());
+    }
 }
 
 fn renderer() -> String {
@@ -742,6 +797,69 @@ pub fn ok(d: &mut Dialog) {
         });
         if let Some(v) = curve {
             crate::platform::tonemap::set_curve(crate::platform::tonemap::Curve::from_value(v));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Advanced Graphics laid out for a few states; `FCOP_DLG_PNG=<dir>` writes each as a picture.
+    #[test]
+    fn advanced_layout() {
+        use crate::platform::shadows::Mode;
+        let t = template(ADVANCED);
+        for (name, lights, mode, soft) in [("off", false, Mode::Off, 2), ("map", true, Mode::Map, 2), ("rays", true, Mode::Rays, 2), ("rays_hard", false, Mode::Rays, 0)] {
+            let mut d = super::super::Dialog::new(0xda0000, ADVANCED, 0, &t);
+            for c in d.controls.iter_mut() {
+                if c.id == DYNAMIC_LIGHTS {
+                    c.check = lights as u32;
+                }
+                if let Kind::Combo { items, sel, .. } = &mut c.kind {
+                    *items = match c.id {
+                        SHADOWS => crate::platform::shadows::MODES.iter().map(|&(k, n)| (n.to_string(), k as u32)).collect(),
+                        _ => vec![("Hard".into(), 0), ("Soft".into(), 1), ("Softer".into(), 2)],
+                    };
+                    *sel = match c.id {
+                        SHADOWS => mode as i32,
+                        RT_SOFT => soft,
+                        _ => 0,
+                    };
+                    c.sync_combo();
+                }
+            }
+            changed(&mut d);
+            let shown = |id| d.controls.iter().any(|c| c.id == id && c.visible);
+            assert_eq!(shown(LIT_SMOKE), lights);
+            assert_eq!(shown(SHADOW_QUALITY), mode == Mode::Map);
+            assert_eq!(shown(RT_SOFT), mode == Mode::Rays);
+            assert_eq!(shown(RT_RAYS), mode == Mode::Rays && soft != 0);
+            assert_eq!(shown(RT_LIGHTS), mode == Mode::Rays && lights);
+            // shown controls never overlap and stay inside the dialog
+            // (a combo's rectangle holds its open list: closed, 14 pixels at most)
+            let vis: Vec<_> = d.controls.iter().filter(|c| c.visible).map(|c| {
+                let mut r = c.rect;
+                if matches!(c.kind, Kind::Combo { .. }) {
+                    r[3] = r[3].min(r[1] + 14);
+                }
+                (c.id, r)
+            }).collect();
+            for (ia, a) in &vis {
+                assert!(a[3] <= d.rect[3], "{ia} below the dialog");
+                for (ib, b) in &vis {
+                    let apart = a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1];
+                    assert!(ia == ib || apart, "{ia} overlaps {ib}");
+                }
+            }
+            if let Ok(dir) = std::env::var("FCOP_DLG_PNG") {
+                let px = super::super::draw::render(&[d]);
+                let rgba: Vec<u8> = px.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+                let f = std::fs::File::create(format!("{dir}/{name}.png")).unwrap();
+                let mut e = png::Encoder::new(std::io::BufWriter::new(f), 640, 480);
+                e.set_color(png::ColorType::Rgba);
+                e.write_header().unwrap().write_image_data(&rgba).unwrap();
+            }
         }
     }
 }

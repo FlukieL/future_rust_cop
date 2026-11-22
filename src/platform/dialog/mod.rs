@@ -942,6 +942,7 @@ fn run(c: &mut Cpu, mut d: Dialog, param: u32) -> u32 {
     let by_pad = super::menupad::pad_last();
     if let Some(d) = stack().dialogs.iter_mut().find(|d| d.hwnd == hwnd) {
         extend::init(d);
+        extend::changed(d);
         if by_pad {
             d.pad_start();
         }
@@ -980,6 +981,7 @@ fn run(c: &mut Cpu, mut d: Dialog, param: u32) -> u32 {
                 let mut out = Vec::new();
                 if let Some(top) = stack().dialogs.last_mut() {
                     top.input(&m, &mut out);
+                    extend::changed(top);
                 }
                 stack().dirty = true;
                 deliver(c, out);
@@ -1001,6 +1003,7 @@ fn run(c: &mut Cpu, mut d: Dialog, param: u32) -> u32 {
                 for e in pad {
                     top.pad_input(e, &mut out);
                 }
+                extend::changed(top);
             }
             stack().dirty = true;
             deliver(c, out);
