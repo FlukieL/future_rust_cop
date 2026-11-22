@@ -394,9 +394,15 @@ pub fn init(d: &mut Dialog) {
         }
         if let Some(c) = d.control(SHADOWS) {
             if let Kind::Combo { items, sel, .. } = &mut c.kind {
-                // ray traced only with Vulkan presenting
-                let modes = crate::platform::shadows::MODES.iter().filter(|m| m.0 != crate::platform::shadows::Mode::Rays || crate::platform::vk::wanted());
-                *items = modes.map(|&(k, name)| (name.into(), k as u32)).collect();
+                // ray traced: Vulkan presents from the next start (the map until then); a device
+                // without ray queries draws the map
+                use crate::platform::{shadows, vk};
+                let rays = match (shadows::rays_ready(), vk::wanted()) {
+                    (true, _) => "Ray Traced",
+                    (false, false) => "Ray Traced (restart)",
+                    (false, true) => "Ray Traced (not available)",
+                };
+                *items = shadows::MODES.iter().map(|&(k, name)| (if k == shadows::Mode::Rays { rays } else { name }.into(), k as u32)).collect();
                 *sel = items.iter().position(|i| i.1 == crate::platform::shadows::mode() as u32).unwrap_or(0) as i32;
             }
         }

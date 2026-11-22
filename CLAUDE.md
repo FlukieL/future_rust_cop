@@ -289,8 +289,12 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   `scene::terrain_map`), plus static objects (grid [0x4a13fc]) and actors (record +0x28) the
   game did not draw, by their records. `FCOP_RT_HIGH=<units>` (a test) looks straight down from
   that high above.
-  Sun shadows by rays (PLAN-RTX.md step 5, REG_DWORD `Shadows` 3 "Ray Traced", listed in
-  Advanced Graphics only with `FCOP_VULKAN=1`; `FCOP_SHADOWS=3`): in `glide::post_3d` per view,
+  Sun shadows by rays (PLAN-RTX.md step 5, REG_DWORD `Shadows` 3 "Ray Traced", always listed in
+  Advanced Graphics beside Screen-Space and Shadow Map (the map stays, the user); `FCOP_SHADOWS=3`).
+  Chosen, Vulkan presents from the next start (`vk::wanted`: `Shadows` 3 or `FCOP_VULKAN=1`, `=0`
+  never; decided once at the window); until then, or without a ray query device or after an error
+  (`shadows::rays_ready`), the shadow map is drawn (`shadows::map()`), the item reads "Ray Traced
+  (restart)" / "(not available)": in `glide::post_3d` per view,
   synchronously: GL copies the G-buffer depth (R; MS: sample 0) into a shared RG32F image
   (`vk::Vk::sun_rays`, GL handle closed after glTexStorageMem2DEXT as the present's), signals a
   semaphore; Vulkan builds the view's scene (`scene::take_frame`) and runs

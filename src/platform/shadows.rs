@@ -40,7 +40,7 @@ use super::advapi32;
 use super::mem;
 use crate::ver::Us;
 use glow::HasContext;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::Mutex;
 
 /// How the sun's shadow is made (REG_DWORD `Shadows`; 1 was the box's on).
@@ -52,7 +52,8 @@ pub enum Mode {
     /// the shadow map (`ShadowMap`)
     Map = 2,
     /// a ray per pixel toward the sun against our scene (`raytrace.rs`, PLAN-RTX.md step 5;
-    /// only with `FCOP_VULKAN=1` and a device with ray queries, else none)
+    /// Vulkan presents then (`vk::wanted`, from the next start); without a device with ray
+    /// queries the shadow map)
     Rays = 3,
 }
 
@@ -127,7 +128,19 @@ pub fn enabled() -> bool {
 
 /// The shadow map is made (its casters kept).
 pub fn map() -> bool {
-    mode() == Mode::Map
+    mode() == Mode::Map || mode() == Mode::Rays && !rays_ready()
+}
+
+/// The sun's rays can be traced (Vulkan presents, its device has ray queries, no error since).
+/// Until then "Ray Traced" draws the shadow map (chosen while GL presents: from the next start).
+static RAYS: AtomicBool = AtomicBool::new(false);
+
+pub fn rays_ready() -> bool {
+    RAYS.load(Relaxed)
+}
+
+pub fn set_rays_ready(on: bool) {
+    RAYS.store(on, Relaxed);
 }
 
 /// The Advanced Graphics dialog's OK: saved, and used from the next frame on.

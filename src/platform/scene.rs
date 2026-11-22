@@ -255,7 +255,7 @@ pub fn rt_on() -> bool {
 
 /// The rays need the whole level's scene: their debug picture, or the sun's shadow by rays.
 pub fn rays() -> bool {
-    rt_on() || (super::shadows::mode() == super::shadows::Mode::Rays && super::vk::wanted())
+    rt_on() || (super::shadows::mode() == super::shadows::Mode::Rays && super::shadows::rays_ready())
 }
 
 /// Instances are collected (for the log, the overlay or the rays).

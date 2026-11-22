@@ -213,7 +213,9 @@ In this order, each with its own setting, each compared against the current effe
       sun against the TLAS (2026-11-21, `Shadows` 3, see "Where we stand").
 - [x] Keyed texels by an alpha test in the ray query (2026-11-21).
 - [x] Soft edges (2026-11-22).
-- [ ] Replace the shadow map and its ring once the rays look as good everywhere.
+- [x] A setting (2026-11-22): "Ray Traced" always in the Shadows combo beside Screen-Space and
+      Shadow Map, which stays (the user: never remove it). Vulkan presents from the next start
+      when chosen; until then (or without ray queries) the map is drawn.
 - [x] Shadows of the dynamic lights (`lights.rs`) by rays instead of the screen ray march
       (2026-11-22, hard; soft edges by the light's size would need a filter like the sun's).
 - [ ] RT ambient occlusion instead of SSAO.

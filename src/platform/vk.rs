@@ -20,9 +20,15 @@ use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_void};
 use winit::window::Window;
 
-/// `FCOP_VULKAN=1`: present through Vulkan.
+/// Vulkan presents: with ray traced shadows chosen (`Shadows` 3; chosen while running, from the
+/// next start), or `FCOP_VULKAN=1` (`=0` never). Decided once, when the window is made.
 pub fn wanted() -> bool {
-    std::env::var("FCOP_VULKAN").is_ok_and(|v| v == "1")
+    static W: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *W.get_or_init(|| match std::env::var("FCOP_VULKAN").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => super::shadows::mode() == super::shadows::Mode::Rays,
+    })
 }
 
 #[cfg(windows)]
@@ -397,6 +403,7 @@ impl Vk {
                 }
                 None => None,
             };
+            super::shadows::set_rays_ready(sun.is_some());
             let mut v = Vk {
                 _entry: entry,
                 instance,
@@ -658,6 +665,7 @@ impl Vk {
             if let Err(e) = self.make_sun_image(gl, w, h) {
                 super::log!("error: vulkan: sun's rays: {e}");
                 self.sun = None;
+                super::shadows::set_rays_ready(false);
                 return None;
             }
         }
@@ -718,6 +726,7 @@ impl Vk {
                 super::log!("error: vulkan: sun's rays: {e}");
                 let _ = d.device_wait_idle();
                 self.sun = None;
+                super::shadows::set_rays_ready(false);
                 return None;
             }
             // GL's passes after this wait on the GPU for the rays

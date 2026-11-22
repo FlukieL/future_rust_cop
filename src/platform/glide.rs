@@ -1885,6 +1885,8 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, vk: Option<&mut super::vk::Vk
             (super::shadows::Mode::ScreenSpace, _, _) => super::ao::Sun::Ray(dir),
             (super::shadows::Mode::Map, Some(v), _) => super::ao::Sun::Map(v),
             (super::shadows::Mode::Rays, _, Some(t)) => super::ao::Sun::Traced(t, dir),
+            // ray traced chosen, no rays yet (GL presents until the next start): the map
+            (super::shadows::Mode::Rays, Some(v), None) => super::ao::Sun::Map(v),
             _ => super::ao::Sun::None,
         };
         // FCOP_GBUFFER=shadows: the sun's shadow alone
