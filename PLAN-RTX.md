@@ -61,8 +61,22 @@ surface along its normal (no flicker on ground seen at a flat angle), the debug 
 motion vectors (`motion.rs`, `FCOP_GBUFFER=motion` / `reproject`).
 
 Next (where to go on after a break):
-- Step 3 done but the check below (moving things' motion, jitter `jitter.rs`). Next: step 4
-  DLSS through Streamline.
+- Step 3 done but the check below (moving things' motion, jitter `jitter.rs`).
+- Step 4 (2026-11-22, pushed): licence checked, the SDK files by download (`sdk.rs`), Streamline
+  started with `FCOP_DLSS=1` (`streamline.rs`), DLSS reported supported. To test: download once
+  with `cargo test --release --lib sdk -- --ignored` (lands in target/release/deps/game_files/DLSS:
+  move it to target/release/game_files/DLSS), then run with `FCOP_DLSS=1`.
+- Next: the DLSS pass. GL draws the 3D picture at the render size; colour (before the HUD),
+  depth, motion vectors into images shared with Vulkan (as the sun's rays: synchronous,
+  semaphores both ways); Streamline: `slGetNewFrameToken`, `slSetConstants` (camera matrices,
+  jitter `jitter::now`, mvecScale 1/size), `slDLSSSetOptions` (mode, output size),
+  `slSetTagForFrame` (colour in, depth, mvec, colour out), `slEvaluateFeature(DLSS)` on a Vulkan
+  command buffer; the output back to GL at the window's size, then bloom, tone mapping, HUD.
+  Declarations: Streamline's headers (MIT) in github.com/NVIDIA-RTX/Streamline include/
+  (sl_core_types.h: Constants, ResourceTag, Resource; sl_dlss.h: DLSSOptions, DLSSMode,
+  slDLSSGetOptimalSettings through `slGetFeatureFunction`); docs/ProgrammingGuideDLSS.md. Check
+  the "Hook sl.common:Vulkan:... NOT supported" warnings then. After it: the download dialog,
+  the DLSS setting in Advanced Graphics, DLSS-G, Reflex.
 - Alpha test open points: scrolled terrain textures (tw & 0x800) are tested unscrolled;
   semi-transparent faces (glass, PS1 STP) still cast fully; HD replacement textures' coverage
   is not used (the original page's).
