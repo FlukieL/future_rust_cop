@@ -579,6 +579,16 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   `licence()` gives `nvngx_dlss.license.txt` to show first. Test (network, ~37 MB, ~3 s):
   `cargo test --release --lib sdk -- --ignored` (FCOP_SDK_HASHES=1: hashes only logged, for a
   new version).
+- `streamline.rs` (Windows only, `FCOP_DLSS=1`, decided at start; it makes `vk::wanted`): NVIDIA
+  Streamline. Our own declarations after its MIT headers (structures: header next / GUID /
+  version). `init` (in `Vk::new`, before the instance): `sl.interposer.dll` from
+  `game_files/DLSS` (full path without the verbatim prefix canonicalize adds: with it Streamline
+  took its plugins for unsigned and NGX missed DLSS), its signature checked (WinVerifyTrust),
+  `slInit` (Vulkan, custom engine, our `PROJECT_ID`, its log into ours), then ash loads the
+  interposer as the Vulkan loader; `supported(phys)` after vkCreateDevice. The driver's newer
+  OTA plugins (ProgramData/NVIDIA/NGX/models) are taken before ours (ours "duplicate"); NGX
+  loads `nvngx_dlss.dll` (310.9.16) from our folder. Open: sl.common logs its Vulkan hooks
+  (CmdBindPipeline, CmdBindDescriptorSets, BeginCommandBuffer) "NOT supported".
 - `jitter.rs`: subpixel jitter for DLSS (PLAN-RTX.md step 3; `FCOP_JITTER=1`, debug menu
   Renderer page, off: without a temporal filter the picture only shakes). Halton (2, 3), 8
   points, the next at each grBufferSwap. Not in the projection hooks (whole 2560x1920 units,

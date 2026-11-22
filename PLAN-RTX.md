@@ -217,6 +217,10 @@ What the game draws comes from a few sources. Each one becomes acceleration stru
       On its own thread with progress. Never at start, only on the player's choice. A DLL
       changed later by DLSS Swapper / the NVIDIA App is no error (DLSS 5 by managers).
       Streamline is Windows only: DLSS too.
+- [x] The download (2026-11-22, `sdk.rs`; its dialog in Advanced Graphics still open).
+- [ ] Streamline started (2026-11-22, `streamline.rs`, `FCOP_DLSS=1`): interposer as the Vulkan
+      loader, `slInit`, "DLSS supported on NVIDIA GeForce RTX 4090", the game runs as before.
+      Next: the DLSS pass itself (render size, tags, constants, evaluate), then DLSS-G, Reflex.
 - [ ] Streamline (open source) with the Vulkan path: `sl.interposer`, features DLSS (Super
       Resolution and DLAA), DLSS-G (Frame Generation) and Reflex.
 - [ ] Inputs: colour without the HUD, depth, motion vectors, jitter, camera matrices, and
