@@ -357,7 +357,7 @@ mod unix {
             }
             let size = win.inner_size();
             gl.frame(&px, W as u32, H as u32);
-            gl.draw(size.width, size.height, false);
+            gl.draw(size.width, size.height, false, false);
         }
 
         /// The cursor in picture pixels.
@@ -378,7 +378,7 @@ mod unix {
                 .with_title("Future Cop: L.A.P.D.")
                 .with_inner_size(winit::dpi::LogicalSize::new(2 * W, 2 * H))
                 .with_resizable(false);
-            self.window = Some(Gl::new(el, attrs));
+            self.window = Some(Gl::new(el, attrs, true));
         }
 
         fn user_event(&mut self, el: &ActiveEventLoop, m: Msg) {
