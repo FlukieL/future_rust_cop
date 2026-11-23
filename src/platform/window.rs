@@ -40,10 +40,69 @@ pub enum Input {
     DebugMenu,
 }
 
+/// What shows the window: OpenGL (`gl.rs`, with Vulkan presenting for it with FCOP_VULKAN), or
+/// the Vulkan renderer alone (`vkr.rs`, FCOP_RENDERER=vulkan).
+pub enum Screen {
+    Gl(Gl),
+    Vk(Box<super::vkr::Vkr>),
+}
+
+impl Screen {
+    fn frame(&mut self, px: &[u32], w: u32, h: u32) {
+        match self {
+            Screen::Gl(g) => g.frame(px, w, h),
+            Screen::Vk(v) => v.frame(px, w, h),
+        }
+    }
+
+    fn overlay(&mut self, o: Option<(&[u32], u32, u32)>) {
+        match self {
+            Screen::Gl(g) => g.overlay(o),
+            Screen::Vk(v) => v.overlay(o),
+        }
+    }
+
+    fn video(&mut self, f: Option<(&[u32], u32, u32)>) {
+        match self {
+            Screen::Gl(g) => g.video(f),
+            Screen::Vk(v) => v.video(f),
+        }
+    }
+
+    fn draw(&mut self, w: u32, h: u32, shot: bool) -> Option<(Vec<u32>, u32, u32)> {
+        match self {
+            Screen::Gl(g) => g.draw(w, h, shot),
+            Screen::Vk(v) => v.draw(w, h, shot),
+        }
+    }
+
+    fn resize(&self, w: u32, h: u32) {
+        match self {
+            Screen::Gl(g) => g.resize(w, h),
+            Screen::Vk(v) => v.resize(w, h),
+        }
+    }
+
+    fn set_vsync(&self, on: bool) {
+        match self {
+            Screen::Gl(g) => g.set_vsync(on),
+            Screen::Vk(v) => v.set_vsync(on),
+        }
+    }
+
+    /// The size of the picture shown.
+    fn shown_size(&self) -> (u32, u32) {
+        match self {
+            Screen::Gl(g) => (g.shown.1, g.shown.2),
+            Screen::Vk(v) => v.shown_size(),
+        }
+    }
+}
+
 struct App {
     want: Option<String>,
     window: Option<Window>,
-    gl: Option<Gl>,
+    gl: Option<Screen>,
     input: VecDeque<Input>,
     /// a frame shown before the window exists
     early: Option<(Vec<u32>, u32, u32)>,
@@ -426,7 +485,43 @@ pub fn with_gl<R>(f: impl FnOnce(&mut Gl) -> R) -> Option<R> {
     if !on_main() {
         return None;
     }
-    with_host(|h| h.app.gl.as_mut().map(f))
+    with_host(|h| match h.app.gl.as_mut() {
+        Some(Screen::Gl(g)) => Some(f(g)),
+        _ => None,
+    })
+}
+
+/// Run `f` with the Vulkan renderer (None with OpenGL, before the window exists or off the main
+/// thread).
+pub fn with_vkr<R>(f: impl FnOnce(&mut super::vkr::Vkr) -> R) -> Option<R> {
+    if !on_main() {
+        return None;
+    }
+    with_host(|h| match h.app.gl.as_mut() {
+        Some(Screen::Vk(v)) => Some(f(v)),
+        _ => None,
+    })
+}
+
+/// The Vulkan renderer shows the window.
+pub fn vulkan() -> bool {
+    on_main() && with_host(|h| matches!(h.app.gl, Some(Screen::Vk(_))))
+}
+
+/// Show an image the Vulkan renderer rendered (`vglide.rs`), w x h, with a gamma.
+pub fn show_scene(view: ash::vk::ImageView, w: u32, h: u32, gamma: f32) {
+    if !on_main() {
+        return;
+    }
+    with_host(|host| {
+        if let Some(Screen::Vk(v)) = &mut host.app.gl {
+            super::stats::picture();
+            v.show_scene(view, w, h, gamma);
+            let begin = std::time::Instant::now();
+            host.app.draw();
+            super::framelog::shown(begin);
+        }
+    });
 }
 
 /// Show a texture something rendered (first row at the bottom), w x h, with a gamma.
@@ -435,7 +530,7 @@ pub fn show_texture(tex: glow::Texture, w: u32, h: u32, gamma: f32) {
         return;
     }
     with_host(|host| {
-        if let Some(gl) = &mut host.app.gl {
+        if let Some(Screen::Gl(gl)) = &mut host.app.gl {
             super::stats::picture();
             gl.shown = (tex, w, h, false, gamma);
             let begin = std::time::Instant::now();
@@ -553,7 +648,7 @@ pub fn frame_size() -> (u32, u32) {
     if !on_main() {
         return (640, 480);
     }
-    with_host(|h| h.app.gl.as_ref().map_or((640, 480), |g| (g.shown.1, g.shown.2)))
+    with_host(|h| h.app.gl.as_ref().map_or((640, 480), Screen::shown_size))
 }
 
 /// The window's drawable size in pixels (1280x960 before it exists).
@@ -605,7 +700,9 @@ pub fn refresh_hz() -> Option<f64> {
 
 /// V-Sync on or off from the next picture on.
 pub fn set_vsync(on: bool) {
-    with_gl(|g| g.set_vsync(on));
+    if on_main() {
+        with_host(|h| h.app.gl.as_ref().map(|g| g.set_vsync(on)));
+    }
 }
 
 /// Is the window fullscreen?
@@ -637,6 +734,21 @@ pub fn set_window_size(w: u32, h: u32) {
             let _ = win.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
         }
     });
+}
+
+/// The window and what shows it: the Vulkan renderer when chosen and it starts, else OpenGL.
+fn new_screen(el: &ActiveEventLoop, attrs: winit::window::WindowAttributes) -> (Window, Screen) {
+    if super::vkr::wanted() {
+        match el.create_window(attrs.clone()) {
+            Ok(win) => match super::vkr::Vkr::new(&win) {
+                Ok(v) => return (win, Screen::Vk(Box::new(v))),
+                Err(e) => log!("vulkan: {e}; OpenGL shows the window"),
+            },
+            Err(e) => log!("vulkan: window: {e}"),
+        }
+    }
+    let (win, gl) = Gl::new_window(el, attrs);
+    (win, Screen::Gl(gl))
 }
 
 /// The 4:3 part in the middle of a frame of w x h, where dialogs are shown: x offset and width.
@@ -702,7 +814,7 @@ impl App {
             Some((w, h)) => attrs.with_inner_size(winit::dpi::PhysicalSize::new(w, h)),
             None => attrs.with_inner_size(LogicalSize::new(1280.0, 960.0)),
         };
-        let (win, gl) = Gl::new_window(el, attrs);
+        let (win, gl) = new_screen(el, attrs);
         // to the front, while our start window still has the foreground (Windows lets only the
         // foreground's process bring a window forward)
         win.focus_window();
@@ -743,7 +855,7 @@ impl App {
     fn frame_pos(&self) -> (i32, i32) {
         let Some(win) = &self.window else { return (0, 0) };
         let size = win.inner_size();
-        let (w, h) = self.gl.as_ref().map_or((640, 480), |g| (g.shown.1, g.shown.2));
+        let (w, h) = self.gl.as_ref().map_or((640, 480), Screen::shown_size);
         let (ox, oy, s) = fit(w, h, size.width.max(1), size.height.max(1));
         let x = ((self.cursor.x - ox) / s).clamp(0.0, w as f64 - 1.0);
         let y = ((self.cursor.y - oy) / s).clamp(0.0, h as f64 - 1.0);

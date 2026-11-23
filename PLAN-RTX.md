@@ -314,10 +314,48 @@ In this order, each with its own setting, each compared against the current effe
 
 ## Step 6: everything in Vulkan
 
-- [ ] Port the GL passes one by one: Glide batches (`glide.rs`), AO, lights, shadows,
-      bloom, heat, tone mapping, HD textures, dialog overlay. Shaders from GLSL to SPIR-V
-      at build time (choose between naga and shaderc).
-- [ ] Remove the GL renderer and the interop. Linux tested in the CachyOS VM.
+Started 2026-11-23, moved ahead of the rest of step 4 (the user: GL only gets in the way; the
+round trip GL -> Vulkan -> GL cost ~0.35 ms a view, Frame Generation needs Vulkan's
+swapchain and the HUD apart). The game must run without a GL context at all.
+
+Design:
+- `vkr.rs`: the Vulkan context of its own (no GL interop): instance, device (Vulkan 1.3:
+  dynamic rendering, synchronization2; ray tracing extensions when the device has them, for
+  the later port of the sun's rays; Streamline's interposer as the loader as now), queue,
+  swapchain, two frames in flight (command buffer, fence, semaphores), a staging ring for
+  uploads, memory by dedicated allocations (few images and buffers). One command buffer a
+  picture: Glide records into it, the composition ends it and submits.
+- The composition (as `gl.rs`'s `draw`): the shown picture (a 2D frame uploaded, or Glide's
+  target), the video, the dialog overlay, the stats into an offscreen RGBA8 image as large as
+  the window, letterboxed; blitted into the swapchain (format, FCOP_SHOT reads the offscreen
+  image back).
+- `vglide.rs`: Glide's GPU side in Vulkan (`glide.rs` keeps the logic: state, batching,
+  texture conversion, effects, lights' and heat's sources). The target colour (RGBA8 or
+  RGBA16F), the G-buffer attachment (RG32F) and the depth buffer (D32F), multisampled with
+  MSAA and resolved at grBufferSwap; the texture arrays (RGBA8 / RG8 64 layers, HD 32 layers)
+  with mipmaps by blits; a vertex ring (host-visible, persistently mapped, per frame in
+  flight); pipelines by (blend, depth mode, write masks, samples, attachments) in a map; the
+  per-batch values as push constants. Vulkan's y points down: the target is top row first
+  (no flips), scissor boxes from the top.
+- Shaders as the RT ones: GLSL 450 in `shaders/`, SPIR-V checked in (`glslc`).
+- `glide.rs`'s GL parts move behind a backend (`Back::Gl` / `Back::Vk`) until the passes are
+  ported; with Vulkan the post passes are skipped until each has its Vulkan version.
+- Chosen with `FCOP_RENDERER=vulkan` until it matches GL, then the default, then GL removed.
+
+Order:
+- [x] 1. `vkr.rs` and the composition: menus, videos, dialogs, stats shown by Vulkan alone
+      (2026-11-23; validation clean).
+- [x] 2. `vglide.rs`: the Glide batches (textures, chroma key, filtering, mipmaps, anisotropy,
+      MSAA, depth buffer, G-buffer attachment) (2026-11-23). `glide.rs` keeps the logic, its GL
+      objects are `GlBack`; `Draw` is a batch's state for either. First mission looks as with
+      GL (no post passes yet), 1920x1080 wide with MSAA 4 too, validation clean; ~440 fps at
+      1280x960 against GL's ~560 with all effects (acquire + present ~0.22 ms a picture,
+      OBS's and CapFrameX's layers in it). Open: HD replacement textures untested, lit smoke
+      (needs the lights), the shader's `smoke_*` left out.
+- [ ] 3. The passes: AO, lights, shadow map, bloom, heat, tone mapping, motion vectors, scene
+      overlay; the sun's rays and DLSS on vglide's images directly (no interop).
+- [ ] 4. Vulkan the default; GL, glutin, glow and the interop removed; the Linux splash
+      drawn without GL. Linux tested in the CachyOS VM (does VMware's driver have Vulkan 1.3?).
 
 ## Risks and open questions
 

@@ -53,6 +53,8 @@ pub mod sdk;
 #[cfg(windows)]
 pub mod streamline;
 pub mod vk;
+pub mod vkr;
+pub mod vglide;
 pub mod window;
 pub mod zbuffer;
 

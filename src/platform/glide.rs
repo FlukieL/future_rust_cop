@@ -75,11 +75,11 @@ struct Texture {
 }
 
 /// Layers of the texture array: TMU memory holds 64 textures of 256x256 at 8 bits.
-const LAYERS: u32 = 64;
+pub(super) const LAYERS: u32 = 64;
 /// Levels of a 256x256 texture: 256 ... 1.
-const LEVELS: i32 = 9;
+pub(super) const LEVELS: i32 = 9;
 /// Layers of the replacements' array.
-const HD_LAYERS: u32 = 32;
+pub(super) const HD_LAYERS: u32 = 32;
 
 /// The replacement textures: pages at `scale` times the size, rgb premultiplied by the
 /// coverage and the coverage (as `array`), with mipmaps; framebuffers to copy between layers.
@@ -163,6 +163,60 @@ struct Glide {
     /// the vertices' coordinate space
     space: (u32, u32),
     view: View,
+    /// what draws: OpenGL or the Vulkan renderer (`vglide.rs`)
+    back: Back,
+    textures: BTreeMap<u32, Texture>,
+    downloads: u64,
+    state: State,
+    /// Vertex attributes, so that changing them draws nothing yet: the colour and alpha
+    /// combine units (function, factor, local, other, invert), the constant colour (ARGB) and
+    /// the TMU address of the texture
+    cc: [u32; 5],
+    ac: [u32; 5],
+    constant: u32,
+    tex: Option<u32>,
+    /// vertices waiting to be drawn with `state` (`VERTEX` words each): x y r g b a s t,
+    /// constant r g b a (floats), the combine units and texture (see `add`), then the
+    /// rectangle of the primitive's texture coordinates s0 t0 s1 t1 (floats)
+    batch: Vec<u32>,
+    batch_mode: u32,
+    /// how the batch's primitives meet the depth buffer (`zbuffer.rs`): 0 not, 1 tested,
+    /// 2 tested and (when solid) written: every corner has its own depth
+    batch_z: u8,
+    gamma: f32,
+    /// the 3D picture is drawn (`Some(dx)`: the walker says when, and the x its view adds to
+    /// the units): it writes the depth attachment
+    gbuf: Option<f32>,
+    /// the sun's shadow (`shadows.rs`): this view's casters (batched vertices)
+    casters: Vec<u32>,
+    /// the primitives that follow only cast (`shadows::cast_kind`): 0 no, 1 yes, 2 the ring's
+    /// (their corners zoomed out by `shadows::RING_ZOOM` about the view's centre)
+    cast_only: u8,
+    /// the dynamic lights of the view being drawn (`lights.rs`)
+    lights: Vec<super::lights::Light>,
+    /// `add`'s vertices' depths, kept between primitives
+    zbuf: Vec<f32>,
+    /// each view's (scissor box) last merged lights (`lpos`, `lcol`): its smoke is lit by them
+    smoke_lights: Vec<([i32; 4], Vec<f32>, Vec<f32>)>,
+    /// the heat shimmer's sources of the view being drawn (`heat.rs`)
+    heat_sources: Vec<super::heat::Source>,
+}
+
+/// What draws Glide's pictures.
+enum Back {
+    Gl(Box<GlBack>),
+    Vk(Box<super::vglide::Gpu>),
+}
+
+/// The context the backend draws with.
+pub(super) enum Ctx<'a> {
+    Gl(&'a glow::Context),
+    Vk(&'a mut super::vkr::Vkr),
+}
+
+/// OpenGL's objects: the target, its multisampled framebuffer, the depth attachment, the
+/// program, the vertex buffer, the texture arrays and the post passes.
+struct GlBack {
     /// the texture shown, and its framebuffer
     fbo: glow::Framebuffer,
     color: glow::Texture,
@@ -188,53 +242,51 @@ struct Glide {
     /// the anisotropy set on the arrays, and the most the driver takes
     aniso: f32,
     aniso_max: f32,
-    textures: BTreeMap<u32, Texture>,
-    downloads: u64,
-    state: State,
-    /// Vertex attributes, so that changing them draws nothing yet: the colour and alpha
-    /// combine units (function, factor, local, other, invert), the constant colour (ARGB) and
-    /// the TMU address of the texture
-    cc: [u32; 5],
-    ac: [u32; 5],
-    constant: u32,
-    tex: Option<u32>,
     /// uniform locations
     uniforms: Uniforms,
-    /// vertices waiting to be drawn with `state` (`VERTEX` words each): x y r g b a s t,
-    /// constant r g b a (floats), the combine units and texture (see `add`), then the
-    /// rectangle of the primitive's texture coordinates s0 t0 s1 t1 (floats)
-    batch: Vec<u32>,
-    batch_mode: u32,
-    /// how the batch's primitives meet the depth buffer (`zbuffer.rs`): 0 not, 1 tested,
-    /// 2 tested and (when solid) written: every corner has its own depth
-    batch_z: u8,
-    gamma: f32,
     /// ambient occlusion (`ao.rs`): view-space depth and a mask, a second attachment of the
-    /// framebuffer drawn into, written by the 3D picture (`gbuf`: the walker says when, and
-    /// the x its view adds to the units); the passes
+    /// framebuffer drawn into, written by the 3D picture; the passes
     gdepth: Option<Gdepth>,
-    gbuf: Option<f32>,
     ssao: Option<super::ao::Ssao>,
-    /// the sun's shadow (`shadows.rs`): this view's casters (batched vertices), the map
-    casters: Vec<u32>,
-    /// the primitives that follow only cast (`shadows::cast_kind`): 0 no, 1 yes, 2 the ring's
-    /// (their corners zoomed out by `shadows::RING_ZOOM` about the view's centre)
-    cast_only: u8,
     shadow_map: Option<super::shadows::ShadowMap>,
-    /// the dynamic lights of the view being drawn (`lights.rs`), and their pass
-    lights: Vec<super::lights::Light>,
-    /// `add`'s vertices' depths, kept between primitives
-    zbuf: Vec<f32>,
-    /// each view's (scissor box) last merged lights (`lpos`, `lcol`): its smoke is lit by them
-    smoke_lights: Vec<([i32; 4], Vec<f32>, Vec<f32>)>,
     lighting: Option<super::lights::Lighting>,
-    /// the heat shimmer's sources of the view being drawn, and its pass (`heat.rs`)
-    heat_sources: Vec<super::heat::Source>,
     heat: Option<super::heat::Heat>,
-    /// the bloom's pass (`bloom.rs`)
     bloom: Option<super::bloom::Bloom>,
     motion: Option<super::motion::Motion>,
     tonemap: Option<super::tonemap::Pass>,
+}
+
+/// A batch's drawing as `flush` decided it, for either backend.
+pub(super) struct Draw<'a> {
+    /// glow::TRIANGLES or glow::POINTS
+    pub topology: u32,
+    pub target: (u32, u32),
+    /// the view in the target: x, y from the top, w, h
+    pub viewport: [f32; 4],
+    /// the clip window's box: x, y from below (GL's), w, h
+    pub scissor: [i32; 4],
+    pub space: [f32; 2],
+    /// in clip space (GL's: y up)
+    pub jitter: [f32; 2],
+    pub mipmaps: bool,
+    /// anisotropic filtering wanted (1 none)
+    pub aniso: f32,
+    pub clamp: [bool; 2],
+    pub chroma: bool,
+    pub key: [f32; 3],
+    pub linear: bool,
+    /// blending: None off, else GL's source and destination factors
+    pub blend: Option<(u32, u32)>,
+    pub edge: i32,
+    pub gmode: i32,
+    /// the depth buffer: 0 not, 1 tested, 2 written by a depth pass first
+    pub zk: u8,
+    pub zwrite: bool,
+    /// the depth pass' kind (`zonly`: 1 everything, 2 where alpha >= 0.75)
+    pub zonly: i32,
+    pub show_effects: bool,
+    /// lit smoke: lights' places and reach, colours, focal length
+    pub smoke: Option<(&'a [f32], &'a [f32], f32)>,
 }
 
 /// The depth attachment, and a framebuffer with only the colour of the one drawn into (the
@@ -584,12 +636,21 @@ pub fn texture_addresses() -> Vec<u32> {
     with(|g, _| g.textures.keys().copied().collect()).unwrap_or_default()
 }
 
-fn with<R>(f: impl FnOnce(&mut Glide, &glow::Context) -> R) -> Option<R> {
+fn with<R>(f: impl FnOnce(&mut Glide, &mut Ctx) -> R) -> Option<R> {
     GLIDE.with(|g| {
         let mut g = g.borrow_mut();
         let g = g.as_mut()?;
-        super::window::with_gl(|gl| f(g, &gl.gl))
+        with_ctx(|ctx| f(g, ctx))
     })
+}
+
+/// Runs `f` with what draws: the OpenGL context or the Vulkan renderer.
+fn with_ctx<R>(f: impl FnOnce(&mut Ctx) -> R) -> Option<R> {
+    if super::window::vulkan() {
+        super::window::with_vkr(|v| f(&mut Ctx::Vk(v)))
+    } else {
+        super::window::with_gl(|gl| f(&mut Ctx::Gl(&gl.gl)))
+    }
 }
 
 fn f32_arg(c: &Cpu, n: u32) -> f32 {
@@ -760,9 +821,8 @@ impl Hd {
     }
 }
 
-impl Glide {
-    fn open(gl: &glow::Context, w: u32, h: u32) -> Glide {
-        let target = (w, w * 3 / 4);
+impl GlBack {
+    fn open(gl: &glow::Context, target: (u32, u32)) -> GlBack {
         unsafe {
             let color = texture(gl, true);
             gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, target.0 as i32, target.1 as i32, 0, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
@@ -796,13 +856,7 @@ impl Glide {
             };
             let array = layers(glow::RGBA8);
             let alpha = layers(glow::RG8);
-            Glide {
-                res: (w, h),
-                target,
-                // made in RGBA8 above: the first resize makes it anew when tone mapping is on
-                target_hdr: false,
-                space: (w, h),
-                view: View::Full,
+            GlBack {
                 fbo,
                 color,
                 ms: None,
@@ -817,36 +871,11 @@ impl Glide {
                 hd: Hd::open(gl),
                 aniso: 0.0,
                 aniso_max,
-                textures: BTreeMap::new(),
-                downloads: 0,
-                cc: [1, 0, 0, 0, 0],
-                ac: [1, 0, 0, 0, 0],
-                constant: 0xffff_ffff,
-                tex: None,
                 uniforms: Uniforms::new(gl, prog),
-                state: State {
-                    blend: (4, 0),
-                    chroma: false,
-                    key: 0,
-                    linear: false,
-                    clamp: (true, true),
-                    clip: [0, 0, w as i32, h as i32],
-                },
-                batch: Vec::new(),
-                batch_mode: glow::TRIANGLES,
-                batch_z: 0,
-                gamma: 1.0,
                 gdepth: None,
-                gbuf: None,
                 ssao: None,
-                casters: Vec::new(),
-                cast_only: 0,
                 shadow_map: None,
-                lights: Vec::new(),
-                zbuf: Vec::new(),
-                smoke_lights: Vec::new(),
                 lighting: None,
-                heat_sources: Vec::new(),
                 heat: None,
                 bloom: None,
                 motion: None,
@@ -855,46 +884,9 @@ impl Glide {
         }
     }
 
-    /// The view's rectangle in the target (x, y from the top, w, h) and the columns it is cut to.
-    fn view_rect(&self) -> ([f32; 4], (f32, f32)) {
-        let (tw, th) = (self.target.0 as f32, self.target.1 as f32);
-        let w43 = (th * 4.0 / 3.0).min(tw);
-        match self.view {
-            View::Full => ([0.0, 0.0, tw, th], (0.0, tw)),
-            View::Hud(at) => ([(tw - w43) * at, 0.0, w43, th], (0.0, tw)),
-            View::Half(false) => ([tw / 4.0 - w43 / 4.0, 0.0, w43, th], (0.0, tw / 2.0)),
-            View::Half(true) => ([tw * 0.75 - w43 * 0.75, 0.0, w43, th], (tw / 2.0, tw)),
-        }
-    }
-
-    /// GL's viewport for the view, and a clip rectangle (x0 y0 x1 y1 in screen pixels) as
-    /// its scissor box.
-    fn scissor(&self, gl: &glow::Context, c: [i32; 4]) {
-        let ([vx, vy, vw, vh], _) = self.view_rect();
-        let th = self.target.1 as f32;
-        let b = self.scissor_box(c);
-        unsafe {
-            gl.viewport(vx.round() as i32, (th - vy - vh).round() as i32, vw.round() as i32, vh.round() as i32);
-            gl.enable(glow::SCISSOR_TEST);
-            gl.scissor(b[0], b[1], b[2], b[3]);
-        }
-    }
-
-    /// Size the target (between frames): as tall as the render size `h` (the window's or the
-    /// chosen resolution: high resolution), as wide as the aspect `a` makes it.
-    fn resize(&mut self, gl: &glow::Context, a: f32, h: u32) {
-        let h = h.clamp(240, 4320);
-        let w = (h as f32 * a).round() as u32;
-        if (w, h) == self.target && self.target_hdr == super::tonemap::hdr() {
-            // the samples may have changed in Preferences, the AO in Advanced Graphics
-            self.multisample(gl, false);
-            self.gbuffer(gl);
-            return;
-        }
+    /// The target made anew at w x h (`colour_format`).
+    fn retarget(&mut self, gl: &glow::Context, (w, h): (u32, u32)) {
         self.drop_gbuffer(gl);
-        self.target = (w, h);
-        self.target_hdr = super::tonemap::hdr();
-        TARGET_HDR.store(self.target_hdr, Ordering::Relaxed);
         let (format, kind) = colour_format();
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.color));
@@ -904,13 +896,11 @@ impl Glide {
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
         }
-        self.multisample(gl, true);
-        self.gbuffer(gl);
     }
 
     /// The multisampled framebuffer for the chosen samples and the target's size (`resized`:
     /// the target changed).
-    fn multisample(&mut self, gl: &glow::Context, resized: bool) {
+    fn multisample(&mut self, gl: &glow::Context, target: (u32, u32), resized: bool) {
         let samples = MSAA.load(Ordering::Relaxed).min(self.ms_max);
         let samples = if samples < 2 { 0 } else { samples };
         if !resized && self.ms.map_or(0, |m| m.2) == samples {
@@ -928,7 +918,7 @@ impl Glide {
             }
             let rb = gl.create_renderbuffer().expect("GL renderbuffer");
             gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
-            gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, samples as i32, colour_format().0, self.target.0 as i32, self.target.1 as i32);
+            gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, samples as i32, colour_format().0, target.0 as i32, target.1 as i32);
             let fbo = gl.create_framebuffer().expect("GL framebuffer");
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::RENDERBUFFER, Some(rb));
@@ -941,7 +931,7 @@ impl Glide {
 
     /// The depth attachment when the AO is on (made anew after the target or the samples
     /// changed: `drop_gbuffer`), none when it is off.
-    fn gbuffer(&mut self, gl: &glow::Context) {
+    fn gbuffer(&mut self, gl: &glow::Context, target: (u32, u32)) {
         if !super::ao::depth_wanted() {
             self.drop_gbuffer(gl);
             return;
@@ -949,7 +939,7 @@ impl Glide {
         if self.gdepth.is_some() {
             return;
         }
-        let (w, h) = (self.target.0 as i32, self.target.1 as i32);
+        let (w, h) = (target.0 as i32, target.1 as i32);
         unsafe {
             let tex = gl.create_texture().expect("GL texture");
             let ms = self.ms.map(|m| m.2);
@@ -1030,26 +1020,15 @@ impl Glide {
         }
     }
 
-    /// The scissor box of a clip rectangle (as `scissor` sets it: x, y from below, w, h).
-    fn scissor_box(&self, c: [i32; 4]) -> [i32; 4] {
-        let ([vx, vy, vw, vh], (cut0, cut1)) = self.view_rect();
-        let th = self.target.1 as f32;
-        let (sx, sy) = (vw / self.res.0 as f32, vh / self.res.1 as f32);
-        let x0 = (vx + c[0] as f32 * sx).max(cut0).round() as i32;
-        let x1 = (vx + c[2] as f32 * sx).min(cut1).round() as i32;
-        let (y0, y1) = ((vy + c[1] as f32 * sy).round() as i32, (vy + c[3] as f32 * sy).round() as i32);
-        [x0, th as i32 - y1, (x1 - x0).max(0), (y1 - y0).max(0)]
-    }
-
     /// The framebuffer drawn into.
     fn draw_fbo(&self) -> glow::Framebuffer {
         self.ms.map_or(self.fbo, |m| m.0)
     }
 
     /// The multisampled picture into the texture shown.
-    fn resolve(&self, gl: &glow::Context) {
+    fn resolve(&self, gl: &glow::Context, target: (u32, u32)) {
         if let Some((fbo, _, _)) = self.ms {
-            let (w, h) = (self.target.0 as i32, self.target.1 as i32);
+            let (w, h) = (target.0 as i32, target.1 as i32);
             unsafe {
                 gl.disable(glow::SCISSOR_TEST);
                 gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(fbo));
@@ -1060,31 +1039,51 @@ impl Glide {
         }
     }
 
-    /// Draw what is batched with the current state.
-    fn flush(&mut self, gl: &glow::Context) {
-        if self.batch.is_empty() {
-            return;
+    /// The view's viewport and the clip window's scissor box.
+    fn scissor(&self, gl: &glow::Context, d: &Draw) {
+        let [vx, vy, vw, vh] = d.viewport;
+        let th = d.target.1 as f32;
+        let b = d.scissor;
+        unsafe {
+            gl.viewport(vx.round() as i32, (th - vy - vh).round() as i32, vw.round() as i32, vh.round() as i32);
+            gl.enable(glow::SCISSOR_TEST);
+            gl.scissor(b[0], b[1], b[2], b[3]);
         }
-        let s = self.state;
+    }
+
+    /// Clears the clip window's box: the colour, and the depth attachment and buffer.
+    fn clear(&self, gl: &glow::Context, d: &Draw, colour: [f32; 4]) {
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.draw_fbo()));
-            self.scissor(gl, s.clip);
+            self.scissor(gl, d);
+            gl.clear_buffer_f32_slice(glow::COLOR, 0, &colour);
+            if self.gdepth.is_some() {
+                gl.color_mask_draw_buffer(1, true, true, true, true);
+                gl.clear_buffer_f32_slice(glow::COLOR, 1, &[0.0; 4]);
+                gl.depth_mask(true);
+                gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[1.0]);
+            }
+            gl.disable(glow::SCISSOR_TEST);
+        }
+    }
+
+    /// Draws a batch.
+    fn draw(&mut self, gl: &glow::Context, d: &Draw, batch: &[u32]) {
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.draw_fbo()));
+            self.scissor(gl, d);
             gl.use_program(Some(self.prog));
             gl.bind_vertex_array(Some(self.vao));
             let u = &self.uniforms;
-            gl.uniform_2_f32(u.space.as_ref(), self.space.0 as f32, self.space.1 as f32);
-            // only the 3D picture is jittered, the HUD stays still
-            let j = if self.gbuf.is_some() { super::jitter::now() } else { [0.0; 2] };
-            gl.uniform_2_f32(u.jitter.as_ref(), 2.0 * j[0] / self.target.0 as f32, 2.0 * j[1] / self.target.1 as f32);
-            let filter = FILTER.load(Ordering::Relaxed);
-            let mipmaps = filter != 0 && s.key & 0xff_ffff == 0;
-            gl.uniform_1_i32(u.mipmaps.as_ref(), mipmaps as i32);
+            gl.uniform_2_f32(u.space.as_ref(), d.space[0], d.space[1]);
+            gl.uniform_2_f32(u.jitter.as_ref(), d.jitter[0], d.jitter[1]);
+            gl.uniform_1_i32(u.mipmaps.as_ref(), d.mipmaps as i32);
             gl.uniform_1_i32(u.tex_a.as_ref(), 1);
             gl.uniform_1_i32(u.tex.as_ref(), 0);
             gl.uniform_1_i32(u.tex_hd.as_ref(), 2);
-            let aniso = (filter.max(1) as f32).min(self.aniso_max);
+            let aniso = d.aniso.min(self.aniso_max);
             // replacements are always drawn with mipmaps, and read the originals' alpha with them
-            let levels = mipmaps || self.hd.is_some();
+            let levels = d.mipmaps || self.hd.is_some();
             if let Some(hd) = &mut self.hd {
                 gl.active_texture(glow::TEXTURE2);
                 gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(hd.array));
@@ -1110,96 +1109,31 @@ impl Glide {
                 self.stale = false;
             }
             self.aniso = aniso;
-            gl.uniform_2_i32(u.clamp_st.as_ref(), s.clamp.0 as i32, s.clamp.1 as i32);
-            gl.uniform_1_i32(u.chroma.as_ref(), s.chroma as i32);
-            let key = s.key;
-            gl.uniform_3_f32(u.key.as_ref(), (key >> 16 & 0xff) as f32 / 255.0, (key >> 8 & 0xff) as f32 / 255.0, (key & 0xff) as f32 / 255.0);
-            gl.uniform_1_i32(u.linear_filter.as_ref(), s.linear as i32);
-            // blending: Glide factors 0 zero, 1 src alpha, 2 src/dst colour, 3 dst alpha, 4 one,
-            // 5 1 - src alpha, 6 1 - src/dst colour, 7 1 - dst alpha
-            let factor = |f: u32, dst: bool| match f {
-                0 => glow::ZERO,
-                1 => glow::SRC_ALPHA,
-                2 => if dst { glow::SRC_COLOR } else { glow::DST_COLOR },
-                3 => glow::DST_ALPHA,
-                5 => glow::ONE_MINUS_SRC_ALPHA,
-                6 => if dst { glow::ONE_MINUS_SRC_COLOR } else { glow::ONE_MINUS_DST_COLOR },
-                7 => glow::ONE_MINUS_DST_ALPHA,
-                _ => glow::ONE,
-            };
-            let (src, dst) = (factor(s.blend.0, false), factor(s.blend.1, true));
-            let opaque = src == glow::ONE && dst == glow::ZERO;
-            let soft = s.chroma && s.linear;
-            // the soft chroma key edge: 0 cut at half, 1 alpha = cover (blending turned on for
-            // it), 2 alpha *= cover, 3 rgb *= cover (additive). Untextured vertices have a
-            // cover of 1, which leaves them as they are.
-            let edge = if !soft {
-                0
-            } else if opaque {
-                1
-            } else if src == glow::SRC_ALPHA || dst == glow::ONE_MINUS_SRC_ALPHA {
-                2
-            } else if src == glow::ONE && dst == glow::ONE {
-                3
-            } else {
-                0
-            };
-            gl.uniform_1_i32(u.edge.as_ref(), edge);
-            if opaque && edge != 1 {
-                gl.disable(glow::BLEND);
-            } else {
-                gl.enable(glow::BLEND);
-                if edge == 1 {
-                    gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
-                } else {
+            let u = &self.uniforms;
+            gl.uniform_2_i32(u.clamp_st.as_ref(), d.clamp[0] as i32, d.clamp[1] as i32);
+            gl.uniform_1_i32(u.chroma.as_ref(), d.chroma as i32);
+            gl.uniform_3_f32(u.key.as_ref(), d.key[0], d.key[1], d.key[2]);
+            gl.uniform_1_i32(u.linear_filter.as_ref(), d.linear as i32);
+            gl.uniform_1_i32(u.edge.as_ref(), d.edge);
+            match d.blend {
+                None => gl.disable(glow::BLEND),
+                Some((src, dst)) => {
+                    gl.enable(glow::BLEND);
                     gl.blend_func(src, dst);
                 }
             }
-            // the depth attachment: depth from opaque 3D primitives and alpha-blended ones (the
-            // game draws its solid geometry so, with alpha 1), where their alpha is at least
-            // half (the attachment blended with its own alpha 0 or 1); a mask from those that
-            // add colour; nothing from those that only darken (the game's shadows) or the HUD
-            let gmode = match (self.gdepth.is_some(), self.gbuf.is_some()) {
-                (true, true) if opaque || src == glow::SRC_ALPHA && dst == glow::ONE_MINUS_SRC_ALPHA => 1,
-                (true, true) if src == glow::ZERO || src == glow::DST_COLOR => 0,
-                (true, true) if dst == glow::ONE => 3,
-                (true, true) => 2,
-                _ => 0,
-            };
-            gl.uniform_1_i32(u.gmode.as_ref(), gmode);
-            // the sun's shadow casters: triangles with depth at every corner, the chroma key in
-            // the constant colour's place (`shadows.rs`)
-            if gmode == 1 && self.batch_mode == glow::TRIANGLES && super::shadows::map() {
-                let kc = [(key >> 16 & 0xff) as f32 / 255.0, (key >> 8 & 0xff) as f32 / 255.0, (key & 0xff) as f32 / 255.0, s.chroma as u32 as f32].map(f32::to_bits);
-                for t in self.batch.chunks_exact(3 * VERTEX) {
-                    if t.chunks_exact(VERTEX).all(|v| f32::from_bits(v[20]) > 0.0) {
-                        for v in t.chunks_exact(VERTEX) {
-                            self.casters.extend_from_slice(&v[..8]);
-                            self.casters.extend(kc);
-                            self.casters.extend_from_slice(&v[12..]);
-                        }
-                    }
-                }
-            }
-            gl.uniform_1_i32(u.show_effects.as_ref(), (self.gbuf.is_some() && super::effects::showing()) as i32);
-            // lit smoke: additive effects of the 3D picture take the view's last lights
-            let lit = match (&self.gdepth, self.gbuf) {
-                (Some(_), Some(_)) if dst == glow::ONE && super::lights::smoke_enabled() => {
-                    let clip = self.scissor_box(s.clip);
-                    self.smoke_lights.iter().find(|l| l.0 == clip).filter(|l| !l.1.is_empty())
-                }
-                _ => None,
-            };
-            gl.uniform_1_i32(u.smoke_count.as_ref(), lit.map_or(0, |l| (l.1.len() / 4) as i32));
-            if let Some((_, pos, col)) = lit {
-                let (tw, th) = (self.target.0 as f32, self.target.1 as f32);
+            gl.uniform_1_i32(u.gmode.as_ref(), d.gmode);
+            gl.uniform_1_i32(u.show_effects.as_ref(), d.show_effects as i32);
+            gl.uniform_1_i32(u.smoke_count.as_ref(), d.smoke.map_or(0, |l| (l.0.len() / 4) as i32));
+            if let Some((pos, col, focal)) = d.smoke {
                 gl.uniform_4_f32_slice(u.smoke_lpos.as_ref(), pos);
                 gl.uniform_3_f32_slice(u.smoke_lcol.as_ref(), col);
-                gl.uniform_2_f32(u.smoke_size.as_ref(), tw, th);
-                gl.uniform_1_f32(u.smoke_focal.as_ref(), 4096.0 * th / 1920.0);
+                gl.uniform_2_f32(u.smoke_size.as_ref(), d.target.0 as f32, d.target.1 as f32);
+                gl.uniform_1_f32(u.smoke_focal.as_ref(), focal);
                 gl.uniform_1_f32(u.smoke_k.as_ref(), super::lights::SMOKE_STRENGTH);
             }
             let has_gdepth = self.gdepth.is_some();
+            let gmode = d.gmode;
             let masks = || {
                 if has_gdepth {
                     match gmode {
@@ -1213,21 +1147,17 @@ impl Glide {
                 }
             };
             masks();
-            // the depth buffer (`zbuffer.rs`): solid primitives with their own depth at every
-            // corner write it, the others with depth only test
-            let zk = self.batch_z;
-            let zwrite = zk == 2 && gmode == 1;
-            gl.uniform_1_i32(u.ztest.as_ref(), (zk != 0) as i32);
+            gl.uniform_1_i32(u.ztest.as_ref(), (d.zk != 0) as i32);
             gl.uniform_1_i32(u.zonly.as_ref(), 0);
-            if zk != 0 {
+            if d.zk != 0 {
                 gl.enable(glow::DEPTH_TEST);
                 gl.depth_func(glow::LEQUAL);
                 gl.depth_mask(false);
-                gl.uniform_1_f32(u.zbias.as_ref(), if zwrite { 0.0 } else { super::zbuffer::TEST_BIAS });
+                gl.uniform_1_f32(u.zbias.as_ref(), if d.zwrite { 0.0 } else { super::zbuffer::TEST_BIAS });
             }
             let (zonly, ztest_u, zbias_u) = (u.zonly.clone(), u.ztest.clone(), u.zbias.clone());
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            let bytes = std::slice::from_raw_parts(self.batch.as_ptr() as *const u8, self.batch.len() * 4);
+            let bytes = std::slice::from_raw_parts(batch.as_ptr() as *const u8, batch.len() * 4);
             if self.vbo_at + bytes.len() > VBO_SIZE {
                 gl.buffer_data_size(glow::ARRAY_BUFFER, VBO_SIZE.max(bytes.len()) as i32, glow::STREAM_DRAW);
                 self.vbo_at = 0;
@@ -1235,24 +1165,24 @@ impl Glide {
             // the part written was never drawn from since the buffer was made: no wait (glBufferSubData:
             // mapping the range made the driver's thread catch up at every batch, ~0.3 ms a picture)
             gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, self.vbo_at as i32, bytes);
-            let (first, count) = ((self.vbo_at / (4 * VERTEX)) as i32, (self.batch.len() / VERTEX) as i32);
-            if zwrite {
+            let (first, count) = ((self.vbo_at / (4 * VERTEX)) as i32, (batch.len() / VERTEX) as i32);
+            if d.zwrite {
                 // first the depth alone, where the alpha is at least 0.75 when it counts
                 // (keyed holes and soft edges leave what is behind visible)
                 gl.color_mask(false, false, false, false);
                 gl.depth_mask(true);
-                gl.uniform_1_i32(zonly.as_ref(), if opaque && edge != 1 { 1 } else { 2 });
+                gl.uniform_1_i32(zonly.as_ref(), d.zonly);
                 gl.uniform_1_f32(zbias_u.as_ref(), -super::zbuffer::slack());
-                gl.draw_arrays(self.batch_mode, first, count);
+                gl.draw_arrays(d.topology, first, count);
                 gl.uniform_1_f32(zbias_u.as_ref(), 0.0);
                 gl.uniform_1_i32(zonly.as_ref(), 0);
                 gl.depth_mask(false);
                 gl.color_mask(true, true, true, true);
                 masks();
             }
-            gl.draw_arrays(self.batch_mode, first, count);
+            gl.draw_arrays(d.topology, first, count);
             self.vbo_at += bytes.len();
-            if zk != 0 {
+            if d.zk != 0 {
                 gl.disable(glow::DEPTH_TEST);
                 gl.depth_mask(true);
                 gl.uniform_1_i32(ztest_u.as_ref(), 0);
@@ -1260,21 +1190,316 @@ impl Glide {
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
         }
+    }
+
+    /// Rows of a texture layer: rgb premultiplied by coverage and the coverage, and the alpha.
+    #[allow(clippy::too_many_arguments)]
+    fn upload(&mut self, gl: &glow::Context, layer: u32, r0: u32, w: u32, rows: u32, rgb: &[u8], alpha: &[u8]) {
+        unsafe {
+            for (t, format, px) in [(self.array, glow::RGBA, rgb), (self.alpha, glow::RG, alpha)] {
+                gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(t));
+                gl.tex_sub_image_3d(glow::TEXTURE_2D_ARRAY, 0, 0, r0 as i32, layer as i32, w as i32, rows as i32, 1, format, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(px)));
+            }
+        }
+        self.stale = true;
+    }
+
+    fn close(&mut self, gl: &glow::Context) {
+        unsafe {
+            if let Some((fbo, rb, _)) = self.ms.take() {
+                gl.delete_framebuffer(fbo);
+                gl.delete_renderbuffer(rb);
+            }
+            self.drop_gbuffer(gl);
+            if let Some(mut s) = self.ssao.take() {
+                s.delete(gl);
+            }
+            if let Some(mut s) = self.shadow_map.take() {
+                s.delete(gl);
+            }
+            if let Some(mut s) = self.lighting.take() {
+                s.delete(gl);
+            }
+            if let Some(mut s) = self.heat.take() {
+                s.delete(gl);
+            }
+            if let Some(mut s) = self.bloom.take() {
+                s.delete(gl);
+            }
+            if let Some(mut s) = self.motion.take() {
+                s.delete(gl);
+            }
+            if let Some(mut s) = self.tonemap.take() {
+                s.delete(gl);
+            }
+            gl.delete_framebuffer(self.fbo);
+            gl.delete_texture(self.color);
+            gl.delete_texture(self.array);
+            gl.delete_texture(self.alpha);
+        }
+    }
+}
+
+impl Glide {
+    fn open(ctx: &mut Ctx, w: u32, h: u32) -> Option<Glide> {
+        let target = (w, w * 3 / 4);
+        let back = match ctx {
+            Ctx::Gl(gl) => Back::Gl(Box::new(GlBack::open(gl, target))),
+            Ctx::Vk(v) => match super::vglide::Gpu::open(v) {
+                Ok(g) => Back::Vk(Box::new(g)),
+                Err(e) => {
+                    log!("error: vulkan: Glide: {e}");
+                    return None;
+                }
+            },
+        };
+        Some(Glide {
+            res: (w, h),
+            target,
+            // made in RGBA8: the first resize makes it anew when tone mapping is on
+            target_hdr: false,
+            space: (w, h),
+            view: View::Full,
+            back,
+            textures: BTreeMap::new(),
+            downloads: 0,
+            cc: [1, 0, 0, 0, 0],
+            ac: [1, 0, 0, 0, 0],
+            constant: 0xffff_ffff,
+            tex: None,
+            state: State {
+                blend: (4, 0),
+                chroma: false,
+                key: 0,
+                linear: false,
+                clamp: (true, true),
+                clip: [0, 0, w as i32, h as i32],
+            },
+            batch: Vec::new(),
+            batch_mode: glow::TRIANGLES,
+            batch_z: 0,
+            gamma: 1.0,
+            gbuf: None,
+            casters: Vec::new(),
+            cast_only: 0,
+            lights: Vec::new(),
+            zbuf: Vec::new(),
+            smoke_lights: Vec::new(),
+            heat_sources: Vec::new(),
+        })
+    }
+
+    /// The view's rectangle in the target (x, y from the top, w, h) and the columns it is cut to.
+    fn view_rect(&self) -> ([f32; 4], (f32, f32)) {
+        let (tw, th) = (self.target.0 as f32, self.target.1 as f32);
+        let w43 = (th * 4.0 / 3.0).min(tw);
+        match self.view {
+            View::Full => ([0.0, 0.0, tw, th], (0.0, tw)),
+            View::Hud(at) => ([(tw - w43) * at, 0.0, w43, th], (0.0, tw)),
+            View::Half(false) => ([tw / 4.0 - w43 / 4.0, 0.0, w43, th], (0.0, tw / 2.0)),
+            View::Half(true) => ([tw * 0.75 - w43 * 0.75, 0.0, w43, th], (tw / 2.0, tw)),
+        }
+    }
+
+    /// The depth attachment is there (the depth for the AO, the lights, the depth buffer...).
+    fn has_depth(&self) -> bool {
+        match &self.back {
+            Back::Gl(b) => b.gdepth.is_some(),
+            Back::Vk(b) => b.has_depth(),
+        }
+    }
+
+    /// Replacement textures are there.
+    fn has_hd(&self) -> bool {
+        match &self.back {
+            Back::Gl(b) => b.hd.is_some(),
+            Back::Vk(b) => b.has_hd(),
+        }
+    }
+
+    /// Size the target (between frames): as tall as the render size `h` (the window's or the
+    /// chosen resolution: high resolution), as wide as the aspect `a` makes it.
+    fn resize(&mut self, ctx: &mut Ctx, a: f32, h: u32) {
+        let h = h.clamp(240, 4320);
+        let w = (h as f32 * a).round() as u32;
+        let changed = (w, h) != self.target || self.target_hdr != super::tonemap::hdr();
+        if changed {
+            self.target = (w, h);
+            self.target_hdr = super::tonemap::hdr();
+            TARGET_HDR.store(self.target_hdr, Ordering::Relaxed);
+        }
+        let target = self.target;
+        match (&mut self.back, ctx) {
+            (Back::Gl(b), Ctx::Gl(gl)) => {
+                if changed {
+                    b.retarget(gl, target);
+                }
+                // the samples may have changed in Preferences, the AO in Advanced Graphics
+                b.multisample(gl, target, changed);
+                b.gbuffer(gl, target);
+            }
+            (Back::Vk(b), Ctx::Vk(v)) => {
+                let samples = MSAA.load(Ordering::Relaxed);
+                if let Err(e) = b.resize(v, target, self.target_hdr, if samples < 2 { 1 } else { samples }, super::ao::depth_wanted()) {
+                    log!("error: vulkan: Glide target: {e}");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The scissor box of a clip rectangle (x, y from below, w, h).
+    fn scissor_box(&self, c: [i32; 4]) -> [i32; 4] {
+        let ([vx, vy, vw, vh], (cut0, cut1)) = self.view_rect();
+        let th = self.target.1 as f32;
+        let (sx, sy) = (vw / self.res.0 as f32, vh / self.res.1 as f32);
+        let x0 = (vx + c[0] as f32 * sx).max(cut0).round() as i32;
+        let x1 = (vx + c[2] as f32 * sx).min(cut1).round() as i32;
+        let (y0, y1) = ((vy + c[1] as f32 * sy).round() as i32, (vy + c[3] as f32 * sy).round() as i32);
+        [x0, th as i32 - y1, (x1 - x0).max(0), (y1 - y0).max(0)]
+    }
+
+    /// A drawing of nothing yet: the view and clip window, the rest off.
+    fn draw_base(&self) -> Draw<'static> {
+        Draw {
+            topology: self.batch_mode,
+            target: self.target,
+            viewport: self.view_rect().0,
+            scissor: self.scissor_box(self.state.clip),
+            space: [self.space.0 as f32, self.space.1 as f32],
+            jitter: [0.0; 2],
+            mipmaps: false,
+            aniso: 1.0,
+            clamp: [true; 2],
+            chroma: false,
+            key: [0.0; 3],
+            linear: false,
+            blend: None,
+            edge: 0,
+            gmode: 0,
+            zk: 0,
+            zwrite: false,
+            zonly: 0,
+            show_effects: false,
+            smoke: None,
+        }
+    }
+
+    /// Draw what is batched with the current state.
+    fn flush(&mut self, ctx: &mut Ctx) {
+        if self.batch.is_empty() {
+            return;
+        }
+        let s = self.state;
+        let mut d = self.draw_base();
+        // only the 3D picture is jittered, the HUD stays still
+        let j = if self.gbuf.is_some() { super::jitter::now() } else { [0.0; 2] };
+        d.jitter = [2.0 * j[0] / self.target.0 as f32, 2.0 * j[1] / self.target.1 as f32];
+        let filter = FILTER.load(Ordering::Relaxed);
+        d.mipmaps = filter != 0 && s.key & 0xff_ffff == 0;
+        d.aniso = filter.max(1) as f32;
+        d.clamp = [s.clamp.0, s.clamp.1];
+        d.chroma = s.chroma;
+        let key = s.key;
+        d.key = [(key >> 16 & 0xff) as f32 / 255.0, (key >> 8 & 0xff) as f32 / 255.0, (key & 0xff) as f32 / 255.0];
+        d.linear = s.linear;
+        // blending: Glide factors 0 zero, 1 src alpha, 2 src/dst colour, 3 dst alpha, 4 one,
+        // 5 1 - src alpha, 6 1 - src/dst colour, 7 1 - dst alpha
+        let factor = |f: u32, dst: bool| match f {
+            0 => glow::ZERO,
+            1 => glow::SRC_ALPHA,
+            2 => if dst { glow::SRC_COLOR } else { glow::DST_COLOR },
+            3 => glow::DST_ALPHA,
+            5 => glow::ONE_MINUS_SRC_ALPHA,
+            6 => if dst { glow::ONE_MINUS_SRC_COLOR } else { glow::ONE_MINUS_DST_COLOR },
+            7 => glow::ONE_MINUS_DST_ALPHA,
+            _ => glow::ONE,
+        };
+        let (src, dst) = (factor(s.blend.0, false), factor(s.blend.1, true));
+        let opaque = src == glow::ONE && dst == glow::ZERO;
+        let soft = s.chroma && s.linear;
+        // the soft chroma key edge: 0 cut at half, 1 alpha = cover (blending turned on for
+        // it), 2 alpha *= cover, 3 rgb *= cover (additive). Untextured vertices have a
+        // cover of 1, which leaves them as they are.
+        d.edge = if !soft {
+            0
+        } else if opaque {
+            1
+        } else if src == glow::SRC_ALPHA || dst == glow::ONE_MINUS_SRC_ALPHA {
+            2
+        } else if src == glow::ONE && dst == glow::ONE {
+            3
+        } else {
+            0
+        };
+        d.blend = if opaque && d.edge != 1 {
+            None
+        } else if d.edge == 1 {
+            Some((glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA))
+        } else {
+            Some((src, dst))
+        };
+        // the depth attachment: depth from opaque 3D primitives and alpha-blended ones (the
+        // game draws its solid geometry so, with alpha 1), where their alpha is at least
+        // half (the attachment blended with its own alpha 0 or 1); a mask from those that
+        // add colour; nothing from those that only darken (the game's shadows) or the HUD
+        d.gmode = match (self.has_depth(), self.gbuf.is_some()) {
+            (true, true) if opaque || src == glow::SRC_ALPHA && dst == glow::ONE_MINUS_SRC_ALPHA => 1,
+            (true, true) if src == glow::ZERO || src == glow::DST_COLOR => 0,
+            (true, true) if dst == glow::ONE => 3,
+            (true, true) => 2,
+            _ => 0,
+        };
+        // the sun's shadow casters: triangles with depth at every corner, the chroma key in
+        // the constant colour's place (`shadows.rs`)
+        if d.gmode == 1 && self.batch_mode == glow::TRIANGLES && super::shadows::map() {
+            let kc = [d.key[0], d.key[1], d.key[2], s.chroma as u32 as f32].map(f32::to_bits);
+            for t in self.batch.chunks_exact(3 * VERTEX) {
+                if t.chunks_exact(VERTEX).all(|v| f32::from_bits(v[20]) > 0.0) {
+                    for v in t.chunks_exact(VERTEX) {
+                        self.casters.extend_from_slice(&v[..8]);
+                        self.casters.extend(kc);
+                        self.casters.extend_from_slice(&v[12..]);
+                    }
+                }
+            }
+        }
+        d.show_effects = self.gbuf.is_some() && super::effects::showing();
+        // the depth buffer (`zbuffer.rs`): solid primitives with their own depth at every
+        // corner write it, the others with depth only test
+        d.zk = self.batch_z;
+        d.zwrite = d.zk == 2 && d.gmode == 1;
+        d.zonly = if opaque && d.edge != 1 { 1 } else { 2 };
+        // lit smoke: additive effects of the 3D picture take the view's last lights
+        let focal = 4096.0 * self.target.1 as f32 / 1920.0;
+        let lit = match self.gbuf {
+            Some(_) if self.has_depth() && dst == glow::ONE && super::lights::smoke_enabled() => {
+                let clip = d.scissor;
+                self.smoke_lights.iter().find(|l| l.0 == clip).filter(|l| !l.1.is_empty())
+            }
+            _ => None,
+        };
+        let d = Draw { smoke: lit.map(|(_, pos, col)| (&pos[..], &col[..], focal)), ..d };
+        match (&mut self.back, ctx) {
+            (Back::Gl(b), Ctx::Gl(gl)) => b.draw(gl, &d, &self.batch),
+            (Back::Vk(b), Ctx::Vk(v)) => b.draw(v, &d, &self.batch),
+            _ => {}
+        }
         self.batch.clear();
     }
 
     /// Change the state, drawing what was batched with the old one first.
-    fn set(&mut self, gl: &glow::Context, f: impl FnOnce(&mut State)) {
+    fn set(&mut self, ctx: &mut Ctx, f: impl FnOnce(&mut State)) {
         let mut s = self.state;
         f(&mut s);
         if s != self.state {
-            self.flush(gl);
+            self.flush(ctx);
             self.state = s;
         }
     }
 
     /// Add vertices (GrVertex at guest addresses) as primitives of `mode`.
-    fn add(&mut self, gl: &glow::Context, mode: u32, verts: &[u32]) {
+    fn add(&mut self, ctx: &mut Ctx, mode: u32, verts: &[u32]) {
         let _t = super::fps::timer(super::fps::Phase::Add);
         // the game's round shadows under objects (blend ZERO, 1 - SRC_ALPHA: they darken) are
         // left out of the 3D picture when ours are drawn (`shadows.rs`)
@@ -1282,7 +1507,7 @@ impl Glide {
             return;
         }
         if mode != self.batch_mode {
-            self.flush(gl);
+            self.flush(ctx);
             self.batch_mode = mode;
         }
         let m = mem();
@@ -1330,7 +1555,7 @@ impl Glide {
         let quad = if let [v0, v1] = *verts { Some(self.line_offsets(xy(v0), xy(v1))) } else { None };
         // the view-space depth of each vertex (3D picture, AO on), by its place in the units
         let mut z = std::mem::take(&mut self.zbuf);
-        let exact = match (self.gdepth.is_some(), self.gbuf) {
+        let exact = match (self.has_depth(), self.gbuf) {
             (true, Some(dx)) => super::ao::depths(verts.iter().map(|&v| (xy(v).0 - dx, xy(v).1)), &mut z),
             _ => {
                 z.clear();
@@ -1340,7 +1565,7 @@ impl Glide {
         };
         // the depth buffer: the 3D picture's primitives with a depth at every corner (written
         // only with their own), a batch of one kind
-        let zk = if super::zbuffer::enabled() && self.gbuf.is_some() && self.gdepth.is_some() && self.cast_only == 0 && z.iter().all(|&d| d > 0.0) {
+        let zk = if super::zbuffer::enabled() && self.gbuf.is_some() && self.has_depth() && self.cast_only == 0 && z.iter().all(|&d| d > 0.0) {
             if exact { 2 } else { 1 }
         } else {
             0
@@ -1350,7 +1575,7 @@ impl Glide {
         // feet): the test cut most of the shadow away. Drawn in the game's order, as before.
         let zk = if self.state.blend == (0, 5) { 0 } else { zk };
         if zk != self.batch_z {
-            self.flush(gl);
+            self.flush(ctx);
             self.batch_z = zk;
         }
         // perspective-correct textures: only with every vertex's own depth
@@ -1371,7 +1596,7 @@ impl Glide {
         }
         // a glow of the 3D picture (additive): a dynamic light
         // (not lines: the laser sight would light the ground along it)
-        if self.cast_only == 0 && self.gbuf.is_some() && self.gdepth.is_some() && super::lights::enabled() && verts.len() >= 3 && self.state.blend.1 == 4 && matches!(self.state.blend.0, 1 | 4) {
+        if self.cast_only == 0 && self.gbuf.is_some() && self.has_depth() && super::lights::enabled() && verts.len() >= 3 && self.state.blend.1 == 4 && matches!(self.state.blend.0, 1 | 4) {
             let _t = super::fps::timer(super::fps::Phase::Lights);
             let colour = self.glow_colour(verts, st_box);
             let (tw, th) = (self.target.0 as f32, self.target.1 as f32);
@@ -1560,8 +1785,8 @@ impl Glide {
     }
 
     /// Texels into the texture at TMU address `addr` (rows `rows` of its top level, or all).
-    fn download(&mut self, gl: &glow::Context, addr: u32, lod: u32, aspect: u32, format: u32, data: u32, rows: Option<(u32, u32)>) {
-        self.flush(gl);
+    fn download(&mut self, ctx: &mut Ctx, addr: u32, lod: u32, aspect: u32, format: u32, data: u32, rows: Option<(u32, u32)>) {
+        self.flush(ctx);
         let (w, h) = lod_size(lod, aspect);
         let bytes = w * h * bytes_per_texel(format);
         self.downloads += 1;
@@ -1585,61 +1810,48 @@ impl Glide {
                 layer
             }
         };
-        unsafe {
-            gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.array));
-            let (r0, r1) = rows.unwrap_or((0, h - 1));
-            let r1 = r1.min(h - 1);
-            if r0 > r1 {
-                return;
-            }
-            let n = ((r1 - r0 + 1) * w) as usize;
-            let mut px = convert(format, data, n);
-            let key = super::hd::hash(format, w, r1 - r0 + 1, mem().slice(data, n * bytes_per_texel(format) as usize));
-            super::light::recolour(key, &mut px);
-            // as a replacement has it: alpha 0 where keyed out
-            let original: Vec<u8> = px.chunks(4).flat_map(|p| [p[0], p[1], p[2], if p[..3] == [0, 0, 0] { 0 } else { 255 }]).collect();
-            super::hd::dump(key, w, r1 - r0 + 1, &original);
-            // premultiplied by coverage: a black texel is keyed out
-            let mut rgb = Vec::with_capacity(n * 4);
-            let mut alpha = Vec::with_capacity(n * 2);
-            for p in px.chunks(4) {
-                let covered = p[..3] != [0, 0, 0];
-                rgb.extend(if covered { [p[0], p[1], p[2], 255] } else { [0; 4] });
-                alpha.extend(if covered { [p[3], 0] } else { [0, p[3]] });
-            }
-            if let Some(t) = self.textures.get_mut(&addr) {
-                let at = (r0 * w * 3) as usize;
-                t.means.get_mut().clear();
-                for (k, p) in px.chunks(4).enumerate() {
-                    t.rgb[at + 3 * k..at + 3 * k + 3].copy_from_slice(&p[..3]);
-                }
-            }
-            for (t, format, px) in [(self.array, glow::RGBA, &rgb), (self.alpha, glow::RG, &alpha)] {
-                gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(t));
-                gl.tex_sub_image_3d(
-                    glow::TEXTURE_2D_ARRAY,
-                    0,
-                    0,
-                    r0 as i32,
-                    layer as i32,
-                    w as i32,
-                    (r1 - r0 + 1) as i32,
-                    1,
-                    format,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(px)),
-                );
-            }
-            self.stale = true;
-            self.replace(gl, addr, key, (r0, r1), &original);
+        let (r0, r1) = rows.unwrap_or((0, h - 1));
+        let r1 = r1.min(h - 1);
+        if r0 > r1 {
+            return;
         }
+        let n = ((r1 - r0 + 1) * w) as usize;
+        let mut px = convert(format, data, n);
+        let key = super::hd::hash(format, w, r1 - r0 + 1, mem().slice(data, n * bytes_per_texel(format) as usize));
+        super::light::recolour(key, &mut px);
+        // as a replacement has it: alpha 0 where keyed out
+        let original: Vec<u8> = px.chunks(4).flat_map(|p| [p[0], p[1], p[2], if p[..3] == [0, 0, 0] { 0 } else { 255 }]).collect();
+        super::hd::dump(key, w, r1 - r0 + 1, &original);
+        // premultiplied by coverage: a black texel is keyed out
+        let mut rgb = Vec::with_capacity(n * 4);
+        let mut alpha = Vec::with_capacity(n * 2);
+        for p in px.chunks(4) {
+            let covered = p[..3] != [0, 0, 0];
+            rgb.extend(if covered { [p[0], p[1], p[2], 255] } else { [0; 4] });
+            alpha.extend(if covered { [p[3], 0] } else { [0, p[3]] });
+        }
+        if let Some(t) = self.textures.get_mut(&addr) {
+            let at = (r0 * w * 3) as usize;
+            t.means.get_mut().clear();
+            for (k, p) in px.chunks(4).enumerate() {
+                t.rgb[at + 3 * k..at + 3 * k + 3].copy_from_slice(&p[..3]);
+            }
+        }
+        match (&mut self.back, &mut *ctx) {
+            (Back::Gl(b), Ctx::Gl(gl)) => b.upload(gl, layer, r0, w, r1 - r0 + 1, &rgb, &alpha),
+            (Back::Vk(b), Ctx::Vk(v)) => b.upload(v, layer, r0, w, r1 - r0 + 1, &rgb, &alpha),
+            _ => {}
+        }
+        self.replace(ctx, addr, key, (r0, r1), &original);
     }
 
     /// After a download of rows `r0..=r1` (known by `key`) into the texture at `addr`: its
     /// replacement into the replacements' layer, or the original scaled up when other parts of
     /// the page are replaced. A whole page without a replacement gives its layer up.
-    fn replace(&mut self, gl: &glow::Context, addr: u32, key: u64, rows: (u32, u32), original: &[u8]) {
-        let Some(hd) = &mut self.hd else { return };
+    fn replace(&mut self, ctx: &mut Ctx, addr: u32, key: u64, rows: (u32, u32), original: &[u8]) {
+        if !self.has_hd() {
+            return;
+        }
         let t = &self.textures[&addr];
         let (layer, w, h) = (t.layer, t.w, t.h);
         let img = super::hd::find(key, w, rows.1 - rows.0 + 1, original);
@@ -1661,14 +1873,30 @@ impl Glide {
                 self.textures.get_mut(&addr).unwrap().hd = Some(l);
                 // the rest of the page as it is
                 if !whole {
-                    hd.scale_up(gl, self.array, layer, l, w, (0, h - 1));
+                    self.hd_scale_up(ctx, layer, l, w, (0, h - 1));
                 }
                 l
             }
         };
         match img {
-            Some(img) => hd.put(gl, hd_layer, rows.0, &img),
-            None => hd.scale_up(gl, self.array, layer, hd_layer, w, rows),
+            Some(img) => match (&mut self.back, ctx) {
+                (Back::Gl(b), Ctx::Gl(gl)) => b.hd.as_mut().unwrap().put(gl, hd_layer, rows.0, &img),
+                (Back::Vk(b), Ctx::Vk(v)) => b.hd_put(v, hd_layer, rows.0, &img),
+                _ => {}
+            },
+            None => self.hd_scale_up(ctx, layer, hd_layer, w, rows),
+        }
+    }
+
+    /// Rows of the original texture in `layer` scaled up into the replacement's `hd_layer`.
+    fn hd_scale_up(&mut self, ctx: &mut Ctx, layer: u32, hd_layer: u32, w: u32, rows: (u32, u32)) {
+        match (&mut self.back, ctx) {
+            (Back::Gl(b), Ctx::Gl(gl)) => {
+                let array = b.array;
+                b.hd.as_mut().unwrap().scale_up(gl, array, layer, hd_layer, w, rows);
+            }
+            (Back::Vk(b), Ctx::Vk(v)) => b.hd_scale_up(v, layer, hd_layer, w, rows),
+            _ => {}
         }
     }
 }
@@ -1719,11 +1947,11 @@ fn sst_win_open(c: &mut Cpu) -> u32 {
         _ => (640, 480),
     };
     log!("glide: grSstWinOpen {w}x{h}");
-    let mut g = super::window::with_gl(|gl| Glide::open(&gl.gl, w, h));
+    let mut g = with_ctx(|ctx| Glide::open(ctx, w, h)).flatten();
     if let Some(g) = &mut g {
         let (ww, wh) = super::display::render_size();
         let a = super::wide::set_aspect(Some(ww as f32 / wh.max(1) as f32));
-        super::window::with_gl(|gl| g.resize(&gl.gl, a, wh));
+        with_ctx(|ctx| g.resize(ctx, a, wh));
     }
     let ok = g.is_some();
     GLIDE.with(|s| *s.borrow_mut() = g);
@@ -1731,61 +1959,30 @@ fn sst_win_open(c: &mut Cpu) -> u32 {
 }
 
 fn sst_win_close(_: &mut Cpu) -> u32 {
-    with(|g, gl| unsafe {
-        if let Some((fbo, rb, _)) = g.ms.take() {
-            gl.delete_framebuffer(fbo);
-            gl.delete_renderbuffer(rb);
-        }
-        g.drop_gbuffer(gl);
-        if let Some(mut s) = g.ssao.take() {
-            s.delete(gl);
-        }
-        if let Some(mut s) = g.shadow_map.take() {
-            s.delete(gl);
-        }
+    with(|g, ctx| {
         g.casters.clear();
-        if let Some(mut s) = g.lighting.take() {
-            s.delete(gl);
+        match (&mut g.back, ctx) {
+            (Back::Gl(b), Ctx::Gl(gl)) => b.close(gl),
+            (Back::Vk(b), Ctx::Vk(v)) => b.close(v),
+            _ => {}
         }
-        if let Some(mut s) = g.heat.take() {
-            s.delete(gl);
-        }
-        if let Some(mut s) = g.bloom.take() {
-            s.delete(gl);
-        }
-        if let Some(mut s) = g.motion.take() {
-            s.delete(gl);
-        }
-        if let Some(mut s) = g.tonemap.take() {
-            s.delete(gl);
-        }
-        gl.delete_framebuffer(g.fbo);
-        gl.delete_texture(g.color);
-        gl.delete_texture(g.array);
-        gl.delete_texture(g.alpha);
     });
     GLIDE.with(|s| *s.borrow_mut() = None);
     super::wide::set_aspect(None);
     1
 }
 
-
 fn buffer_clear(c: &mut Cpu) -> u32 {
     let color = arg(c, 0);
-    with(|g, gl| {
-        g.flush(gl);
-        unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(g.draw_fbo()));
-            g.scissor(gl, g.state.clip);
-            let ch = |sh: u32| (color >> sh & 0xff) as f32 / 255.0;
-            gl.clear_buffer_f32_slice(glow::COLOR, 0, &[ch(16), ch(8), ch(0), 1.0]);
-            if g.gdepth.is_some() {
-                gl.color_mask_draw_buffer(1, true, true, true, true);
-                gl.clear_buffer_f32_slice(glow::COLOR, 1, &[0.0; 4]);
-                gl.depth_mask(true);
-                gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[1.0]);
-            }
-            gl.disable(glow::SCISSOR_TEST);
+    with(|g, ctx| {
+        g.flush(ctx);
+        let ch = |sh: u32| (color >> sh & 0xff) as f32 / 255.0;
+        let colour = [ch(16), ch(8), ch(0), 1.0];
+        let d = g.draw_base();
+        match (&mut g.back, ctx) {
+            (Back::Gl(b), Ctx::Gl(gl)) => b.clear(gl, &d, colour),
+            (Back::Vk(b), Ctx::Vk(v)) => b.clear(v, &d, colour),
+            _ => {}
         }
     });
     0
@@ -1793,32 +1990,49 @@ fn buffer_clear(c: &mut Cpu) -> u32 {
 
 fn buffer_swap(_: &mut Cpu) -> u32 {
     super::sample::start();
-    let shown = with(|g, gl| {
-        g.flush(gl);
-        g.resolve(gl);
-        g.clear_gbuffer(gl);
-        (g.color, g.target, super::light::gamma(g.gamma))
-    });
+    let shown = with(|g, ctx| {
+        g.flush(ctx);
+        let (target, gamma) = (g.target, super::light::gamma(g.gamma));
+        match (&mut g.back, ctx) {
+            (Back::Gl(b), Ctx::Gl(gl)) => {
+                b.resolve(gl, target);
+                b.clear_gbuffer(gl);
+                Some(Shown::Gl(b.color, target, gamma))
+            }
+            (Back::Vk(b), Ctx::Vk(v)) => b.finish(v).map(|view| Shown::Vk(view, target, gamma)),
+            _ => None,
+        }
+    })
+    .flatten();
     super::ao::clear();
     super::shadows::clear();
-    if let Some((tex, (w, h), gamma)) = shown {
-        super::window::show_texture(tex, w, h, gamma);
+    if let Some(shown) = shown {
+        match shown {
+            Shown::Gl(tex, (w, h), gamma) => super::window::show_texture(tex, w, h, gamma),
+            Shown::Vk(view, (w, h), gamma) => super::window::show_scene(view, w, h, gamma),
+        }
         super::fps::frame_shown();
         super::jitter::next();
         // the next frame follows the window
         let (ww, wh) = super::display::render_size();
         let a = super::wide::set_aspect(Some(ww as f32 / wh.max(1) as f32));
-        with(|g, gl| g.resize(gl, a, wh));
+        with(|g, ctx| g.resize(ctx, a, wh));
     }
     0
 }
 
+/// A picture to show at grBufferSwap.
+enum Shown {
+    Gl(glow::Texture, (u32, u32), f32),
+    Vk(ash::vk::ImageView, (u32, u32), f32),
+}
+
 /// The coordinate space of the vertices that follow (None: screen pixels).
 pub fn set_space(space: Option<(u32, u32)>) {
-    with(|g, gl| {
+    with(|g, ctx| {
         let s = space.unwrap_or(g.res);
         if s != g.space {
-            g.flush(gl);
+            g.flush(ctx);
             g.space = s;
         }
     });
@@ -1832,9 +2046,9 @@ pub fn set_cast_only(kind: u8) {
 /// The 3D picture's primitives follow (`Some(dx)`: the x the walker adds to their units, the
 /// view's origin in split screen), or not: they write the depth attachment for the AO.
 pub fn set_gbuffer(on: Option<f32>) {
-    with(|g, gl| {
+    with(|g, ctx| {
         if on != g.gbuf {
-            g.flush(gl);
+            g.flush(ctx);
             g.gbuf = on;
         }
     });
@@ -1846,31 +2060,42 @@ pub fn post_3d() {
     GLIDE.with(|g| {
         let mut g = g.borrow_mut();
         let Some(g) = g.as_mut() else { return };
-        super::window::with_gl(|w| {
+        if super::window::with_gl(|w| {
             let (gl, vk) = w.parts();
             post_3d_with(g, gl, vk)
-        });
+        })
+        .is_none()
+        {
+            // the Vulkan renderer: no passes yet (PLAN-RTX.md step 6)
+            super::window::with_vkr(|v| {
+                g.flush(&mut Ctx::Vk(v));
+                g.lights.clear();
+                g.heat_sources.clear();
+                g.casters.clear();
+            });
+        }
     });
 }
 
 fn post_3d_with(g: &mut Glide, gl: &glow::Context, mut vk: Option<&mut super::vk::Vk>) {
     {
-        g.flush(gl);
+        g.flush(&mut Ctx::Gl(gl));
+        let clip = g.scissor_box(g.state.clip);
+        let Back::Gl(b) = &mut g.back else { return };
         // FCOP_GBUFFER=scene: our scene's models as lines over the picture (PLAN-RTX.md step 2)
-        super::scene::overlay(gl, g.draw_fbo(), g.target.0, g.target.1, super::wide::k());
+        super::scene::overlay(gl, b.draw_fbo(), g.target.0, g.target.1, super::wide::k());
         let _t = super::fps::timer(super::fps::Phase::Post);
         let lights = std::mem::take(&mut g.lights);
         let heat = std::mem::take(&mut g.heat_sources);
-        let Some(d) = &g.gdepth else {
+        let Some(d) = &b.gdepth else {
             // no depth effect on: only the tone mapping, on the framebuffer drawn into
             if g.target_hdr {
-                let (target, clip, out) = (g.target, g.scissor_box(g.state.clip), g.draw_fbo());
-                g.tonemap.get_or_insert_with(|| super::tonemap::Pass::new(gl)).run(gl, target, out, clip, super::tonemap::curve());
+                let (target, out) = (g.target, b.draw_fbo());
+                b.tonemap.get_or_insert_with(|| super::tonemap::Pass::new(gl)).run(gl, target, out, clip, super::tonemap::curve());
             }
             return;
         };
         let (tex, ms, colour) = (d.tex, d.ms, d.colour);
-        let clip = g.scissor_box(g.state.clip);
         let target = g.target;
         // the sun's shadow: screen-space, or the shadow map of this view's casters
         let next = super::shadows::next_view();
@@ -1878,8 +2103,8 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, mut vk: Option<&mut super::vk
         let casters = std::mem::take(&mut g.casters);
         let map = match super::shadows::map() {
             true => {
-                let (textures, space) = ((g.array, g.alpha), (g.space.0 as f32, g.space.1 as f32));
-                g.shadow_map.get_or_insert_with(|| super::shadows::ShadowMap::new(gl)).render(gl, &casters, &next, target, space, textures)
+                let (textures, space) = ((b.array, b.alpha), (g.space.0 as f32, g.space.1 as f32));
+                b.shadow_map.get_or_insert_with(|| super::shadows::ShadowMap::new(gl)).render(gl, &casters, &next, target, space, textures)
             }
             false => None,
         };
@@ -1904,10 +2129,10 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, mut vk: Option<&mut super::vk
         // FCOP_GBUFFER=shadows: the sun's shadow alone
         let ao = super::ao::enabled() && super::ao::debug_view() != 4;
         if ao || !matches!(sun, super::ao::Sun::None) {
-            g.ssao.get_or_insert_with(|| super::ao::Ssao::new(gl)).run(gl, tex, ms, target, colour, clip, ao, sun);
+            b.ssao.get_or_insert_with(|| super::ao::Ssao::new(gl)).run(gl, tex, ms, target, colour, clip, ao, sun);
         }
         if super::lights::enabled() {
-            let (pos, col) = g.lighting.get_or_insert_with(|| super::lights::Lighting::new(gl)).run(gl, tex, ms, target, colour, clip, &merged, rays.filter(|_| !casters.is_empty()));
+            let (pos, col) = b.lighting.get_or_insert_with(|| super::lights::Lighting::new(gl)).run(gl, tex, ms, target, colour, clip, &merged, rays.filter(|_| !casters.is_empty()));
             g.smoke_lights.retain(|l| l.0 != clip);
             // a view's box changes with the window: the oldest go
             if g.smoke_lights.len() >= 4 {
@@ -1916,13 +2141,13 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, mut vk: Option<&mut super::vk
             g.smoke_lights.push((clip, pos, col));
         }
         if super::heat::enabled() {
-            g.heat.get_or_insert_with(|| super::heat::Heat::new(gl)).run(gl, tex, ms, target, colour, clip, &heat);
+            b.heat.get_or_insert_with(|| super::heat::Heat::new(gl)).run(gl, tex, ms, target, colour, clip, &heat);
         }
         // DLSS (PLAN-RTX.md step 4): the lit picture, its depth and motion vectors; bloom and tone
         // mapping work on its output
         let mut mvec = None;
         if let (Some(vk), Some(cam)) = (vk.as_deref_mut().filter(|_| super::vk::dlss_ready()), next.camera) {
-            let m = g.motion.get_or_insert_with(|| super::motion::Motion::new(gl)).run(gl, tex, ms, target, colour, clip, next.index, cam);
+            let m = b.motion.get_or_insert_with(|| super::motion::Motion::new(gl)).run(gl, tex, ms, target, colour, clip, next.index, cam);
             mvec = Some(m);
             let rect = clip.map(|v| v.max(0) as u32);
             let frame = super::streamline::Frame {
@@ -1940,24 +2165,24 @@ fn post_3d_with(g: &mut Glide, gl: &glow::Context, mut vk: Option<&mut super::vk
             vk.dlss(gl, colour, tex, ms, m, target, clip, &frame);
         }
         if super::bloom::enabled() {
-            g.bloom.get_or_insert_with(|| super::bloom::Bloom::new(gl)).run(gl, tex, ms, target, colour, clip);
+            b.bloom.get_or_insert_with(|| super::bloom::Bloom::new(gl)).run(gl, tex, ms, target, colour, clip);
         }
         // last: the picture back into 0..1 (the HUD follows unmapped)
         if g.target_hdr {
-            g.tonemap.get_or_insert_with(|| super::tonemap::Pass::new(gl)).run(gl, target, colour, clip, super::tonemap::curve());
+            b.tonemap.get_or_insert_with(|| super::tonemap::Pass::new(gl)).run(gl, target, colour, clip, super::tonemap::curve());
         }
         // the motion vectors (PLAN-RTX.md step 3): the camera's, from the depth (after the rest: FCOP_GBUFFER=motion shows them over the picture)
         if let Some(cam) = next.camera.filter(|_| super::motion::wanted() && mvec.is_none()) {
-            g.motion.get_or_insert_with(|| super::motion::Motion::new(gl)).run(gl, tex, ms, target, colour, clip, next.index, cam);
+            b.motion.get_or_insert_with(|| super::motion::Motion::new(gl)).run(gl, tex, ms, target, colour, clip, next.index, cam);
         }
     }
 }
 
 /// Where the vertices that follow go in the frame.
 pub fn set_view(view: View) {
-    with(|g, gl| {
+    with(|g, ctx| {
         if view != g.view {
-            g.flush(gl);
+            g.flush(ctx);
             g.view = view;
         }
     });
@@ -2024,14 +2249,14 @@ pub fn draw(mode: u32, verts: &[u32]) {
     if traced(|| Call::Draw(mode, verts.iter().map(|&v| std::array::from_fn(|k| mem().rd32(v + 4 * k as u32))).collect())) {
         return;
     }
-    with(|g, gl| g.add(gl, mode, verts));
+    with(|g, ctx| g.add(ctx, mode, verts));
 }
 
 pub fn set_clip(r: [i32; 4]) {
     if traced(|| Call::Clip(r)) {
         return;
     }
-    with(|g, gl| g.set(gl, |s| s.clip = r));
+    with(|g, ctx| g.set(ctx, |s| s.clip = r));
 }
 
 pub fn set_color_combine(v: [u32; 5]) {
@@ -2059,7 +2284,7 @@ pub fn set_blend(b: (u32, u32)) {
     if traced(|| Call::Blend(b)) {
         return;
     }
-    with(|g, gl| g.set(gl, |s| s.blend = b));
+    with(|g, ctx| g.set(ctx, |s| s.blend = b));
 }
 
 /// grTexSource with the texture's TMU address.
@@ -2115,25 +2340,25 @@ fn traced(call: impl FnOnce() -> Call) -> bool {
 
 fn chromakey_mode(c: &mut Cpu) -> u32 {
     let on = arg(c, 0) != 0;
-    with(|g, gl| g.set(gl, |s| s.chroma = on));
+    with(|g, ctx| g.set(ctx, |s| s.chroma = on));
     0
 }
 
 fn chromakey_value(c: &mut Cpu) -> u32 {
     let k = arg(c, 0);
-    with(|g, gl| g.set(gl, |s| s.key = k));
+    with(|g, ctx| g.set(ctx, |s| s.key = k));
     0
 }
 
 fn tex_filter_mode(c: &mut Cpu) -> u32 {
     let linear = arg(c, 2) != 0;
-    with(|g, gl| g.set(gl, |s| s.linear = linear));
+    with(|g, ctx| g.set(ctx, |s| s.linear = linear));
     0
 }
 
 fn tex_clamp_mode(c: &mut Cpu) -> u32 {
     let cl = (arg(c, 1) != 0, arg(c, 2) != 0);
-    with(|g, gl| g.set(gl, |s| s.clamp = cl));
+    with(|g, ctx| g.set(ctx, |s| s.clamp = cl));
     0
 }
 
@@ -2181,14 +2406,14 @@ fn tex_calc_mem_required(c: &mut Cpu) -> u32 {
 fn tex_download_mipmap(c: &mut Cpu) -> u32 {
     let (addr, info) = (arg(c, 1), tex_info(arg(c, 3)));
     let (_, large, aspect, format, data) = info;
-    with(|g, gl| g.download(gl, addr, large, aspect, format, data, None));
+    with(|g, ctx| g.download(ctx, addr, large, aspect, format, data, None));
     0
 }
 
 fn tex_download_mipmap_level(c: &mut Cpu) -> u32 {
     let (addr, this, large, aspect, format, data) = (arg(c, 1), arg(c, 2), arg(c, 3), arg(c, 4), arg(c, 5), arg(c, 7));
     if this == large {
-        with(|g, gl| g.download(gl, addr, this, aspect, format, data, None));
+        with(|g, ctx| g.download(ctx, addr, this, aspect, format, data, None));
     }
     0
 }
@@ -2197,7 +2422,7 @@ fn tex_download_mipmap_level_partial(c: &mut Cpu) -> u32 {
     let (addr, this, large, aspect, format, data, r0, r1) = (arg(c, 1), arg(c, 2), arg(c, 3), arg(c, 4), arg(c, 5), arg(c, 7), arg(c, 8), arg(c, 9));
     if this == large {
         // `data` points at the first row downloaded
-        with(|g, gl| g.download(gl, addr, this, aspect, format, data, Some((r0, r1))));
+        with(|g, ctx| g.download(ctx, addr, this, aspect, format, data, Some((r0, r1))));
     }
     0
 }

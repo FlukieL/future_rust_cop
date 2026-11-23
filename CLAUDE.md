@@ -601,6 +601,18 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   (a pixel shows the point at its centre less the offset; moved pass jittered as the picture);
   `reproject` samples the last picture with its own jitter (standing: ~3 against ~0.3 without,
   bilinear resampling; the wrong sign gave ~9).
+- `vkr.rs`, `vglide.rs` (PLAN-RTX.md step 6, `FCOP_RENDERER=vulkan`): the Vulkan renderer, no
+  OpenGL at all (`window::Screen::Vk`; GL stays the default until it matches). `vkr.rs`: its
+  own instance/device (Vulkan 1.3, dynamic rendering, push descriptors), swapchain, two
+  pictures in flight (one command buffer each, begun at first use by `Vkr::cmd`, which also
+  frees that picture's staging memory and trash), uploads by a staging ring, `begin_rendering`
+  / `end_rendering` / `transition` (an `Img` keeps its layout), the composition (frame / scene,
+  video, overlay, stats into a window-sized image, blitted into the swapchain; FCOP_SHOT reads
+  it back). `vglide.rs`: Glide's GPU side (`glide.rs`'s `Back::Vk`; `GlBack` is GL's): target,
+  MSAA image resolved at swap, G-buffer RG32F + D32F, texture arrays with mipmaps by blits of
+  the layers downloaded into, a vertex ring per picture, pipelines by `Key`, the batch state as
+  push constants. Shaders `shaders/glide.*`, `shaders/blit.*` (GLSL 450, SPIR-V checked in,
+  `glslc -O`). Vulkan's y points down: no flips. Post passes not ported yet (skipped).
 - `wide.rs`: widescreen (Hor+). k = (4/3) / aspect scales camera-space x before the
   projections (0x453740 terrain vertex, 0x457340 object points, 0x457140 sprites) and the
   sphere view tests (0x452fd0 terrain cells, 0x4572a0 objects); target markers (0x435330,
