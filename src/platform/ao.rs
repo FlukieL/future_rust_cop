@@ -268,11 +268,11 @@ pub fn depths(verts: impl ExactSizeIterator<Item = (f32, f32)> + Clone, out: &mu
 
 /// The occlusion's reach in object units, and how strong it darkens (0...1).
 pub(super) const RADIUS: f32 = 400.0;
-const STRENGTH: f32 = 1.0;
+pub(super) const STRENGTH: f32 = 1.0;
 
 /// A rise above a point's surface smaller than this (object units, plus 0.4% of the depth) does
 /// not occlude it (`FCOP_AO_STEP` for tests).
-fn step() -> f32 {
+pub(super) fn step() -> f32 {
     super::debug::num(super::debug::V::AoStep)
 }
 

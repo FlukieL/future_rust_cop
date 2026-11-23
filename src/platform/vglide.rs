@@ -67,6 +67,9 @@ pub struct Gpu {
     target: Option<Target>,
     /// the post passes (`vpost.rs`)
     post: super::vpost::Post,
+    /// the AO's images: the half-resolution values (two, for the blur) and the quarter-size
+    /// nearest depth
+    ao: Option<([Img; 2], Img)>,
 }
 
 /// GL's blend factor as Vulkan's.
@@ -146,6 +149,7 @@ impl Gpu {
                 ring_at: (u64::MAX, 0),
                 target: None,
                 post: super::vpost::Post::new(v)?,
+                ao: None,
             })
         }
     }
@@ -375,6 +379,94 @@ impl Gpu {
         rect(d.scissor, d.target)
     }
 
+    /// The AO and the screen-space sun over the view's box (GL's, from below), as
+    /// `ao::Ssao::run` (`sun`: toward the sun in view space, y up as GL's; `show` as its last
+    /// pass takes it).
+    pub fn ao(&mut self, v: &mut Vkr, clip: [i32; 4], ao: bool, sun: Option<[f32; 3]>, show: i32) {
+        use super::vpost::{Blend, Frag, words};
+        let Some(t) = &self.target else { return };
+        let Some((g, _)) = &t.gbuf else { return };
+        let Some(r) = rect(clip, (t.w, t.h)) else { return };
+        let (w, h) = (t.w, t.h);
+        let (hs, qs) = (((w + 1) / 2, (h + 1) / 2), ((w + 3) / 4, (h + 3) / 4));
+        if self.ao.as_ref().is_none_or(|a| (a.0[0].w, a.0[0].h, a.1.w, a.1.h) != (hs.0, hs.1, qs.0, qs.1)) {
+            let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+            let one = vk::SampleCountFlags::TYPE_1;
+            let made = (|| -> Result<_, String> {
+                let half = [v.image(hs.0, hs.1, vk::Format::R8G8_UNORM, usage, 1, 1, one, false)?, v.image(hs.0, hs.1, vk::Format::R8G8_UNORM, usage, 1, 1, one, false)?];
+                Ok((half, v.image(qs.0, qs.1, vk::Format::R32_SFLOAT, usage, 1, 1, one, false)?))
+            })();
+            match made {
+                Ok(a) => {
+                    if let Some(([a0, a1], n)) = self.ao.replace(a) {
+                        for i in [a0, a1, n] {
+                            v.trash(Trash::Img(i));
+                        }
+                    }
+                }
+                Err(e) => return super::log!("error: vulkan: AO: {e}"),
+            }
+        }
+        let Some((half, near)) = &self.ao else { return };
+        let ms = t.samples > 1;
+        let drawn = t.ms.as_ref().unwrap_or(&t.colour);
+        let focal = 4096.0 * h as f32 / 1920.0;
+        let size = [w, h, focal.to_bits()];
+        let full = |i: &Img| vk::Rect2D { offset: vk::Offset2D::default(), extent: vk::Extent2D { width: i.w, height: i.h } };
+        let half_pass = ao || sun.is_some();
+        let post = &mut self.post;
+        let mut run = |v: &mut Vkr| -> Result<(), String> {
+            v.transition(g, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            let depth = (0, g.view, v.nearest);
+            if ao {
+                // the occluders' nearest depth
+                let p = post.pipeline(v, Frag::AoNear(ms), vk::Format::R32_SFLOAT, 1, Blend::None)?;
+                post.draw(v, p, near, full(near), &[depth], &words(&size));
+                v.end_rendering();
+                v.transition(near, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            }
+            if half_pass {
+                // the AO (and the sun's shadow) at half resolution; view space here has y down
+                let p = post.pipeline(v, Frag::Ao(ms), vk::Format::R8G8_UNORM, 1, Blend::None)?;
+                let d = sun.unwrap_or([0.0, 1.0, 0.0]);
+                let push = words(&[
+                    w,
+                    h,
+                    focal.to_bits(),
+                    super::ao::RADIUS.to_bits(),
+                    (h as f32 / 4.0).to_bits(),
+                    ao as u32,
+                    sun.is_some() as u32,
+                    super::shadows::SUN_LENGTH.to_bits(),
+                    d[0].to_bits(),
+                    (-d[1]).to_bits(),
+                    d[2].to_bits(),
+                    super::shadows::sun_strength().to_bits(),
+                    super::ao::step().to_bits(),
+                ]);
+                post.draw(v, p, &half[0], full(&half[0]), &[depth, (3, near.view, v.nearest)], &push);
+                // blurred across, then down
+                let p = post.pipeline(v, Frag::AoBlur(ms), vk::Format::R8G8_UNORM, 1, Blend::None)?;
+                for (from, to, dir) in [(0, 1, [1u32, 0]), (1, 0, [0, 1])] {
+                    v.end_rendering();
+                    v.transition(&half[from], vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+                    post.draw(v, p, &half[to], full(&half[to]), &[depth, (1, half[from].view, v.nearest)], &words(&[w, h, focal.to_bits(), 0, dir[0], dir[1]]));
+                }
+                v.end_rendering();
+                v.transition(&half[0], vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            }
+            // the picture times the AO and the sun's shadow
+            let blend = if show == 0 { Blend::Multiply } else { Blend::None };
+            let p = post.pipeline(v, Frag::AoApply(ms), drawn.format, t.samples, blend)?;
+            let push = words(&[w, h, focal.to_bits(), super::ao::STRENGTH.to_bits(), show as u32, half_pass as u32]);
+            post.draw(v, p, drawn, r, &[depth, (1, half[0].view, v.nearest)], &push);
+            Ok(())
+        };
+        if let Err(e) = run(v) {
+            super::log!("error: vulkan: AO: {e}");
+        }
+    }
+
     /// The view's box (GL's, from below) after its 3D picture: tone mapped (the HUD follows unmapped).
     pub fn tonemap(&mut self, v: &mut Vkr, clip: [i32; 4], curve: super::tonemap::Curve) {
         let Some(t) = &self.target else { return };
@@ -547,6 +639,11 @@ impl Gpu {
     pub fn close(&mut self, v: &mut Vkr) {
         v.end_rendering();
         self.post.close(v);
+        if let Some(([a, b], n)) = self.ao.take() {
+            for i in [a, b, n] {
+                v.trash(Trash::Img(i));
+            }
+        }
         if let Some(t) = self.target.take() {
             v.trash(Trash::Img(t.colour));
             if let Some(m) = t.ms {

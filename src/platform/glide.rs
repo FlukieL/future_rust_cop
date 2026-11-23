@@ -2073,7 +2073,21 @@ pub fn post_3d() {
                 g.heat_sources.clear();
                 g.casters.clear();
                 let clip = g.scissor_box(g.state.clip);
+                let has_depth = g.has_depth();
                 let Back::Vk(b) = &mut g.back else { return };
+                if has_depth {
+                    // the sun's shadow: screen-space so far (the map and the rays not yet)
+                    let next = super::shadows::next_view();
+                    let sun = (super::shadows::mode() == super::shadows::Mode::ScreenSpace).then_some(next.sun);
+                    let ao = super::ao::enabled() && super::ao::debug_view() != 4;
+                    if ao || sun.is_some() {
+                        let show = match super::ao::debug_view() {
+                            4 => 2,
+                            v => v,
+                        };
+                        b.ao(v, clip, ao, sun, show);
+                    }
+                }
                 // last: the picture back into 0..1 (the HUD follows unmapped)
                 if g.target_hdr {
                     b.tonemap(v, clip, super::tonemap::curve());

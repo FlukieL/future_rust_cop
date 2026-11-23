@@ -14,12 +14,25 @@ const FULL_VERT: &[u8] = include_bytes!("../../shaders/full_vert.spv");
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Frag {
     Tonemap,
+    /// the AO's passes (`ao.rs`); true: the depth multisampled
+    AoNear(bool),
+    Ao(bool),
+    AoBlur(bool),
+    AoApply(bool),
 }
 
 impl Frag {
     fn spv(self) -> &'static [u8] {
         match self {
             Frag::Tonemap => include_bytes!("../../shaders/tonemap_frag.spv"),
+            Frag::AoNear(false) => include_bytes!("../../shaders/ao_near_frag.spv"),
+            Frag::AoNear(true) => include_bytes!("../../shaders/ao_near_ms_frag.spv"),
+            Frag::Ao(false) => include_bytes!("../../shaders/ao_frag.spv"),
+            Frag::Ao(true) => include_bytes!("../../shaders/ao_ms_frag.spv"),
+            Frag::AoBlur(false) => include_bytes!("../../shaders/ao_blur_frag.spv"),
+            Frag::AoBlur(true) => include_bytes!("../../shaders/ao_blur_ms_frag.spv"),
+            Frag::AoApply(false) => include_bytes!("../../shaders/ao_apply_frag.spv"),
+            Frag::AoApply(true) => include_bytes!("../../shaders/ao_apply_ms_frag.spv"),
         }
     }
 }
