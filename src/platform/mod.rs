@@ -599,8 +599,66 @@ fn report_fault(kind: &str, a: usize, pc: usize) {
             LAST_CALL.load(std::sync::atomic::Ordering::Relaxed)
         );
     } else {
-        log!("fatal: host memory {kind} at {a:#x} (code {pc:#x})");
+        // a fault in host code may be one another DLL handles itself (an overlay, OptiScaler): we
+        // only see it first, so it is named with its module, and it is fatal only if no one does
+        log!("fault: host memory {kind} at {a:#x} (code {pc:#x}{}; fatal unless handled)", module_of(pc));
     }
+}
+
+/// ", in <module> + <offset>" for a code address in a loaded module, else "".
+#[cfg(windows)]
+fn module_of(pc: usize) -> String {
+    use windows_sys::Win32::System::LibraryLoader::{GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, GetModuleFileNameW, GetModuleHandleExW};
+    unsafe {
+        let mut m = std::ptr::null_mut();
+        if GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, pc as *const u16, &mut m) == 0 {
+            return String::new();
+        }
+        let mut name = [0u16; 260];
+        let n = GetModuleFileNameW(m, name.as_mut_ptr(), name.len() as u32) as usize;
+        let path = String::from_utf16_lossy(&name[..n]);
+        format!(", in {} + {:#x}", path.rsplit('\\').next().unwrap_or(&path), pc - m as usize)
+    }
+}
+
+/// The callers of a fault in host code (who called into ntdll with a bad pointer), unwound from
+/// its context by the modules' unwind tables.
+#[cfg(all(windows, target_arch = "x86_64"))]
+unsafe fn stack(ctx: &windows_sys::Win32::System::Diagnostics::Debug::CONTEXT) -> String {
+    use windows_sys::Win32::System::Diagnostics::Debug::{RtlLookupFunctionEntry, RtlVirtualUnwind, UNW_FLAG_NHANDLER};
+    let mut c = *ctx;
+    let mut text = String::new();
+    for _ in 0..48 {
+        let pc = c.Rip;
+        if pc == 0 {
+            break;
+        }
+        text += &format!("  at {pc:#x}{}
+", module_of(pc as usize));
+        unsafe {
+            let mut image = 0u64;
+            let f = RtlLookupFunctionEntry(pc, &mut image, std::ptr::null_mut());
+            if f.is_null() {
+                // a leaf function: the return address on top of the stack
+                c.Rip = *(c.Rsp as *const u64);
+                c.Rsp += 8;
+            } else {
+                let (mut data, mut frame) = (std::ptr::null_mut(), 0u64);
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, pc, f, &mut c, &mut data, &mut frame, std::ptr::null_mut());
+            }
+        }
+    }
+    text
+}
+
+#[cfg(all(windows, not(target_arch = "x86_64")))]
+unsafe fn stack(_: &windows_sys::Win32::System::Diagnostics::Debug::CONTEXT) -> String {
+    String::new()
+}
+
+#[cfg(not(windows))]
+fn module_of(_: usize) -> String {
+    String::new()
 }
 
 #[cfg(windows)]
@@ -611,7 +669,28 @@ fn catch_faults() {
         let rec = unsafe { &*(*info).ExceptionRecord };
         if rec.ExceptionCode == EXCEPTION_ACCESS_VIOLATION as NTSTATUS {
             let kind = ["read", "write", "execute"].get(rec.ExceptionInformation[0]).unwrap_or(&"access");
-            report_fault(kind, rec.ExceptionInformation[1], rec.ExceptionAddress as usize);
+            let (a, pc) = (rec.ExceptionInformation[1], rec.ExceptionAddress as usize);
+            let base = mem().base as usize;
+            if a >= base && a - base < rt::GUEST_SPAN {
+                report_fault(kind, a, pc);
+            } else {
+                // host code: other DLLs may fault again and again (and handle it): only the first
+                // in full, with its callers, also into fault.txt beside fcop.exe; then a count
+                static FAULTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let n = FAULTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if n == 1 {
+                    let mut text = format!("fault: host memory {kind} at {a:#x} (code {pc:#x}{}; fatal unless handled)
+", module_of(pc));
+                    text += &unsafe { stack(&*(*info).ContextRecord) };
+                    log!("{}", text.trim_end());
+                    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
+                        let _ = std::fs::write(dir.join("fault.txt"), &text);
+                        log!("fault: written to {}", dir.join("fault.txt").display());
+                    }
+                } else if n.is_power_of_two() {
+                    log!("fault: {n} faults in host code so far");
+                }
+            }
         }
         0 // EXCEPTION_CONTINUE_SEARCH
     }

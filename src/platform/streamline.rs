@@ -316,12 +316,34 @@ fn signed(path: &Path) -> bool {
     }
 }
 
+/// Proxy DLLs beside fcop.exe (OptiScaler as winmm.dll, version.dll, dxgi.dll ...) loaded
+/// before Streamline. Games import those at their start; fcop does not, so such a proxy came in
+/// only when NVAPI (started by `slInit`) loaded winmm.dll, and OptiScaler's start called NVAPI
+/// again in the middle of NVAPI's own: a fault in ntdll over and over, then a stack overflow.
+fn load_proxies() {
+    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) else { return };
+    for name in ["winmm.dll", "version.dll", "dxgi.dll", "dbghelp.dll", "wininet.dll", "winhttp.dll"] {
+        let path = dir.join(name);
+        if path.is_file() {
+            // kept loaded for good
+            match unsafe { libloading::Library::new(&path) } {
+                Ok(lib) => {
+                    std::mem::forget(lib);
+                    super::log!("streamline: {name} beside fcop.exe loaded first (a proxy, as OptiScaler)");
+                }
+                Err(e) => super::log!("streamline: {name} beside fcop.exe: {e}"),
+            }
+        }
+    }
+}
+
 /// Streamline started (`slInit`): the interposer's path, which `vk.rs` loads as the Vulkan
 /// loader. None while DLSS is not wanted, its files are missing or Streamline failed (logged).
 pub fn init() -> Option<PathBuf> {
     if !wanted() {
         return None;
     }
+    load_proxies();
     if !super::sdk::present() {
         super::log!("streamline: DLSS wanted, its files are not in {}", super::sdk::dir().display());
         return None;
