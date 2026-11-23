@@ -689,6 +689,11 @@ pub fn game_dir() -> &'static Path {
     GAME_DIR.get().expect("game folder not set")
 }
 
+/// The folder with FCopLAPD.exe, if the game runs.
+pub fn game_dir_set() -> Option<&'static Path> {
+    GAME_DIR.get().map(PathBuf::as_path)
+}
+
 /// One path below `root`, matching each part case-insensitively against what exists.
 fn host_path_in(root: &Path, parts: &[&str]) -> PathBuf {
     let mut p = root.to_path_buf();

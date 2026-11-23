@@ -112,7 +112,13 @@ pub fn game_exe(root: &Path) -> Result<PathBuf, String> {
 fn ps1_music(root: &Path) -> Option<PathBuf> {
     let dir = root.join(PS1);
     let to = dir.join(crate::ps1::FILE);
-    if named(&dir, crate::ps1::FILE).is_some() {
+    if let Some(n) = named(&dir, crate::ps1::FILE) {
+        // the name read is FE.MIS (Linux: case matters)
+        if n != crate::ps1::FILE {
+            if let Err(e) = std::fs::rename(dir.join(&n), &to) {
+                eprintln!("setup: cannot rename {}: {e}", dir.join(&n).display());
+            }
+        }
         return None;
     }
     if let Some(p) = find(root, crate::ps1::FILE, 6) {

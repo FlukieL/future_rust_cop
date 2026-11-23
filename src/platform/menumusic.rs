@@ -31,7 +31,7 @@ fn music() -> Option<&'static Arc<Vec<[i16; 2]>>> {
         if std::env::var_os("FCOP_MUSIC").is_some_and(|v| v == "0") {
             return None;
         }
-        let game = super::game_dir();
+        let game = super::game_dir_set()?;
         let path = game.parent().unwrap_or(game).join(crate::setup::PS1).join(crate::ps1::FILE);
         let file = std::fs::read(&path).ok()?;
         let Some(m) = crate::ps1::menu_music(&file) else {
@@ -59,7 +59,8 @@ static STATE: Mutex<State> = Mutex::new(State { last: None, mission: false });
 
 /// At every pump (main thread): play or pause the music as the game is.
 pub fn poll() {
-    if music().is_none() {
+    // not before the game runs (its folder known); then decided once
+    if super::game_dir_set().is_none() || music().is_none() {
         return;
     }
     let m = mem();
