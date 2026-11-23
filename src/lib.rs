@@ -12,6 +12,7 @@ pub mod lift;
 pub mod mission;
 pub mod mpeg;
 pub mod platform;
+pub mod ps1;
 pub mod rt;
 pub mod setup;
 pub mod smc;

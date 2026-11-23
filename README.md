@@ -34,6 +34,11 @@ releases: you need your own copy of the game.
    missions; `game_files/Video`: the videos; taken out of a CD image); everything else in
    `game_files` goes to the recycle bin (Linux: it is deleted). The first start compiles the
    game (a second or two; kept in `game_files/FCopLAPD/compiled.bin`), later starts are quick.
+4. Optional, the PlayStation version's menu music (the PC version's menus are silent): put an
+   image of your PlayStation CD (`.bin` with its `.cue`, or `.iso`) into `game_files`, or copy
+   the file `CW/FE.MIS` from that CD to `game_files/PS1/FE.MIS` (an image next to `fcop.exe`,
+   or FE.MIS elsewhere in `game_files`, is found too). From the image only FE.MIS is taken
+   out; an image in `game_files` then goes the way of everything else there.
 
 The US and the German PC version are supported (`FCopLAPD.exe` with SHA-256 `2dcdd1e7...7e5e`
 or `bffbc4bb...74f4`); with any other,
@@ -60,6 +65,8 @@ What is new compared to the original:
 - The arrow keys for player 1, and a camera close behind the robot
 - Replacement textures (HD textures), see below
 - Videos as large as the window allows, centred, with their own aspect
+- The PlayStation version's menu music in the menus, from your PlayStation CD (step 4 above;
+  its volume is the game's Music Volume)
 - `fcop export-sounds` (in a terminal, in fcop's folder) writes the missions' sound effects,
   voices and music to `game_files/Sounds` as WAV files, each different one once
   (`sounds.txt` lists which missions use it)

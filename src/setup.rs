@@ -9,6 +9,8 @@
 //!                        controls.txt, gamepad.txt, save.cfg: settings, key bindings, saves)
 //! game_files/Video/      the videos (optional)
 //! game_files/Textures/   replacement textures (optional, `platform::hd`)
+//! game_files/PS1/        FE.MIS from the PlayStation disc (or an image of the disc in
+//!                        game_files): its menu music (optional, `ps1`)
 //! ```
 //!
 //! Everything else in `game_files` (the CD's installer, DirectX, the Mac version's MISSIONS
@@ -22,6 +24,8 @@ const GAME: &str = "FCopLAPD";
 const VIDEO: &str = "Video";
 /// replacement textures (`platform::hd`), the player's
 const TEXTURES: &str = "Textures";
+/// the PlayStation version's menu music (`ps1`)
+pub const PS1: &str = "PS1";
 /// what stays in the game folder: the game's files and ours
 const GAME_FILES: [&str; 9] = ["FCopLAPD.exe", "febmp.bin", "missions", "registry.txt", "controls.txt", "gamepad.txt", "save.cfg", COMPILED, SAVESTATE];
 /// our savestate (`platform::savestate`)
@@ -56,7 +60,8 @@ pub fn game_exe(root: &Path) -> Result<PathBuf, String> {
     if exe.is_none() {
         // a CD image in game_files (it goes to the recycle bin afterwards), or next to fcop.exe
         // (it stays there)
-        if let Some(image) = find_image(root, 6).or_else(|| home().and_then(|h| find_image(&h, 0))) {
+        let pc = |iso: &mut Iso| !is_ps1(iso);
+        if let Some(image) = find_image(root, 6, pc).or_else(|| home().and_then(|h| find_image(&h, 0, pc))) {
             from_image(&image, root)?;
             exe = find(&game, "FCopLAPD.exe", 0);
         }
@@ -84,12 +89,14 @@ pub fn game_exe(root: &Path) -> Result<PathBuf, String> {
             _ => eprintln!("setup: the game's videos (the CD's Video folder) were not found; the game runs without them"),
         }
     }
+    let keep = ps1_music(root);
     writable(&game);
     writable(&video);
     // what the game does not need
-    let mut rest = others(root, &[GAME, VIDEO, TEXTURES, NOTE]);
+    let mut rest = others(root, &[GAME, VIDEO, TEXTURES, PS1, NOTE]);
     rest.extend(others(&game, &GAME_FILES));
-    for p in rest {
+    rest.extend(others(&root.join(PS1), &[crate::ps1::FILE]));
+    for p in rest.into_iter().filter(|p| keep.as_ref().is_none_or(|k| !same(p, k))) {
         eprintln!("setup: not needed, removed: {}", p.display());
         if let Err(e) = trash(&p) {
             eprintln!("setup: cannot remove {}: {e}", p.display());
@@ -98,13 +105,58 @@ pub fn game_exe(root: &Path) -> Result<PathBuf, String> {
     Ok(game.join(named(&game, "FCopLAPD.exe").unwrap()))
 }
 
-/// The first CD image (.iso, .bin, .img with an ISO 9660 file system) in `dir` or below.
-fn find_image(dir: &Path, depth: u32) -> Option<PathBuf> {
+/// The PlayStation version's menu music: FE.MIS into `game_files/PS1`, wherever it is found:
+/// the PS1 disc's files (anywhere in `root`) or an image of it (in `root`, then removed with
+/// the rest, or next to fcop.exe, kept). Optional: what fails is only logged. Returns an image
+/// in `root` that could not be read, to be kept.
+fn ps1_music(root: &Path) -> Option<PathBuf> {
+    let dir = root.join(PS1);
+    let to = dir.join(crate::ps1::FILE);
+    if named(&dir, crate::ps1::FILE).is_some() {
+        return None;
+    }
+    if let Some(p) = find(root, crate::ps1::FILE, 6) {
+        if let Err(e) = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| move_into(&p, &to)) {
+            eprintln!("setup: {e}");
+        }
+        return None;
+    }
+    let image = find_image(root, 6, is_ps1).or_else(|| home().and_then(|h| find_image(&h, 0, is_ps1)))?;
+    let copied = (|| {
+        let mut iso = Iso::open(&image)?;
+        let top = iso.root();
+        let (_, fe) = iso.find(&top, crate::ps1::FILE, 2)?;
+        let mut bytes = Vec::new();
+        iso.read(&fe, &mut bytes).ok()?;
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(&to, bytes).ok()
+    })();
+    match copied {
+        Some(()) => {
+            eprintln!("setup: the PlayStation menu music taken from {}", image.display());
+            None
+        }
+        None => {
+            eprintln!("setup: cannot take {} from {}", crate::ps1::FILE, image.display());
+            Some(image)
+        }
+    }
+}
+
+/// Whether an image is the PlayStation disc (SYSTEM.CNF at the top, FE.MIS in CW).
+fn is_ps1(iso: &mut Iso) -> bool {
+    let top = iso.root();
+    iso.get(&top, "SYSTEM.CNF").is_some() && iso.get(&top, "CW").is_some_and(|cw| iso.get(&cw, crate::ps1::FILE).is_some())
+}
+
+/// The first CD image (.iso, .bin, .img with an ISO 9660 file system) in `dir` or below that
+/// `want` takes.
+fn find_image(dir: &Path, depth: u32, want: fn(&mut Iso) -> bool) -> Option<PathBuf> {
     let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     let image = |p: &Path| {
         let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
-        matches!(ext.as_deref(), Some("iso" | "bin" | "img")) && Iso::open(p).is_some()
+        matches!(ext.as_deref(), Some("iso" | "bin" | "img")) && Iso::open(p).is_some_and(|mut i| want(&mut i))
     };
     let mut files = entries.iter().filter(|e| e.file_type().is_ok_and(|t| t.is_file())).map(|e| e.path());
     if let Some(p) = files.find(|p| image(p)) {
@@ -113,7 +165,7 @@ fn find_image(dir: &Path, depth: u32) -> Option<PathBuf> {
     if depth == 0 {
         return None;
     }
-    entries.iter().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).find_map(|e| find_image(&e.path(), depth - 1))
+    entries.iter().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).find_map(|e| find_image(&e.path(), depth - 1, want))
 }
 
 /// Take what the game needs from a CD image into `root`'s layout: the videos, the game folder's

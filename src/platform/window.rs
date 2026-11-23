@@ -164,6 +164,7 @@ pub fn pump(wait: Duration) {
             let (vk, scan) = vk_of(KeyCode::Escape).unwrap();
             h.app.input.push_back(Input::Key { vk, scan, down, repeat: false });
         }
+        super::menumusic::poll();
         let step = super::menupad::step(&mut h.app.input);
         h.app.pad_focus = step.focus;
         if let (Some(o), Some(gl)) = (step.overlay, &mut h.app.gl) {

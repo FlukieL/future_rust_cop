@@ -30,6 +30,7 @@ pub mod heat;
 pub mod kernel32;
 pub mod light;
 pub mod lights;
+pub mod menumusic;
 pub mod menupad;
 pub mod misc;
 pub mod record;

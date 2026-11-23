@@ -86,6 +86,17 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   checked first; `examples/iso.rs` lists an image), clears read-only (CD copies), and
   moves everything else in both folders to the recycle bin (elsewhere deleted), at every start, without asking
   (kept beside them: `game_files/Textures`, the player's replacement textures).
+  PS1 menu music (the PC version's menus are silent): whatever is found is used (the user):
+  `game_files/PS1/FE.MIS`, a loose FE.MIS anywhere in `game_files` (moved there), or `CW/FE.MIS`
+  from a PlayStation disc image in `game_files` (removed with the rest after, kept when it
+  cannot be read) or next to fcop.exe (kept); a PS1 image: SYSTEM.CNF at the top, FE.MIS in CW,
+  skipped when looking for the PC CD. The READMEs name the two simple ways. `src/ps1.rs`: its `VAGM` chunks
+  (after `SWVR` "MenuTune1_sw14"; u16 count, u16 block, u32 bytes per channel, left then right)
+  are PS-ADPCM, stereo, 14260 Hz (by ear), ~81 s. `platform/menumusic.rs` (polled in
+  `window::pump`) loops it through `dsound::music_*` while the menu is up ([0x499a9c]), no video
+  plays and game_state [0x511fb8] is 0; a video pauses it, after a mission it starts again;
+  volume = Music Volume [0x4a1d34] / 127 (Audio dialog). No CD audio tracks, no XA sectors on
+  the PS1 disc. `FCOP_MUSIC=0` off, `FCOP_MUSIC_LOG=1`.
   `src/splash.rs`: a small Win32 window on its own thread shows what happens until the game's
   window opens (looking, copying from a CD image in %, compiling) or why it cannot start (with
   a Close button); none with `FCOP_BATCH=1` (tests). Closing it while starting quits. On Linux

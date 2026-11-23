@@ -4,7 +4,7 @@
 //! from the audio thread. Play positions advance in real time with the output, so the music,
 //! which the game streams into a looping buffer behind the play cursor, keeps going. Without
 //! an audio device a timer thread advances them instead. A stream of host samples (`stream_*`)
-//! carries the videos' sound.
+//! carries the videos' sound; a looping one (`music_*`) the PlayStation menu music (`menumusic`).
 
 use crate::ver::Us;
 use super::{Import, ResId, alloc, arg, com_new, cstr, free, guest_call, host_path, log, mem, new_cstr, resource};
@@ -140,12 +140,14 @@ struct Mixer {
     wave: Option<Voice>,
     /// a video's sound
     stream: Option<Stream>,
+    /// the menu music
+    music: Option<Music>,
     out_rate: u32,
     started: bool,
 }
 
 static MIX: Mutex<Mixer> =
-    Mutex::new(Mixer { voices: BTreeMap::new(), data_refs: BTreeMap::new(), wave: None, stream: None, out_rate: 44100, started: false });
+    Mutex::new(Mixer { voices: BTreeMap::new(), data_refs: BTreeMap::new(), wave: None, stream: None, music: None, out_rate: 44100, started: false });
 
 /// Samples the host gives (a video's sound), played once.
 struct Stream {
@@ -177,6 +179,63 @@ impl Stream {
                 self.queue.pop_front();
                 self.played += 1;
             }
+        }
+    }
+}
+
+/// Host samples played in a loop (the menu music), faded in and out as it is switched.
+struct Music {
+    frames: std::sync::Arc<Vec<[i16; 2]>>,
+    rate: u32,
+    pos: f64,
+    /// the volume now and the one it fades to (amplitude)
+    gain: f32,
+    target: f32,
+}
+
+/// how long a fade in or out takes
+const MUSIC_FADE: f32 = 0.25;
+
+impl Music {
+    fn mix(&mut self, out: &mut [[f32; 2]], out_rate: u32) {
+        let n = self.frames.len();
+        if n == 0 || self.gain == 0.0 && self.target == 0.0 {
+            return;
+        }
+        let step = self.rate as f64 / out_rate as f64;
+        let fade = 1.0 / (MUSIC_FADE * out_rate as f32);
+        for o in out.iter_mut() {
+            self.gain = if self.gain < self.target { (self.gain + fade).min(self.target) } else { (self.gain - fade).max(self.target) };
+            let i = self.pos as usize;
+            let (a, b) = (self.frames[i], self.frames[(i + 1) % n]);
+            let f = (self.pos - i as f64) as f32;
+            let g = self.gain / 32768.0;
+            o[0] += (a[0] as f32 + (b[0] as f32 - a[0] as f32) * f) * g;
+            o[1] += (a[1] as f32 + (b[1] as f32 - a[1] as f32) * f) * g;
+            self.pos += step;
+            if self.pos >= n as f64 {
+                self.pos -= n as f64;
+            }
+            if self.gain == 0.0 && self.target == 0.0 {
+                break;
+            }
+        }
+    }
+}
+
+/// The music to loop (silent until `music_volume`).
+pub fn music_set(frames: std::sync::Arc<Vec<[i16; 2]>>, rate: u32) {
+    mixer().music = Some(Music { frames, rate: rate.max(1), pos: 0.0, gain: 0.0, target: 0.0 });
+}
+
+/// Fade the music to `gain` (amplitude, 0 silent: it stays where it is); `restart` plays it
+/// from its start.
+pub fn music_volume(gain: f32, restart: bool) {
+    if let Some(m) = &mut mixer().music {
+        m.target = gain.clamp(0.0, 1.0);
+        if restart {
+            m.pos = 0.0;
+            m.gain = 0.0;
         }
     }
 }
@@ -285,6 +344,9 @@ impl Mixer {
         }
         if let Some(s) = &mut self.stream {
             s.mix(out, rate);
+        }
+        if let Some(m) = &mut self.music {
+            m.mix(out, rate);
         }
     }
 }
