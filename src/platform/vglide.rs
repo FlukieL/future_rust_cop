@@ -65,6 +65,8 @@ pub struct Gpu {
     /// the picture the ring's offset is for, and the offset
     ring_at: (u64, u64),
     target: Option<Target>,
+    /// the post passes (`vpost.rs`)
+    post: super::vpost::Post,
 }
 
 /// GL's blend factor as Vulkan's.
@@ -143,6 +145,7 @@ impl Gpu {
                 ring,
                 ring_at: (u64::MAX, 0),
                 target: None,
+                post: super::vpost::Post::new(v)?,
             })
         }
     }
@@ -369,14 +372,24 @@ impl Gpu {
 
     /// The scissor box of a drawing in Vulkan's terms (from the top), None when empty.
     fn scissor(d: &Draw) -> Option<vk::Rect2D> {
-        let [x, y, w, h] = d.scissor;
-        let (w, h) = (w.max(0) as u32, h.max(0) as u32);
-        let top = d.target.1 as i32 - y - h as i32;
-        let x0 = x.max(0);
-        let y0 = top.max(0);
-        let w = (w as i32 - (x0 - x)).min(d.target.0 as i32 - x0);
-        let h = (h as i32 - (y0 - top)).min(d.target.1 as i32 - y0);
-        (w > 0 && h > 0).then(|| vk::Rect2D { offset: vk::Offset2D { x: x0, y: y0 }, extent: vk::Extent2D { width: w as u32, height: h as u32 } })
+        rect(d.scissor, d.target)
+    }
+
+    /// The view's box (GL's, from below) after its 3D picture: tone mapped (the HUD follows unmapped).
+    pub fn tonemap(&mut self, v: &mut Vkr, clip: [i32; 4], curve: super::tonemap::Curve) {
+        let Some(t) = &self.target else { return };
+        let Some(r) = rect(clip, (t.w, t.h)) else { return };
+        let drawn = t.ms.as_ref().unwrap_or(&t.colour);
+        let run = |post: &mut super::vpost::Post, v: &mut Vkr| -> Result<(), String> {
+            let copy = post.copy(v, drawn, r)?;
+            let p = post.pipeline(v, super::vpost::Frag::Tonemap, drawn.format, t.samples, super::vpost::Blend::None)?;
+            let push = super::vpost::words(&[curve as u32, super::tonemap::KNEE.to_bits()]);
+            post.draw(v, p, drawn, r, &[(0, copy, v.nearest)], &push);
+            Ok(())
+        };
+        if let Err(e) = run(&mut self.post, v) {
+            super::log!("error: vulkan: tone mapping: {e}");
+        }
     }
 
     /// Clears the clip window's box: the colour, and the depth attachment and buffer.
@@ -533,6 +546,7 @@ impl Gpu {
 
     pub fn close(&mut self, v: &mut Vkr) {
         v.end_rendering();
+        self.post.close(v);
         if let Some(t) = self.target.take() {
             v.trash(Trash::Img(t.colour));
             if let Some(m) = t.ms {
@@ -610,4 +624,15 @@ fn clear_depth(v: &mut Vkr, t: &Target) {
     let cmd = v.cmd();
     let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::DEPTH).level_count(1).layer_count(1);
     unsafe { v.device.cmd_clear_depth_stencil_image(cmd, z.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 }, &[range]) };
+}
+
+/// A box of the target (GL's: x, y from below, w, h) in Vulkan's terms, cut to the target; None
+/// when empty.
+pub(super) fn rect(b: [i32; 4], (tw, th): (u32, u32)) -> Option<vk::Rect2D> {
+    let [x, y, w, h] = b;
+    let top = th as i32 - y - h;
+    let (x0, y0) = (x.max(0), top.max(0));
+    let w = (w - (x0 - x)).min(tw as i32 - x0);
+    let h = (h - (y0 - top)).min(th as i32 - y0);
+    (w > 0 && h > 0).then(|| vk::Rect2D { offset: vk::Offset2D { x: x0, y: y0 }, extent: vk::Extent2D { width: w as u32, height: h as u32 } })
 }

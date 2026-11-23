@@ -18,10 +18,25 @@ use winit::window::Window;
 const BLIT_VERT: &[u8] = include_bytes!("../../shaders/blit_vert.spv");
 const BLIT_FRAG: &[u8] = include_bytes!("../../shaders/blit_frag.spv");
 
-/// The Vulkan renderer instead of OpenGL: `FCOP_RENDERER=vulkan` (until it matches GL).
+/// The Vulkan renderer instead of OpenGL: "Vulkan" in Preferences' Renderer list (REG_DWORD
+/// `Vulkan`, from the next start), `FCOP_RENDERER=vulkan` / `=gl` overrides. Decided once.
 pub fn wanted() -> bool {
     static W: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *W.get_or_init(|| std::env::var("FCOP_RENDERER").is_ok_and(|v| v.eq_ignore_ascii_case("vulkan")))
+    *W.get_or_init(|| match std::env::var("FCOP_RENDERER") {
+        Ok(v) if v.eq_ignore_ascii_case("vulkan") => true,
+        Ok(v) if v.eq_ignore_ascii_case("gl") => false,
+        _ => chosen(),
+    })
+}
+
+/// The player's choice (REG_DWORD `Vulkan`, default off).
+pub fn chosen() -> bool {
+    super::advapi32::value("", "Vulkan").and_then(|(_, d)| Some(u32::from_le_bytes(d.get(..4)?.try_into().ok()?))).is_some_and(|v| v != 0)
+}
+
+/// Preferences' OK: used from the next start.
+pub fn choose(on: bool) {
+    super::advapi32::set_value("", "Vulkan", 4, &(on as u32).to_le_bytes());
 }
 
 pub fn err(what: &str) -> impl Fn(vk::Result) -> String + '_ {

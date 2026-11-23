@@ -2072,6 +2072,12 @@ pub fn post_3d() {
                 g.lights.clear();
                 g.heat_sources.clear();
                 g.casters.clear();
+                let clip = g.scissor_box(g.state.clip);
+                let Back::Vk(b) = &mut g.back else { return };
+                // last: the picture back into 0..1 (the HUD follows unmapped)
+                if g.target_hdr {
+                    b.tonemap(v, clip, super::tonemap::curve());
+                }
             });
         }
     });

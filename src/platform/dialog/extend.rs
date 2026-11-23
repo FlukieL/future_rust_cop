@@ -185,8 +185,9 @@ pub enum After {
 const VISIBLE: u32 = 0x1000_0000;
 const TABSTOP: u32 = 0x0001_0000;
 
-/// The renderers a player can choose (the registry's `Group` value of the game's key).
-const RENDERERS: &[&str] = &["Software", "3Dfx"];
+/// The renderers a player can choose (the registry's `Group` value of the game's key; "Vulkan"
+/// is the game's 3Dfx renderer drawn by our Vulkan renderer: `Group` 3Dfx, REG_DWORD `Vulkan` 1).
+const RENDERERS: &[&str] = &["Software", "3Dfx", "Vulkan"];
 
 /// One of our own dialogs, built here instead of from the EXE's resources.
 pub fn template(id: u32) -> Template {
@@ -289,9 +290,10 @@ pub fn changed(d: &mut Dialog) {
 }
 
 fn renderer() -> String {
-    advapi32::value("", "Group")
+    let group: String = advapi32::value("", "Group")
         .map(|(_, d)| d.iter().take_while(|&&b| b != 0).map(|&b| b as char).collect())
-        .unwrap_or_else(|| "3Dfx".into())
+        .unwrap_or_else(|| "3Dfx".into());
+    if group.eq_ignore_ascii_case("3Dfx") && crate::platform::vkr::chosen() { "Vulkan".into() } else { group }
 }
 
 pub fn adjust(template: u32, t: &mut Template) {
@@ -721,7 +723,9 @@ pub fn ok(d: &mut Dialog) {
             _ => None,
         });
         if let Some(r) = chosen {
-            let mut v = r.into_bytes();
+            let vulkan = r == "Vulkan";
+            crate::platform::vkr::choose(vulkan);
+            let mut v = if vulkan { b"3Dfx".to_vec() } else { r.into_bytes() };
             v.push(0);
             advapi32::set_value("", "Group", 1, &v);
         }
