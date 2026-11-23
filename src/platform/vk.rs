@@ -190,14 +190,33 @@ struct Sun {
 struct Dlss {
     to_vk: (vk::Semaphore, u32),
     to_gl: (vk::Semaphore, u32),
-    cmd: vk::CommandBuffer,
-    fence: vk::Fence,
+    /// two recordings in turn: the CPU waits only for the one before last (one alone waited
+    /// ~0.6 ms a view for the GPU)
+    cmd: [vk::CommandBuffer; 2],
+    fence: [vk::Fence; 2],
+    /// the recording to use next
+    next: usize,
     /// GL's programs: depth and vectors into the inputs (single sampled, multisampled depth), the
     /// output back over the picture
     copy: [glow::Program; 2],
     back: glow::Program,
     vao: glow::VertexArray,
     images: Option<DlssImages>,
+    timing: DlssTiming,
+}
+
+/// Where DLSS's time goes (`FCOP_RT_TIME=1`, logged every 2 s): GPU timestamps around the
+/// evaluation, CPU time of the hand-over to Vulkan, of Streamline's calls and of the whole pass.
+struct DlssTiming {
+    pool: vk::QueryPool,
+    /// ns a tick
+    period: f64,
+    /// timestamps written by each recording (2 a recording; read when its fence was waited)
+    pending: [bool; 2],
+    /// µs: GPU evaluation, CPU GL part, CPU fence wait, CPU Streamline, CPU whole pass
+    sum: [f64; 5],
+    count: u32,
+    since: std::time::Instant,
 }
 
 /// DLSS's images, all as large as the target: colour in (RGBA16F), depth (R32F, near / z),
@@ -411,6 +430,22 @@ impl Vk {
             } else if super::scene::rays() {
                 super::log!("vulkan: no ray tracing on this device");
             }
+            // Streamline (DLSS) makes private data slots: the feature on when the device has it
+            // (core in 1.3, else VK_EXT_private_data)
+            let mut private = vk::PhysicalDevicePrivateDataFeatures::default();
+            let core13 = instance.get_physical_device_properties(phys).api_version >= vk::API_VERSION_1_3;
+            let private_ext = has.iter().any(|h| h.extension_name_as_c_str() == Ok(vk::EXT_PRIVATE_DATA_NAME));
+            if interposer.is_some() && (core13 || private_ext) {
+                let mut q = vk::PhysicalDevicePrivateDataFeatures::default();
+                instance.get_physical_device_features2(phys, &mut vk::PhysicalDeviceFeatures2::default().push_next(&mut q));
+                if q.private_data == vk::TRUE {
+                    if !core13 {
+                        ext_ptrs.push(vk::EXT_PRIVATE_DATA_NAME.as_ptr());
+                    }
+                    private = private.private_data(true);
+                    info = info.push_next(&mut private);
+                }
+            }
             let info = info.enabled_extension_names(&ext_ptrs);
             let device = instance.create_device(phys, &info, None).map_err(err("vkCreateDevice"))?;
             #[cfg(windows)]
@@ -434,7 +469,7 @@ impl Vk {
                 .create_command_pool(&vk::CommandPoolCreateInfo::default().queue_family_index(family).flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER), None)
                 .map_err(err("command pool"))?;
             let cmds = device
-                .allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(4))
+                .allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(5))
                 .map_err(err("command buffers"))?;
             let frame = |cmd| -> Result<Frame, String> {
                 Ok(Frame {
@@ -497,12 +532,24 @@ impl Vk {
                     Some(Dlss {
                         to_vk: shared_semaphore()?,
                         to_gl: shared_semaphore()?,
-                        cmd: cmds[3],
-                        fence: device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).map_err(err("fence"))?,
+                        cmd: [cmds[3], cmds[4]],
+                        fence: [
+                            device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).map_err(err("fence"))?,
+                            device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).map_err(err("fence"))?,
+                        ],
+                        next: 0,
                         copy: [prog(false), prog(true)],
                         back: super::gl::compile(gl, super::ao::VS, DLSS_BACK_FS),
                         vao: gl.create_vertex_array().map_err(|e| format!("GL vertex array: {e}"))?,
                         images: None,
+                        timing: DlssTiming {
+                            pool: device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(4), None).map_err(err("query pool"))?,
+                            period: instance.get_physical_device_properties(phys).limits.timestamp_period as f64,
+                            pending: [false; 2],
+                            sum: [0.0; 5],
+                            count: 0,
+                            since: std::time::Instant::now(),
+                        },
                     })
                 }
                 false => None,
@@ -862,7 +909,7 @@ impl Vk {
     /// DLSS's images made (again) at w x h.
     fn make_dlss_images(&mut self, gl: &glow::Context, w: u32, h: u32) -> Result<(), String> {
         let Some(d) = &mut self.dlss else { return Err("no DLSS".into()) };
-        let (cmd, fence) = (d.cmd, d.fence);
+        let (cmd, fence) = (d.cmd[0], d.fence[0]);
         let old = d.images.take();
         unsafe {
             gl.finish();
@@ -914,6 +961,8 @@ impl Vk {
                 return false;
             }
         }
+        let timed = super::debug::flag(super::debug::V::RtTime);
+        let t0 = std::time::Instant::now();
         let d = self.dlss.as_ref().unwrap();
         let im = d.images.as_ref().unwrap();
         let [x, y, w, h] = clip;
@@ -949,11 +998,27 @@ impl Vk {
             gl.flush();
 
             // DLSS
+            let t1 = std::time::Instant::now();
             let dev = &self.device;
-            let (cmd, fence) = (d.cmd, d.fence);
+            let k = d.next;
+            let (cmd, fence) = (d.cmd[k], d.fence[k]);
             let _ = dev.wait_for_fences(&[fence], true, u64::MAX);
+            let t2 = std::time::Instant::now();
+            // this recording's last timestamps, done now that its fence was waited
+            let mut gpu = None;
+            if timed && d.timing.pending[k] {
+                let mut q = [0u64; 2];
+                if dev.get_query_pool_results(d.timing.pool, 2 * k as u32, &mut q, vk::QueryResultFlags::TYPE_64).is_ok() {
+                    gpu = Some((q[1] - q[0]) as f64 * d.timing.period / 1000.0);
+                }
+            }
             let _ = dev.reset_fences(&[fence]);
             let _ = dev.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT));
+            let tp = d.timing.pool;
+            if timed {
+                dev.cmd_reset_query_pool(cmd, tp, 2 * k as u32, 2);
+                dev.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, tp, 2 * k as u32);
+            }
             let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
             let own = |src, dst, from, to| -> Vec<vk::ImageMemoryBarrier<'static>> {
                 all.iter()
@@ -982,7 +1047,12 @@ impl Vk {
                 format: i.format.as_raw() as u32,
                 usage: i.usage.as_raw(),
             };
+            let t3 = std::time::Instant::now();
             let evaluated = super::streamline::evaluate(vk::Handle::as_raw(cmd) as *mut c_void, frame, sl(&im.colour), sl(&im.depth), sl(&im.mvec), sl(&im.out));
+            let t4 = std::time::Instant::now();
+            if timed {
+                dev.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, tp, 2 * k as u32 + 1);
+            }
             dev.cmd_pipeline_barrier(cmd, any, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &own(rw, vk::AccessFlags::empty(), self.family, vk::QUEUE_FAMILY_EXTERNAL));
             let _ = dev.end_command_buffer(cmd);
             let (waits, signals, cmds) = ([d.to_vk.0], [d.to_gl.0], [cmd]);
@@ -1012,6 +1082,30 @@ impl Vk {
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.disable(glow::SCISSOR_TEST);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+
+            let dl = self.dlss.as_mut().unwrap();
+            dl.next ^= 1;
+            let t = &mut dl.timing;
+            if timed {
+                t.sum[0] += gpu.unwrap_or(0.0);
+                let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1e6;
+                t.sum[1] += us(t0, t1);
+                t.sum[2] += us(t1, t2);
+                t.sum[3] += us(t3, t4);
+                t.sum[4] += us(t0, std::time::Instant::now());
+                t.count += 1;
+                t.pending[k] = true;
+                if t.since.elapsed().as_secs_f64() >= 2.0 {
+                    let n = t.count as f64;
+                    super::log!(
+                        "vulkan: DLSS µs a view: GPU {:.0}; CPU: GL inputs {:.0}, fence wait {:.0}, Streamline {:.0}, whole {:.0} ({} views)",
+                        t.sum[0] / n, t.sum[1] / n, t.sum[2] / n, t.sum[3] / n, t.sum[4] / n, t.count
+                    );
+                    (t.sum, t.count, t.since) = ([0.0; 5], 0, std::time::Instant::now());
+                }
+            } else {
+                t.pending = [false; 2];
+            }
         }
         true
     }

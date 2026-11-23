@@ -74,9 +74,21 @@ Next (where to go on after a break):
   slSetTagForFrame, slEvaluateFeature) into an RGBA16F output, GL waits and draws it back over
   the view. Jitter and motion vectors are on while DLSS runs (`vk::dlss_ready`). Picture right
   (upright, edges smooth). ~190 fps against ~430 without (first mission start, 1280x960): ~2.9 ms,
-  far more than DLAA should cost; measure with timestamps (the synchronous hand-over?). Open:
-  jitter sign checked only by eye, validation says Streamline's vkCreatePrivateDataSlot needs the
-  privateData feature, MSAA still on (should be off with DLSS), split screen untested.
+  far more than DLAA should cost; measure with timestamps (the synchronous hand-over?). The
+  picture stands still (the user: jitter right). The privateData feature is on with Streamline
+  (its vkCreatePrivateDataSlot; validation clean). Open: MSAA still on (should be off with DLSS),
+  split screen untested.
+- DLSS's cost measured (2026-11-23, `FCOP_RT_TIME=1` now also logs DLSS: GPU timestamps around
+  the evaluation, CPU times of the hand-over). First mission start, 1280x960, RT shadows + RT AO,
+  MSAA off. The GPU is the limit here (`nvidia-smi dmon`: SM ~95% with and without DLSS):
+  Vulkan alone ~525 fps (1.90 ms); Streamline's interposer loaded, no DLSS pass ~458 (2.18);
+  the pass without `slEvaluateFeature` ~395 (2.53: copies and the GL -> Vulkan -> GL round
+  trip); with it ~340 (2.94; the evaluation ~305 µs GPU). Motion vectors and jitter cost
+  nothing measurable. The CPU waited ~0.6 ms a view for the last DLSS's fence: two recordings
+  in turn now (wait ~2 µs), fps the same (GPU bound). glSignalSemaphore ~165 µs CPU,
+  glWaitSemaphore ~25 µs. The earlier ~190 fps was a run-to-run state (seen once again, ~190
+  with the same build). Conclusion: render below the output size is the real gain (raster, RT
+  and AO scale with the pixels); the round trip's ~0.35 ms goes away only with step 6.
 - Next: render size below the output (the 3D picture into a smaller framebuffer, DLSS to the
   view's box, HUD at full size), the DLSS setting. The plan as it was: GL draws the 3D picture at the render size; colour (before the HUD),
   depth, motion vectors into images shared with Vulkan (as the sun's rays: synchronous,
