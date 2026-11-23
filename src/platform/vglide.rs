@@ -70,6 +70,8 @@ pub struct Gpu {
     /// the AO's images: the half-resolution values (two, for the blur) and the quarter-size
     /// nearest depth
     ao: Option<([Img; 2], Img)>,
+    /// the dynamic lights of the view (`lights`): places and reach, colours
+    light_tex: Option<Img>,
 }
 
 /// GL's blend factor as Vulkan's.
@@ -150,6 +152,7 @@ impl Gpu {
                 target: None,
                 post: super::vpost::Post::new(v)?,
                 ao: None,
+                light_tex: None,
             })
         }
     }
@@ -467,6 +470,63 @@ impl Gpu {
         }
     }
 
+    /// The dynamic lights over the view's box (GL's, from below), as `lights::Lighting::run`:
+    /// `merged` as `lights::merged` gives them (view space, y up as GL's).
+    pub fn lights(&mut self, v: &mut Vkr, clip: [i32; 4], merged: &[super::lights::Merged]) {
+        use super::vpost::{Blend, Frag, words};
+        let show = super::ao::debug_view();
+        if merged.is_empty() && show != 3 || matches!(show, 1 | 2 | 4) {
+            return;
+        }
+        let Some(t) = &self.target else { return };
+        let Some((g, _)) = &t.gbuf else { return };
+        let Some(r) = rect(clip, (t.w, t.h)) else { return };
+        if self.light_tex.is_none() {
+            let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
+            match v.image(32, 2, vk::Format::R32G32B32A32_SFLOAT, usage, 1, 1, vk::SampleCountFlags::TYPE_1, false) {
+                Ok(i) => self.light_tex = Some(i),
+                Err(e) => return super::log!("error: vulkan: lights: {e}"),
+            }
+        }
+        let tex = self.light_tex.as_ref().unwrap();
+        // places (y flipped: view space here has y down) and reach, then colours
+        let n = merged.len().min(32);
+        let mut texels = vec![0f32; 32 * 2 * 4];
+        for (i, l) in merged.iter().take(n).enumerate() {
+            texels[4 * i..4 * i + 4].copy_from_slice(&[l.0[0], -l.0[1], l.0[2], l.1]);
+            texels[128 + 4 * i..128 + 4 * i + 4].copy_from_slice(&[l.2[0], l.2[1], l.2[2], 0.0]);
+        }
+        let bytes: Vec<u8> = texels.iter().flat_map(|x| x.to_le_bytes()).collect();
+        if let Err(e) = v.upload(tex, 0, (0, 0, 32, 2), &bytes) {
+            return super::log!("error: vulkan: lights: {e}");
+        }
+        v.transition(tex, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        v.transition(g, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let ms = t.samples > 1;
+        let drawn = t.ms.as_ref().unwrap_or(&t.colour);
+        let focal = 4096.0 * t.h as f32 / 1920.0;
+        let shadowed = if super::shadows::enabled() { super::lights::SHADOWED } else { 0 };
+        let push = |added: f32| words(&[t.w, t.h, focal.to_bits(), n as u32, super::lights::STRENGTH.to_bits(), show as u32, added.to_bits(), shadowed as u32]);
+        let inputs = [(0, g.view, v.nearest), (5, tex.view, v.nearest)];
+        let post = &mut self.post;
+        let mut run = |v: &mut Vkr| -> Result<(), String> {
+            if show == 0 {
+                // picture * (1 + light), then + a share of the light
+                let p = post.pipeline(v, Frag::Lights(ms), drawn.format, t.samples, Blend::MulAdd)?;
+                post.draw(v, p, drawn, r, &inputs, &push(1.0));
+                let p = post.pipeline(v, Frag::Lights(ms), drawn.format, t.samples, Blend::Add)?;
+                post.draw(v, p, drawn, r, &inputs, &push(super::lights::ADDED));
+            } else {
+                let p = post.pipeline(v, Frag::Lights(ms), drawn.format, t.samples, Blend::None)?;
+                post.draw(v, p, drawn, r, &inputs, &push(1.0));
+            }
+            Ok(())
+        };
+        if let Err(e) = run(v) {
+            super::log!("error: vulkan: lights: {e}");
+        }
+    }
+
     /// The view's box (GL's, from below) after its 3D picture: tone mapped (the HUD follows unmapped).
     pub fn tonemap(&mut self, v: &mut Vkr, clip: [i32; 4], curve: super::tonemap::Curve) {
         let Some(t) = &self.target else { return };
@@ -643,6 +703,9 @@ impl Gpu {
             for i in [a, b, n] {
                 v.trash(Trash::Img(i));
             }
+        }
+        if let Some(i) = self.light_tex.take() {
+            v.trash(Trash::Img(i));
         }
         if let Some(t) = self.target.take() {
             v.trash(Trash::Img(t.colour));

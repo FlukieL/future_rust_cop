@@ -2069,7 +2069,8 @@ pub fn post_3d() {
             // the Vulkan renderer: no passes yet (PLAN-RTX.md step 6)
             super::window::with_vkr(|v| {
                 g.flush(&mut Ctx::Vk(v));
-                g.lights.clear();
+                let lights = std::mem::take(&mut g.lights);
+                let merged = super::lights::merged(&lights, g.target);
                 g.heat_sources.clear();
                 g.casters.clear();
                 let clip = g.scissor_box(g.state.clip);
@@ -2086,6 +2087,9 @@ pub fn post_3d() {
                             v => v,
                         };
                         b.ao(v, clip, ao, sun, show);
+                    }
+                    if super::lights::enabled() {
+                        b.lights(v, clip, &merged);
                     }
                 }
                 // last: the picture back into 0..1 (the HUD follows unmapped)

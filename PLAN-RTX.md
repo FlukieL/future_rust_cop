@@ -354,6 +354,13 @@ Order:
       (needs the lights), the shader's `smoke_*` left out.
 - [ ] 3. The passes: AO, lights, shadow map, bloom, heat, tone mapping, motion vectors, scene
       overlay; the sun's rays and DLSS on vglide's images directly (no interop).
+      Done (2026-11-23, each compared with GL by pixel difference, mean < 0.5 of 255): the pass
+      frame `vpost.rs` (fragment shader over the view's box, push descriptors, `copy` of the
+      picture), "Vulkan" in Preferences' Renderer list (REG_DWORD `Vulkan`), tone mapping, AO
+      with the screen-space sun, the dynamic lights (their places in a 32x2 RGBA32F texture;
+      the march for their shadows). Vulkan's view space has y down: the CPU flips the sun's and
+      the lights' y. Open: the shadow map, the rays (sun, lights' bits, RT AO), lit smoke, heat,
+      bloom, motion vectors, scene overlay, DLSS.
 - [ ] 4. Vulkan the default; GL, glutin, glow and the interop removed; the Linux splash
       drawn without GL. Linux tested in the CachyOS VM (does VMware's driver have Vulkan 1.3?).
 

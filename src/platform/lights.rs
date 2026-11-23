@@ -68,13 +68,13 @@ pub fn set_smoke(on: bool) {
 /// The most lights applied to a picture.
 const MAX: usize = 32;
 /// The picture times 1 + this much of the light.
-const STRENGTH: f32 = 1.6;
+pub(super) const STRENGTH: f32 = 1.6;
 /// And plus this much of it, as if every surface were at least this bright.
-const ADDED: f32 = 0.12;
+pub(super) const ADDED: f32 = 0.12;
 /// Additive smoke times 1 + this much of the light reaching it (`glide`'s fragment shader).
 pub const SMOKE_STRENGTH: f32 = 4.0;
 /// With shadows on: the strongest this many lights cast them.
-const SHADOWED: i32 = 8;
+pub(super) const SHADOWED: i32 = 8;
 
 /// A light: where (target pixels from the bottom left, z), its colour (0...1, times its
 /// strength) and its size in the world (object units).

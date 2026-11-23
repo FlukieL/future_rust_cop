@@ -19,6 +19,7 @@ pub enum Frag {
     Ao(bool),
     AoBlur(bool),
     AoApply(bool),
+    Lights(bool),
 }
 
 impl Frag {
@@ -33,6 +34,8 @@ impl Frag {
             Frag::AoBlur(true) => include_bytes!("../../shaders/ao_blur_ms_frag.spv"),
             Frag::AoApply(false) => include_bytes!("../../shaders/ao_apply_frag.spv"),
             Frag::AoApply(true) => include_bytes!("../../shaders/ao_apply_ms_frag.spv"),
+            Frag::Lights(false) => include_bytes!("../../shaders/lights_frag.spv"),
+            Frag::Lights(true) => include_bytes!("../../shaders/lights_ms_frag.spv"),
         }
     }
 }
@@ -46,6 +49,8 @@ pub enum Blend {
     Multiply,
     /// added
     Add,
+    /// the picture times 1 + the output
+    MulAdd,
 }
 
 /// Inputs a pass may have.
@@ -104,6 +109,7 @@ impl Post {
             Blend::None => b,
             Blend::Multiply => with(vk::BlendFactor::DST_COLOR, vk::BlendFactor::ZERO),
             Blend::Add => with(vk::BlendFactor::ONE, vk::BlendFactor::ONE),
+            Blend::MulAdd => with(vk::BlendFactor::DST_COLOR, vk::BlendFactor::ONE),
         };
         let p = graphics_pipeline(&v.device, self.layout, FULL_VERT, frag.spv(), &[], &[], vk::PrimitiveTopology::TRIANGLE_LIST, &[state], &[format], vk::Format::UNDEFINED, vk::SampleCountFlags::from_raw(samples), None)?;
         self.pipelines.insert(key, p);
