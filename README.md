@@ -1,11 +1,12 @@
 # future_rust_cop
 
-A native port of **Future Cop: L.A.P.D.** (1998) in Rust. The game's own program is
-recompiled: the player's `FCopLAPD.exe` is decoded with [iced-x86], every function is
-lifted to [Cranelift] IR and compiled to native code when the game starts, and the
-Windows/DirectX functions it calls are implemented in Rust (OpenGL for the 3D renderer, its
-videos, sound, network play). No game code or data is part of this repository or its
-releases: you need your own copy of the game.
+**Future Cop: L.A.P.D.** (1998) running natively on modern Windows and Linux, written in Rust.
+
+fcop takes the original game's program and recompiles it into native code when it starts,
+using [iced-x86] and [Cranelift]. Everything the game expects from Windows and DirectX
+(graphics, sound, videos, network play) is rebuilt in Rust, with OpenGL for the 3D graphics.
+
+> **This project contains no game files. You need your own copy of the game.**
 
 ![A mission in widescreen at 1920x1080](docs/screenshots/game.png)
 
@@ -22,114 +23,261 @@ releases: you need your own copy of the game.
   </tr>
 </table>
 
-## Playing
+## Contents
 
-1. Download from the [releases]: `fcop-...-windows-x64.zip` for Windows or
-   `fcop-...-linux-x64.tar.gz` for Linux (x86-64, OpenGL 3.3), and unpack it.
-2. Put an image of your CD (`.iso` or `.bin`) next to `fcop.exe` (Linux: `fcop`), or copy your
-   game into the `game_files` folder: the contents of the CD, an image of it, or your
-   installed game folder.
-3. Start `fcop.exe` (Linux: `./fcop` in its folder). It finds the game, checks the version,
-   and keeps only what the game needs (`game_files/FCopLAPD`: FCopLAPD.exe, febmp.bin,
-   missions; `game_files/Video`: the videos; taken out of a CD image); everything else in
-   `game_files` goes to the recycle bin (Linux: it is deleted). The first start compiles the
-   game (a second or two; kept in `game_files/FCopLAPD/compiled.bin`), later starts are quick.
-4. Optional, the PlayStation version's menu music (the PC version's menus are silent): put an
-   image of your PlayStation CD (`.bin` with its `.cue`, or `.iso`) into `game_files`, or copy
-   the file `CW/FE.MIS` from that CD to `game_files/PS1/FE.MIS` (an image next to `fcop.exe`,
-   or FE.MIS elsewhere in `game_files`, is found too). From the image only FE.MIS is taken
-   out; an image in `game_files` then goes the way of everything else there.
+- [How to play](#how-to-play)
+- [Menu music](#menu-music)
+- [What is new](#what-is-new)
+- [Modern graphics effects](#modern-graphics-effects)
+- [Gamepads](#gamepads)
+- [Network play](#network-play)
+- [Replacement textures](#replacement-textures)
+- [Sounds export](#sounds-export)
+- [Building](#building)
 
-The US and the German PC version are supported (`FCopLAPD.exe` with SHA-256 `2dcdd1e7...7e5e`
-or `bffbc4bb...74f4`); with any other,
-or without one, fcop says so. Its messages go to `fcop.log` next to it on Windows, to the
-terminal on Linux. Settings go to `registry.txt`, key bindings to `controls.txt` and saves to
-`save.cfg` in `game_files/FCopLAPD`. On Linux the libraries for sound (ALSA, or PipeWire/
-PulseAudio through it) and gamepads (libudev) are needed; every desktop distribution has them.
+## How to play
 
-What is new compared to the original:
-- High resolution and widescreen (Hor+), fullscreen (Alt+Enter), anti-aliasing,
-  texture filtering; all in the game's Preferences dialog, which "Display" in the pause bar
-  opens during a mission too (everything there applies at once, brightness included)
-- Frame rates up to unlimited, with the game's logic unchanged
-- Gamepads (up to two, also plugged in while the game runs): they work alongside the keyboard,
-  with their own bindings ("Gamepad" in Preferences and the pause bar, saved in gamepad.txt).
-  Default Xbox layout: left stick moves, right stick turns, RT gun, LT heavy weapon, A jump,
-  B special, X action, Y change target, LB/RB jink, Back map, R3 camera, Start pause; stick
-  directions work proportionally in local games, the D-pad is free to bind
-- Menus and dialogs by gamepad: D-pad or left stick moves, A selects, B goes back
-- Mouse buttons, including Back/X1 and Forward/X2, can be assigned in the Keyboard dialog:
-  right, middle and side buttons after selecting an action; assign left by clicking the already
-  selected action a second time
-- Network play over TCP/IP (Host Game / Join Game), see below
-- The arrow keys for player 1, and a camera close behind the robot
-- Replacement textures (HD textures), see below
-- Videos as large as the window allows, centred, with their own aspect
-- The PlayStation version's menu music in the menus, from your PlayStation CD (step 4 above;
-  its volume is the game's Music Volume)
-- `fcop export-sounds` (in a terminal, in fcop's folder) writes the missions' sound effects,
-  voices and music to `game_files/Sounds` as WAV files, each different one once
-  (`sounds.txt` lists which missions use it)
+### Requirements
 
-### Network play
+- The PC version of the game, **US** or **German**. fcop tells you if your version is not
+  supported.
+- Windows or Linux (64-bit) with OpenGL 3.3.
+- On Linux you also need ALSA (or PipeWire/PulseAudio) for sound and libudev for gamepads.
+  Every normal desktop distribution has them.
 
-One computer chooses Host Game, the others Join Game. Only the host needs open ports,
-incoming:
+### Installation
 
-- TCP 47624: the players who join connect here; all game data goes this way
-- UDP 47624: the Join dialog looks for games on the local network
+1. **Download** the latest version from the [releases] page and unpack it:
+   `fcop-...-windows-x64.zip` for Windows, `fcop-...-linux-x64.tar.gz` for Linux.
+2. **Add the game.**
 
-The computers that join only connect outwards; they need no open ports.
+   Choose **one** of these ways:
 
-On Windows, the first time you host, Windows asks whether fcop may use the network: allow it
-for private networks, and that is all. If you declined, add the rules by hand (PowerShell as
-administrator):
+   | Option | What you have | What to do |
+   | --- | --- | --- |
+   | A | an image of your CD (`.iso` or `.bin`) | put it next to `fcop.exe` (Linux: `fcop`) or into `game_files` |
+   | B | the CD itself | copy everything on it into `game_files` |
+   | C | the game installed on your PC | copy the game's folder into `game_files` |
+
+3. **Start** `fcop.exe` (Linux: run `./fcop` in its folder).
+
+On the first start fcop finds the game, checks it and sorts out what it needs:
+
+| Folder | What goes there |
+| --- | --- |
+| `game_files/FCopLAPD` | `FCopLAPD.exe`, `febmp.bin` and the `missions` folder |
+| `game_files/Video` | the videos |
+
+Everything else in `game_files` is moved to the recycle bin (on Linux it is deleted).
+
+The first start takes a second or two longer, because fcop compiles the game once. After that
+it starts right away.
+
+### Where your files are
+
+| What | Where |
+| --- | --- |
+| Settings | `game_files/FCopLAPD/registry.txt` |
+| Key bindings | `game_files/FCopLAPD/controls.txt` |
+| Gamepad bindings | `game_files/FCopLAPD/gamepad.txt` |
+| Saved games | `game_files/FCopLAPD/save.cfg` |
+| Log (if something goes wrong) | `fcop.log` next to `fcop.exe` on Windows, the terminal on Linux |
+
+## Menu music
+
+The PC version has no music in the menus. You can add the music from the PlayStation version.
+
+Choose **one** of these ways:
+
+| Option | What you have | What to do |
+| --- | --- | --- |
+| A | nothing | download `FE.MIS` from [PCGamingWiki](https://community.pcgamingwiki.com/files/file/4212-music-file-future-cop-lapd-from-psx/) and put it into `game_files/PS1` |
+| B | an image of the PlayStation CD (`.bin` with `.cue`, or `.iso`) | put the image into `game_files` |
+| C | the PlayStation CD itself | copy `CW/FE.MIS` from the CD into `game_files/PS1` |
+
+The music plays at the game's Music Volume.
+
+## What is new
+
+**Graphics**
+- High resolutions and widescreen
+- Fullscreen (Alt+Enter)
+- Anti-aliasing and sharper texture filtering
+- Higher frame rates, up to unlimited, without changing how the game plays
+- Videos as large as the window allows
+- [Replacement textures](#replacement-textures) (HD textures)
+
+You find all of this in the game's Preferences. During a mission, "Display" in the pause menu
+opens them too, and changes show right away.
+
+**Controls**
+- Player 1 plays with the arrow keys
+- A new camera close behind the robot
+- [Gamepads](#gamepads), in the menus too
+- Mouse buttons can be assigned to actions, including the side buttons
+
+  In the Keyboard dialog, select an action and press the mouse button you want. For the left
+  button, click the selected action a second time.
+
+**More**
+- [Modern graphics effects](#modern-graphics-effects): shadows, lighting and more
+- [Network play](#network-play) over the local network or the internet
+- [Sounds export](#sounds-export): all sounds and music as WAV files
+
+## Modern graphics effects
+
+fcop can add effects the original never had. They are all optional, and you can turn each one
+on or off while playing.
+
+You find them in Preferences, in the 3DFX Options, behind the button **Advanced Graphics...**.
+
+| Effect | What it does |
+| --- | --- |
+| Ambient Occlusion | soft shading in corners and where objects meet the ground |
+| Dynamic Lights | explosions, muzzle flashes, rockets and police lights light up their surroundings |
+| Lit Smoke | smoke is lit by those lights (needs Dynamic Lights) |
+| Heat Distortion | the air shimmers above fire and explosions |
+| Bloom | bright lights glow |
+| Perspective-Correct Textures | textures no longer warp on large surfaces |
+| Depth Buffer | fixes things showing through each other (on by default) |
+| Shadows | real shadows from the sun: Screen-Space or Shadow Map |
+| Tonemapping | richer bright colours: Soft, AgX or ACES |
+
+**The PlayStation look:** three more boxes sit right in the 3DFX Options, below the gamma
+slider. They are on by default.
+
+| Option | What it does |
+| --- | --- |
+| Texture Coloring | lit textures can get up to twice as bright (the PC version cut them off) |
+| PlayStation Colors | the first mission's textures in their PlayStation colours |
+| PlayStation Shading | the contrast of the original software renderer |
+
+## Gamepads
+
+Up to two gamepads are supported, and you can plug them in while the game is running. They
+work alongside the keyboard. You change their buttons with "Gamepad" in Preferences or in the
+pause menu.
+
+The default layout (Xbox controller):
+
+| Button | Action |
+| --- | --- |
+| Left stick | move |
+| Right stick | turn |
+| RT | gun |
+| LT | heavy weapon |
+| A | jump |
+| B | special |
+| X | action |
+| Y | change target |
+| LB / RB | jink |
+| Back | map |
+| R3 | camera |
+| Start | pause |
+| D-pad | free to use |
+
+The sticks are analog: push them a little and the robot moves slowly. (Not in network games.)
+
+In menus and dialogs, the D-pad or left stick moves, A selects and B goes back.
+
+## Network play
+
+One player chooses **Host Game**, the others **Join Game**.
+
+Only the host has to open these ports:
+
+| Port | What it is for |
+| --- | --- |
+| TCP 47624 | the game itself |
+| UDP 47624 | finding games on the local network |
+
+The players who join don't need to open anything.
+
+### Firewall (Windows)
+
+The first time you host, Windows asks if fcop may use the network. Allow it for private
+networks.
+
+If you clicked "no", open PowerShell as administrator and run:
 
 ```powershell
 New-NetFirewallRule -DisplayName "Future Cop TCP" -Direction Inbound -Protocol TCP -LocalPort 47624 -Action Allow -Profile Private
 New-NetFirewallRule -DisplayName "Future Cop UDP" -Direction Inbound -Protocol UDP -LocalPort 47624 -Action Allow -Profile Private
 ```
 
-If Join Game does not find the host (another subnet, a VPN), type the host's IP address into
-"Host Address" in the Join dialog: it then asks that computer directly. Over the internet the
-host's router has to forward TCP and UDP 47624 to the host.
+### The game is not found
 
-### Replacement textures
+- **Different network or VPN:** type the host's IP address into "Host Address" in the Join
+  dialog.
+- **Over the internet:** the host's router has to forward TCP and UDP port 47624 to the
+  host's computer.
 
-The game's textures are 256x256 pages (atlases of many small pictures). Each page, and each
-part of one the game changes while it runs, is known by a hash of its contents. A PNG named
-by that hash in `game_files/Textures` (or a folder below it; anything may come before the
-hash, e.g. `street_0123456789abcdef.png`) replaces it: full colour, alpha for transparency
-(soft edges are fine), up to 4 times the size (1024x1024 for a page). A replacement that is
-the same as the original is left out.
+## Replacement textures
 
-To make them picture by picture, `fcop export` (in a terminal, in fcop's folder) cuts every
-mission's pages into their pictures, found from what uses them: each model's part of a page
-(the robot's upper body is one picture) and the terrain's (mostly a large part of a page;
-the terrain takes windows anywhere in it). They go to
-`game_files/Textures/pieces/<mission>_page<n>_<hash>/`, named after what uses them and where
-they are (`M2C_model018_x1_y32_127x119.png`), with `layout.png` showing them on the page
-(models magenta, terrain cyan) and `page.png`. Beside each picture a `.json` lists the faces
-that show it: each corner's texture coordinates in the picture (0...1 from its top left
-corner) and, for models, the corner's position on the model; for making it anew by hand or
-with an AI given the picture and the file. Make new ones of the same name (larger is
-fine, up to 4 times, transparent where nothing is to be drawn), then `fcop import` puts the
-changed ones back into pages, `game_files/Textures/<mission>_page<n>_<hash>.png`: the game
-uses them from its next start. `fcop export` keeps pieces that are already there.
+You can replace the game's textures with your own, for example sharper HD versions.
 
-`tools/texview` is a navigator for these folders (`cargo build --release` there; start
-`texview` with the `pieces` folder, a page's folder or a piece, or drop one onto it): the
-folders by mission on the left, the folder's pieces as thumbnails next to them, then the
-selected piece, zoomable (mouse wheel, drag), with its faces drawn over it (UV grid; a face
-under the mouse is lit, in the JSON too), the original beside it when it was changed, where it
-lies on its page (a click there selects a piece) and its JSON. Changed pieces and folders are
-marked orange; a piece saved by an image editor shows at once. Keys: Up/Down folder, Left/Right
-piece, G grid, O original, E open in the editor, +/-/0 zoom, Ctrl+F filter.
+### How it works
 
-Parts the game changes while it runs (the HUD's message icon) are only found by playing:
-start fcop with `FCOP_DUMP_TEXTURES=1` set and every texture it has not seen before is
-written to `game_files/Textures/dump` (transparent where the game leaves texels out).
-`FCOP_HD=0` turns replacements off.
+The game keeps its textures on pages of 256x256 pixels, each full of small pictures. Every
+page has its own name, a code like `0123456789abcdef`.
+
+To replace a page, put a PNG with that code in its name into `game_files/Textures` (subfolders
+are fine):
+
+- the name can start with anything, e.g. `street_0123456789abcdef.png`
+- transparency works, soft edges too
+- up to 4 times larger (1024x1024)
+
+To turn replacements off, start fcop with `FCOP_HD=0`.
+
+### Making your own
+
+1. **Export:** run `fcop export` in a terminal in fcop's folder.
+
+   This cuts every page into its single pictures, e.g. a part of the robot or a piece of the
+   street. You find them in `game_files/Textures/pieces`, one folder per page. Each folder
+   also has:
+   - `page.png`: the whole page
+   - `layout.png`: where each picture is on the page
+   - a `.json` file per picture, showing where it is used on the model. Handy if you want to
+     redraw it from scratch.
+2. **Edit** the pictures in any image editor. Keep the file names. They may be up to 4 times
+   larger.
+3. **Import:** run `fcop import`. Your pictures are put back into pages, and the game uses
+   them from its next start.
+
+Running `fcop export` again does not overwrite your edited pictures.
+
+### texview
+
+`tools/texview` is a small viewer for the exported pictures. Build it with
+`cargo build --release` in its folder, then open the `pieces` folder with it (or drag a folder
+onto it).
+
+It shows the pictures by mission, how they sit on the model, the original next to your
+version, and where each one is on its page. Pictures you changed are marked orange. When you
+save a picture in your image editor, texview shows the new version at once.
+
+| Key | Action |
+| --- | --- |
+| Up / Down | previous / next folder |
+| Left / Right | previous / next picture |
+| G | show grid |
+| O | show original |
+| E | open in image editor |
+| + / - / 0 | zoom |
+| Ctrl+F | search |
+
+### Textures the game makes while playing
+
+A few textures only appear during play (like the HUD's message icon). To get them, start fcop
+with `FCOP_DUMP_TEXTURES=1` and play. Every new texture is saved to `game_files/Textures/dump`.
+
+## Sounds export
+
+Run `fcop export-sounds` in a terminal in fcop's folder. It saves all sound effects, voices
+and music of the game to `game_files/Sounds` as WAV files. `sounds.txt` lists which missions
+use each sound.
 
 ## Building
 
@@ -138,9 +286,10 @@ cargo build --release
 cargo run --release -- path/to/FCopLAPD.exe
 ```
 
-Without a path it sets up and uses `game_files` (next to fcop.exe, else in the current
-folder) as above. `cargo test --release`
-needs no game files. How it works and what is open: `CLAUDE.md` and `PLAN.md`.
+Without a path, fcop uses the `game_files` folder as described above. The tests
+(`cargo test --release`) need no game files.
+
+How fcop works inside and what is still open: `CLAUDE.md` and `PLAN.md`.
 
 [iced-x86]: https://github.com/icedland/iced
 [Cranelift]: https://cranelift.dev
