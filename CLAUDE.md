@@ -748,7 +748,8 @@ macOS (Apple Silicon, first built 2026-11-24): windows only on the main thread, 
 there (main.rs), its 256 MB stack from `build.rs` (`-stack_size`); 16 KB pages (`Memory::map`
 rounds to them); the guest space cannot be below 4 GB (__PAGEZERO), so its base is read at run
 time; the splash is the Linux one (second process, no Dock icon of its own); no fault reports
-(`catch_faults`). `tools/macos-app.sh` builds fcop.app (ad-hoc signed) and its zip; inside an
+(`catch_faults`). `tools/macos-app.sh` builds fcop.app (ad-hoc signed; its icon drawn by `examples/icon.rs`,
+a star on a shield, made an .icns with sips and iconutil) and its zip; inside an
 app (`setup::app_folder`: the program in Contents/MacOS) the player's folder is
 ~/Library/Application Support/fcop (game_files, CD images, fcop.log for stdout/stderr). The
 error window has an Open Folder button (Linux too: `xdg-open`; the child process finds the

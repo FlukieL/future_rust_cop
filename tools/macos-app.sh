@@ -9,6 +9,16 @@ app=target/fcop.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp target/release/fcop "$app/Contents/MacOS/fcop"
+# the icon: drawn by examples/icon.rs, every size macOS asks for
+icons=target/fcop.iconset
+rm -rf "$icons"
+mkdir -p "$icons" "$app/Contents/Resources"
+cargo run -q --release --example icon -- target/icon.png
+for s in 16 32 128 256 512; do
+    sips -z $s $s target/icon.png --out "$icons/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s * 2)) $((s * 2)) target/icon.png --out "$icons/icon_${s}x${s}@2x.png" >/dev/null
+done
+iconutil -c icns "$icons" -o "$app/Contents/Resources/fcop.icns"
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -17,6 +27,7 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleName</key><string>fcop</string>
     <key>CFBundleDisplayName</key><string>fcop</string>
     <key>CFBundleExecutable</key><string>fcop</string>
+    <key>CFBundleIconFile</key><string>fcop</string>
     <key>CFBundleIdentifier</key><string>io.github.future-rust-cop.fcop</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
