@@ -742,8 +742,8 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
 `.github/workflows/build.yml`: on windows-latest, ubuntu-22.04 (older glibc, runs on newer
 distributions; ALSA and libudev headers from apt) and macos-latest (Apple Silicon), tests and builds at a tag `v*` (or started by
 hand: `gh workflow run build.yml`), not at every push (the macOS release file is the app,
-`tools/macos-app.sh`); `.github/workflows/macos-app.yml` builds the app at every push to any
-branch, kept as the run's artifact `fcop-macos-app-<sha>`; a tag also makes a GitHub release with `fcop-<tag>-windows-x64.zip` and
+`tools/macos-app.sh`); `.github/workflows/macos-app.yml` builds the app when started by hand
+(`gh workflow run macos-app.yml --ref <branch>`), not at every push, kept as the run's artifact `fcop-macos-app-<sha>`; a tag also makes a GitHub release with `fcop-<tag>-windows-x64.zip` and
 `fcop-<tag>-linux-x64.tar.gz`, `fcop-<tag>-macos-arm64.zip` (the app) (the program, README, LICENSE, `game_files/README.txt`).
 Version in Cargo.toml.
 macOS (Apple Silicon, first built 2026-11-24): windows only on the main thread, so the game runs

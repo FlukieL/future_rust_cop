@@ -1,12 +1,11 @@
 name: macOS app
 
-# every push: the app of that commit, as the run's build result (Actions, the run, Artifacts)
+# started by hand (gh workflow run macos-app.yml --ref <branch>): the app of that commit, as the
+# run's build result (Actions, the run, Artifacts)
 on:
-  push:
-    branches: ['**']
   workflow_dispatch:
 
-# a newer push on the same branch makes the older run unneeded
+# a newer run on the same branch makes the older one unneeded
 concurrency:
   group: macos-app-${{ github.ref }}
   cancel-in-progress: true

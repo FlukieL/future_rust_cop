@@ -310,8 +310,9 @@ Without a path, fcop uses the `game_files` folder as described above. The tests
 `tools/macos-app.sh` builds `target/fcop.app` and packs it into one file to share:
 `target/fcop-<version>-macos.zip`. How players use it: [macOS](#macos).
 
-GitHub also builds the app at every push. To get the app of a commit, open **Actions >
-macOS app**, then the run of that commit, and download it under **Artifacts** (you must be
+GitHub builds the app of a branch when the workflow **macOS app** is started by hand
+(`gh workflow run macos-app.yml --ref <branch>`). To get it, open **Actions > macOS app**, then
+that run, and download it under **Artifacts** (you must be
 signed in to GitHub). The download is a zip that holds the app's zip.
 
 How fcop works inside and what is still open: `CLAUDE.md` and `PLAN.md`.
