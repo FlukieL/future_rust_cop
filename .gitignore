@@ -9,3 +9,4 @@ shot/
 /*.img
 /*.cue
 game_files_us/
+.DS_Store

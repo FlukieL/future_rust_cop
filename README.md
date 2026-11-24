@@ -1,6 +1,6 @@
 # future_rust_cop
 
-**Future Cop: L.A.P.D.** (1998) running natively on modern Windows and Linux, written in Rust.
+**Future Cop: L.A.P.D.** (1998) running natively on modern Windows, Linux and macOS, written in Rust.
 
 fcop takes the original game's program and recompiles it into native code when it starts,
 using [iced-x86] and [Cranelift]. Everything the game expects from Windows and DirectX
@@ -41,7 +41,7 @@ using [iced-x86] and [Cranelift]. Everything the game expects from Windows and D
 
 - The PC version of the game, **US** or **German**. fcop tells you if your version is not
   supported.
-- Windows or Linux (64-bit) with OpenGL 3.3.
+- Windows or Linux (64-bit) with OpenGL 3.3, or macOS on Apple Silicon.
 - On Linux you also need ALSA (or PipeWire/PulseAudio) for sound and libudev for gamepads.
   Every normal desktop distribution has them.
 
@@ -49,6 +49,7 @@ using [iced-x86] and [Cranelift]. Everything the game expects from Windows and D
 
 1. **Download** the latest version from the [releases] page and unpack it:
    `fcop-...-windows-x64.zip` for Windows, `fcop-...-linux-x64.tar.gz` for Linux.
+   On macOS, see [macOS](#macos) below.
 2. **Add the game.**
 
    Choose **one** of these ways:
@@ -68,10 +69,25 @@ On the first start fcop finds the game, checks it and sorts out what it needs:
 | `game_files/FCopLAPD` | `FCopLAPD.exe`, `febmp.bin` and the `missions` folder |
 | `game_files/Video` | the videos |
 
-Everything else in `game_files` is moved to the recycle bin (on Linux it is deleted).
+Everything else in `game_files` is moved to the recycle bin (on Linux and macOS it is deleted).
 
 The first start takes a second or two longer, because fcop compiles the game once. After that
 it starts right away.
+
+### macOS
+
+fcop for macOS (Apple Silicon) is an app.
+
+1. **Download** `fcop-...-macos-arm64.zip` from the [releases] page and double-click it. This
+   unpacks `fcop.app`. You can move it to your Applications folder.
+2. **Start** fcop. The app is not signed with a developer certificate, so macOS blocks the
+   first start. Open **System Settings > Privacy & Security** and click **Open Anyway**.
+3. **Add the game.** The window says that the game files were not found. Click **Open
+   Folder**, put your CD image (or a copy of the CD, or your installed game folder) into it,
+   and start fcop again.
+
+The app keeps its files in `~/Library/Application Support/fcop`: the game and your settings in
+`game_files`, the log in `fcop.log`.
 
 ### Where your files are
 
@@ -81,7 +97,7 @@ it starts right away.
 | Key bindings | `game_files/FCopLAPD/controls.txt` |
 | Gamepad bindings | `game_files/FCopLAPD/gamepad.txt` |
 | Saved games | `game_files/FCopLAPD/save.cfg` |
-| Log (if something goes wrong) | `fcop.log` next to `fcop.exe` on Windows, the terminal on Linux |
+| Log (if something goes wrong) | `fcop.log` next to `fcop.exe` on Windows, the terminal on Linux and macOS |
 
 ## Menu music
 
@@ -288,6 +304,16 @@ cargo run --release -- path/to/FCopLAPD.exe
 
 Without a path, fcop uses the `game_files` folder as described above. The tests
 (`cargo test --release`) need no game files.
+
+### macOS app
+
+`tools/macos-app.sh` builds `target/fcop.app` and packs it into one file to share:
+`target/fcop-<version>-macos.zip`. How players use it: [macOS](#macos).
+
+GitHub builds the app of a branch when the workflow **macOS app** is started by hand
+(`gh workflow run macos-app.yml --ref <branch>`). To get it, open **Actions > macOS app**, then
+that run, and download it under **Artifacts** (you must be
+signed in to GitHub). The download is a zip that holds the app's zip.
 
 How fcop works inside and what is still open: `CLAUDE.md` and `PLAN.md`.
 

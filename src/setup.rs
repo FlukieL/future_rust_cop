@@ -44,17 +44,34 @@ pub fn root() -> PathBuf {
     }
 }
 
-/// The folder fcop.exe is in.
+/// The folder fcop.exe is in, or the app's folder (`app_folder`).
 fn home() -> Option<PathBuf> {
-    std::env::current_exe().ok()?.parent().map(Path::to_path_buf)
+    app_folder().or_else(|| std::env::current_exe().ok()?.parent().map(Path::to_path_buf))
+}
+
+/// In a macOS app (fcop.app/Contents/MacOS/fcop): ~/Library/Application Support/fcop. The
+/// app is one sealed bundle to share; the player's files cannot go into it.
+pub fn app_folder() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    if !cfg!(target_os = "macos") || !exe.parent()?.ends_with("Contents/MacOS") {
+        return None;
+    }
+    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/fcop"))
 }
 
 /// Set up the game files in `root` and return FCopLAPD.exe's path, or what the player must do.
 pub fn game_exe(root: &Path) -> Result<PathBuf, String> {
-    let copy_in = format!(
-        "Put an image of your Future Cop: L.A.P.D. CD (.iso or .bin) next to fcop.exe, or copy the CD (or your installed game folder) into this folder:\n\n{}\n\nThen start fcop.exe again.",
-        root.display()
-    );
+    let copy_in = if app_folder().is_some() {
+        format!(
+            "Put an image of your Future Cop: L.A.P.D. CD (.iso or .bin), or a copy of the CD (or your installed game folder), into this folder:\n\n{}\n\nThen start fcop again.",
+            root.display()
+        )
+    } else {
+        format!(
+            "Put an image of your Future Cop: L.A.P.D. CD (.iso or .bin) next to fcop.exe, or copy the CD (or your installed game folder) into this folder:\n\n{}\n\nThen start fcop.exe again.",
+            root.display()
+        )
+    };
     let game = root.join(GAME);
     let mut exe = find(&game, "FCopLAPD.exe", 0).or_else(|| find(root, "FCopLAPD.exe", 6));
     if exe.is_none() {

@@ -140,9 +140,11 @@ impl Memory {
         base
     }
 
-    /// Make guest addresses [lo, hi) readable and writable.
+    /// Make guest addresses [lo, hi) readable and writable (whole host pages: 16 KB on Apple
+    /// Silicon, where mprotect refuses 4 KB steps).
     pub fn map(&self, lo: u32, hi: u32) {
-        let (lo, hi) = (lo & !0xfff, (hi as u64 + 0xfff) & !0xfff);
+        const PAGE: u64 = if cfg!(all(target_vendor = "apple", target_arch = "aarch64")) { 0x4000 } else { 0x1000 };
+        let (lo, hi) = (lo & !(PAGE as u32 - 1), (hi as u64 + PAGE - 1) & !(PAGE - 1));
         let p = unsafe { self.base.add(lo as usize) };
         let n = (hi - lo as u64) as usize;
         #[cfg(windows)]
