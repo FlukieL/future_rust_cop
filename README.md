@@ -1,6 +1,6 @@
 # future_rust_cop
 
-**Future Cop: L.A.P.D.** (1998) running natively on modern Windows and Linux, written in Rust.
+**Future Cop: L.A.P.D.** (1998) running natively on modern Windows, Linux and macOS, written in Rust.
 
 fcop takes the original game's program and recompiles it into native code when it starts,
 using [iced-x86] and [Cranelift]. Everything the game expects from Windows and DirectX
@@ -41,25 +41,28 @@ using [iced-x86] and [Cranelift]. Everything the game expects from Windows and D
 
 - The PC version of the game, **US** or **German**. fcop tells you if your version is not
   supported.
-- Windows or Linux (64-bit) with OpenGL 3.3.
+- Windows or Linux (64-bit) with OpenGL 3.3, or macOS on Apple Silicon.
 - On Linux you also need ALSA (or PipeWire/PulseAudio) for sound and libudev for gamepads.
   Every normal desktop distribution has them.
 
 ### Installation
 
 1. **Download** the latest version from the [releases] page and unpack it:
-   `fcop-...-windows-x64.zip` for Windows, `fcop-...-linux-x64.tar.gz` for Linux.
+   `fcop-...-windows-x64.zip` for Windows, `fcop-...-linux-x64.tar.gz` for Linux,
+   `fcop-...-macos-arm64.tar.gz` for macOS.
 2. **Add the game.**
 
    Choose **one** of these ways:
 
    | Option | What you have | What to do |
    | --- | --- | --- |
-   | A | an image of your CD (`.iso` or `.bin`) | put it next to `fcop.exe` (Linux: `fcop`) or into `game_files` |
+   | A | an image of your CD (`.iso` or `.bin`) | put it next to `fcop.exe` (Linux, macOS: `fcop`) or into `game_files` |
    | B | the CD itself | copy everything on it into `game_files` |
    | C | the game installed on your PC | copy the game's folder into `game_files` |
 
-3. **Start** `fcop.exe` (Linux: run `./fcop` in its folder).
+3. **Start** `fcop.exe` (Linux, macOS: run `./fcop` in its folder).
+   On macOS the download is not signed. If macOS blocks fcop, run
+   `xattr -dr com.apple.quarantine .` in its folder once.
 
 On the first start fcop finds the game, checks it and sorts out what it needs:
 
@@ -68,7 +71,7 @@ On the first start fcop finds the game, checks it and sorts out what it needs:
 | `game_files/FCopLAPD` | `FCopLAPD.exe`, `febmp.bin` and the `missions` folder |
 | `game_files/Video` | the videos |
 
-Everything else in `game_files` is moved to the recycle bin (on Linux it is deleted).
+Everything else in `game_files` is moved to the recycle bin (on Linux and macOS it is deleted).
 
 The first start takes a second or two longer, because fcop compiles the game once. After that
 it starts right away.
@@ -81,7 +84,7 @@ it starts right away.
 | Key bindings | `game_files/FCopLAPD/controls.txt` |
 | Gamepad bindings | `game_files/FCopLAPD/gamepad.txt` |
 | Saved games | `game_files/FCopLAPD/save.cfg` |
-| Log (if something goes wrong) | `fcop.log` next to `fcop.exe` on Windows, the terminal on Linux |
+| Log (if something goes wrong) | `fcop.log` next to `fcop.exe` on Windows, the terminal on Linux and macOS |
 
 ## Menu music
 

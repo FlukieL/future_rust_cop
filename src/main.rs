@@ -58,6 +58,10 @@ fn main() {
         std::process::exit(tool(cmd));
     }
     // guest calls nest on the host stack like the original's: run on a thread with a large one
+    // (macOS: windows only on the main thread, its stack made as large by build.rs)
+    #[cfg(target_os = "macos")]
+    let code = run();
+    #[cfg(not(target_os = "macos"))]
     let code = std::thread::Builder::new().stack_size(256 << 20).spawn(run).unwrap().join().unwrap();
     fcop::platform::kernel32::terminate(code);
 }

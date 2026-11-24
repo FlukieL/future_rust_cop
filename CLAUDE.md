@@ -739,11 +739,15 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
 
 ## Releases
 
-`.github/workflows/build.yml`: on windows-latest and ubuntu-22.04 (older glibc, runs on newer
-distributions; ALSA and libudev headers from apt), tests and builds at a tag `v*` (or started by
+`.github/workflows/build.yml`: on windows-latest, ubuntu-22.04 (older glibc, runs on newer
+distributions; ALSA and libudev headers from apt) and macos-latest (Apple Silicon), tests and builds at a tag `v*` (or started by
 hand: `gh workflow run build.yml`), not at every push; a tag also makes a GitHub release with `fcop-<tag>-windows-x64.zip` and
-`fcop-<tag>-linux-x64.tar.gz` (the program, README, LICENSE, `game_files/README.txt`).
-Version in Cargo.toml. Linux tested in a CachyOS VM (VMware, NAT): the host serves the
+`fcop-<tag>-linux-x64.tar.gz`, `fcop-<tag>-macos-arm64.tar.gz` (the program, README, LICENSE, `game_files/README.txt`).
+Version in Cargo.toml.
+macOS (Apple Silicon, first built 2026-11-24): windows only on the main thread, so the game runs
+there (main.rs), its 256 MB stack from `build.rs` (`-stack_size`); 16 KB pages (`Memory::map`
+rounds to them); the guest space cannot be below 4 GB (__PAGEZERO), so its base is read at run
+time; the splash is the Linux one (second process); no fault reports (`catch_faults`). Linux tested in a CachyOS VM (VMware, NAT): the host serves the
 source by HTTP to it (copy and paste there is text only).
 
 ## Known facts about the game (from the earlier project)

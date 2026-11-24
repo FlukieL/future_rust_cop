@@ -202,7 +202,8 @@ mod unix {
         if w.is_some() || std::env::var_os("FCOP_BATCH").is_some() {
             return;
         }
-        if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
+        // (macOS always has its window system, without these)
+        if cfg!(not(target_os = "macos")) && std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
             return;
         }
         let Ok(exe) = std::env::current_exe() else { return };
