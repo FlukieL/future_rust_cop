@@ -785,6 +785,7 @@ pub const HOOKS: &[(crate::ver::Us, crate::rt::Hook)] = &[
     (gamepad::BINDING_DOWN, gamepad::binding_down),
     (gamepad::SAVE_CONTROLS, gamepad::save_controls),
     (dsound::SET_VOLUME, dsound::set_volume),
+    (user32::PUMP_MESSAGES, user32::pump_messages),
 ];
 
 /// Reserve the guest memory, at `rt::FIXED_BASE` if it is free: before the game is compiled (the

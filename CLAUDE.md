@@ -663,6 +663,10 @@ derived from the EXE** (translated code, extracted data). `game_files/` is git-i
   missions (0x415e30) and shows it for the menus (0x415e00). While hidden and focused, the
   window hides it and grabs it (`window::catch_cursor`, Confined, else Locked; on Windows
   winit clips a hidden grabbed cursor to 1x1 where it is), released when the focus goes.
+- Menu loop 0x40bd00: it ran its message pump 0x414ad0 and the menu frame 0x40b390 without
+  waiting (a core busy); the pump is hooked (`user32::pump_messages`) and sleeps 1 ms a round
+  there, turn handed over (~0.1 core). 2D frames shown with V-Sync on end with glFinish
+  (`Gl::draw`): queued swaps made the menu's highlight lag behind the mouse (issue #57).
 - Spin-waits: `rt::POLL` is nonzero while a guest thread waits for its turn; generated code
   loads it at every loop head (target of a backward branch) and calls `rt_yield`.
 - `resource(type, id)` finds resources in the loaded EXE (`image::list_resources` works on
