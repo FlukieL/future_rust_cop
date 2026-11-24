@@ -346,8 +346,21 @@ fn compile_all(isa: &dyn cranelift_codegen::isa::TargetIsa, lifted: Vec<(u32, Fu
 
 const MAGIC: &[u8; 8] = b"FCOPJIT1";
 
-/// The relocation kinds the x86-64 code uses (their numbers in the file).
-const RELOCS: [Reloc; 6] = [Reloc::Abs4, Reloc::Abs8, Reloc::X86PCRel4, Reloc::X86CallPCRel4, Reloc::X86CallPLTRel4, Reloc::X86GOTPCRel4];
+/// The relocation kinds the x86-64 and the AArch64 (Apple Silicon) code use (their numbers in
+/// the file: new kinds go at the end).
+const RELOCS: [Reloc; 11] = [
+    Reloc::Abs4,
+    Reloc::Abs8,
+    Reloc::X86PCRel4,
+    Reloc::X86CallPCRel4,
+    Reloc::X86CallPLTRel4,
+    Reloc::X86GOTPCRel4,
+    Reloc::Arm64Call,
+    Reloc::Aarch64AdrGotPage21,
+    Reloc::Aarch64Ld64GotLo12Nc,
+    Reloc::Aarch64AdrPrelPgHi21,
+    Reloc::Aarch64AddAbsLo12Nc,
+];
 
 fn save(path: &Path, key: &[u8; 32], blobs: &[Blob]) {
     let mut out = Vec::with_capacity(blobs.iter().map(|b| b.bytes.len() + 24 * b.relocs.len() + 16).sum::<usize>() + 48);
