@@ -42,7 +42,7 @@
 use crate::ver::Us;
 use super::{advapi32, mem};
 use crate::rt::{Cpu, EAX, ESP, call_original};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -274,12 +274,25 @@ fn write(a: u32, vals: &[i32]) {
 
 impl Places {
     fn put(&self) {
+        self.each(|a, p| write(a, p));
+    }
+
+    /// Every place (actors and cameras) with its address.
+    fn each<'a>(&'a self, mut f: impl FnMut(u32, &'a [i32])) {
         for (a, p) in &self.actors {
-            write(*a, p);
+            f(*a, p);
         }
         for (a, p) in &self.cameras {
-            write(*a, p);
+            f(*a, p);
         }
+    }
+
+    fn by_address(&self) -> HashMap<u32, &[i32]> {
+        let mut m = HashMap::new();
+        self.each(|a, p| {
+            m.insert(a, p);
+        });
+        m
     }
 
     fn now() -> Places {
@@ -363,8 +376,30 @@ static HISTORY: Mutex<VecDeque<(f64, Places)>> = Mutex::new(VecDeque::new());
 const LAG: f64 = FRAME as f64 + 2.0;
 /// How far the game time is behind the clock when a frame is drawn (ticks, averaged).
 static BEHIND: Mutex<Option<f64>> = Mutex::new(None);
-/// The real places while a picture is drawn with others (put back at its end).
-static REAL: Mutex<Option<Places>> = Mutex::new(None);
+/// The real places while a picture is drawn with others (put back at its end), and the
+/// places it is drawn with.
+static REAL: Mutex<Option<Kept>> = Mutex::new(None);
+
+struct Kept {
+    real: Places,
+    shown: Places,
+}
+
+impl Kept {
+    /// Put the real places back, but not over a place the game wrote while drawing (one no
+    /// longer as it was shown): a teleporter moves the robot in the render block's logic, and
+    /// putting the old place back undid it (issue: teleporters only flashed white).
+    fn put_back(&self) {
+        let shown = self.shown.by_address();
+        self.real.each(|a, p| {
+            let mut now = vec![0; p.len()];
+            read(a, &mut now);
+            if shown.get(&a).is_none_or(|s| *s == &now[..]) {
+                write(a, p);
+            }
+        });
+    }
+}
 /// A picture between the game's frames is being drawn (from its start to its end).
 static SHOWING: AtomicBool = AtomicBool::new(false);
 /// The frame (its start tick) the game drew in its own way, and drew unpaused (+1: none).
@@ -468,7 +503,7 @@ pub fn render_start(c: &mut Cpu) {
                 if let Some(s) = &mut shown_at {
                     s.1 = at;
                 }
-                *REAL.lock().unwrap() = Some(real);
+                *REAL.lock().unwrap() = Some(Kept { real, shown: Places::now() });
                 // the two-view frame ran the visibility pass before, with the real camera: the
                 // terrain and walls it chose did not fit the camera drawn with (they shook)
                 if !showing && (network() || split()) {
@@ -509,8 +544,8 @@ pub fn render_end(c: &mut Cpu) {
             mem().slice(a.at(), n).copy_from_slice(v);
         }
     }
-    if let Some(real) = REAL.lock().unwrap().take() {
-        real.put();
+    if let Some(kept) = REAL.lock().unwrap().take() {
+        kept.put_back();
     }
 }
 
@@ -518,14 +553,46 @@ pub fn render_end(c: &mut Cpu) {
 /// in between while paused.
 pub fn unpaused(c: &mut Cpu) {
     UNPAUSED_DRAWN.store(mem().rd32(LAST.at()).wrapping_add(1), Ordering::Relaxed);
-    let shown = REAL.lock().unwrap().as_ref().map(|real| {
-        let shown = Places::now();
-        real.put();
-        shown
-    });
+    let kept = REAL.lock().unwrap().take();
+    if let Some(k) = &kept {
+        k.real.put();
+    }
     call_original(c, UNPAUSED.at());
-    if let Some(shown) = shown {
-        shown.put();
+    if let Some(mut k) = kept {
+        // what the logic moved (a teleporter) stays where it put it, now and at the end
+        let moved = |a: u32, p: &mut [i32]| {
+            let mut now = vec![0; p.len()];
+            read(a, &mut now);
+            if now != *p {
+                p.copy_from_slice(&now);
+                true
+            } else {
+                false
+            }
+        };
+        let mut moved_to = HashMap::new();
+        for (a, p) in k.real.actors.iter_mut() {
+            if moved(*a, p) {
+                moved_to.insert(*a, p.to_vec());
+            }
+        }
+        for (a, p) in k.real.cameras.iter_mut() {
+            if moved(*a, p) {
+                moved_to.insert(*a, p.to_vec());
+            }
+        }
+        for (a, p) in k.shown.actors.iter_mut() {
+            if let Some(m) = moved_to.get(a) {
+                p.copy_from_slice(m);
+            }
+        }
+        for (a, p) in k.shown.cameras.iter_mut() {
+            if let Some(m) = moved_to.get(a) {
+                p.copy_from_slice(m);
+            }
+        }
+        k.shown.put();
+        *REAL.lock().unwrap() = Some(k);
     }
 }
 
