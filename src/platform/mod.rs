@@ -580,6 +580,7 @@ fn on_event(c: &mut Cpu, e: Event) {
 static LAST_CALL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Report an access violation in guest memory (a bad game pointer) before the process dies.
+#[cfg(any(windows, all(target_os = "linux", target_arch = "x86_64")))]
 fn report_fault(kind: &str, a: usize, pc: usize) {
     let base = mem().base as usize;
     if a >= base && a - base < rt::GUEST_SPAN {

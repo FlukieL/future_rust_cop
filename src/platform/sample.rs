@@ -5,10 +5,14 @@
 //! In system code the thread's stack is copied while it stands and unwound afterwards
 //! (unwinding a stopped thread can wait for a lock it holds), up to the first frame in our
 //! code: "ntdll <- nvoglv64 <- game.exe+off". Every 2 s the top entries are logged.
+#[cfg(windows)]
 use super::log;
+#[cfg(windows)]
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::sync::OnceLock;
 
+#[cfg(windows)]
 fn on() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("FCOP_SAMPLE").is_some_and(|v| v != "0"))

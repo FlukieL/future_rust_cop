@@ -292,6 +292,18 @@ cargo run --release -- path/to/FCopLAPD.exe
 Without a path, fcop uses the `game_files` folder as described above. The tests
 (`cargo test --release`) need no game files.
 
+### macOS app
+
+`tools/macos-app.sh` builds `target/fcop.app` and packs it into one file to share:
+`target/fcop-<version>-macos.zip`.
+
+- The app keeps its files in `~/Library/Application Support/fcop`: the game in `game_files`,
+  the log in `fcop.log`.
+- If the game files are not there, the app opens the `game_files` folder in Finder. Put the
+  CD image (or a copy of the CD) into it and start the app again.
+- The app is not signed with a developer certificate. On the first start, macOS blocks it.
+  Open **System Settings > Privacy & Security** and click **Open Anyway**.
+
 How fcop works inside and what is still open: `CLAUDE.md` and `PLAN.md`.
 
 [iced-x86]: https://github.com/icedland/iced

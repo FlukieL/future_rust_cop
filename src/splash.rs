@@ -273,7 +273,12 @@ mod unix {
 
     /// `fcop --splash`: the window, until its input ends or the player closes it.
     pub fn child() {
-        let Ok(el) = EventLoop::<Msg>::with_user_event().build() else { return };
+        #[allow(unused_mut)]
+        let mut b = EventLoop::<Msg>::with_user_event();
+        // (macOS: no second icon in the Dock beside the game's)
+        #[cfg(target_os = "macos")]
+        winit::platform::macos::EventLoopBuilderExtMacOS::with_activation_policy(&mut b, winit::platform::macos::ActivationPolicy::Accessory);
+        let Ok(el) = b.build() else { return };
         let proxy = el.create_proxy();
         std::thread::spawn(move || {
             for line in std::io::stdin().lines() {

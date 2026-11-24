@@ -45,8 +45,19 @@ fn output() {
     }
 }
 
-#[cfg(not(windows))]
-fn output() {}
+/// A macOS app started from Finder has no terminal: messages go to fcop.log in its folder.
+#[cfg(unix)]
+fn output() {
+    use std::os::fd::AsRawFd;
+    let Some(dir) = setup::app_folder() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(f) = std::fs::File::create(dir.join("fcop.log")) {
+        unsafe {
+            libc::dup2(f.as_raw_fd(), 1);
+            libc::dup2(f.as_raw_fd(), 2);
+        }
+    }
+}
 
 fn main() {
     #[cfg(unix)]
@@ -78,6 +89,12 @@ fn run() -> u32 {
     let exe = match found {
         Ok(e) => e,
         Err(text) => {
+            // the app's folder is hidden in ~/Library: show the player where the game goes
+            if setup::app_folder().is_some() {
+                let root = setup::root();
+                let _ = std::fs::create_dir_all(&root);
+                let _ = std::process::Command::new("open").arg(&root).spawn();
+            }
             splash::fail(&text);
             std::process::exit(2);
         }

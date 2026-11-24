@@ -747,7 +747,11 @@ Version in Cargo.toml.
 macOS (Apple Silicon, first built 2026-11-24): windows only on the main thread, so the game runs
 there (main.rs), its 256 MB stack from `build.rs` (`-stack_size`); 16 KB pages (`Memory::map`
 rounds to them); the guest space cannot be below 4 GB (__PAGEZERO), so its base is read at run
-time; the splash is the Linux one (second process); no fault reports (`catch_faults`). Linux tested in a CachyOS VM (VMware, NAT): the host serves the
+time; the splash is the Linux one (second process, no Dock icon of its own); no fault reports
+(`catch_faults`). `tools/macos-app.sh` builds fcop.app (ad-hoc signed) and its zip; inside an
+app (`setup::app_folder`: the program in Contents/MacOS) the player's folder is
+~/Library/Application Support/fcop (game_files, CD images, fcop.log for stdout/stderr), opened in
+Finder when the game is not found. Linux tested in a CachyOS VM (VMware, NAT): the host serves the
 source by HTTP to it (copy and paste there is text only).
 
 ## Known facts about the game (from the earlier project)
