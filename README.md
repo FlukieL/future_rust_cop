@@ -299,8 +299,9 @@ Without a path, fcop uses the `game_files` folder as described above. The tests
 
 - The app keeps its files in `~/Library/Application Support/fcop`: the game in `game_files`,
   the log in `fcop.log`.
-- If the game files are not there, the app opens the `game_files` folder in Finder. Put the
-  CD image (or a copy of the CD) into it and start the app again.
+- If the game files are not there, the window names the `game_files` folder. Click **Open
+  Folder** to show it in Finder, put the CD image (or a copy of the CD) into it and start the
+  app again.
 - The app is not signed with a developer certificate. On the first start, macOS blocks it.
   Open **System Settings > Privacy & Security** and click **Open Anyway**.
 

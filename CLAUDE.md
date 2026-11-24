@@ -750,8 +750,9 @@ rounds to them); the guest space cannot be below 4 GB (__PAGEZERO), so its base 
 time; the splash is the Linux one (second process, no Dock icon of its own); no fault reports
 (`catch_faults`). `tools/macos-app.sh` builds fcop.app (ad-hoc signed) and its zip; inside an
 app (`setup::app_folder`: the program in Contents/MacOS) the player's folder is
-~/Library/Application Support/fcop (game_files, CD images, fcop.log for stdout/stderr), opened in
-Finder when the game is not found. Linux tested in a CachyOS VM (VMware, NAT): the host serves the
+~/Library/Application Support/fcop (game_files, CD images, fcop.log for stdout/stderr). The
+error window has an Open Folder button (Linux too: `xdg-open`; the child process finds the
+folder with `setup::root`). Linux tested in a CachyOS VM (VMware, NAT): the host serves the
 source by HTTP to it (copy and paste there is text only).
 
 ## Known facts about the game (from the earlier project)
