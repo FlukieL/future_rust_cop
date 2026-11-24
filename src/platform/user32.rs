@@ -351,6 +351,24 @@ fn peek_message(c: &mut Cpu) -> u32 {
     }
 }
 
+/// 0x414ad0 takes the window messages waiting (PeekMessage, dispatched; al = 1 at WM_QUIT).
+pub const PUMP_MESSAGES: Us = Us(0x414ad0);
+/// Its call in the menu loop 0x40bd00 (the return address): the loop runs it and the menu's
+/// frame 0x40b390 (or, while a video plays, nothing else) over and over without waiting.
+const MENU_LOOP: Us = Us(0x40be35);
+
+/// The menu loop sleeps a millisecond a round (the turn handed over): it kept a core busy.
+/// Input waits at most that long; the menu animates by the time passed (timeGetTime).
+pub fn pump_messages(c: &mut Cpu) {
+    let from = mem().rd32(c.r[crate::rt::ESP]);
+    crate::rt::call_original(c, PUMP_MESSAGES.at());
+    if from == MENU_LOOP.at() && c.r[crate::rt::EAX] & 0xff == 0 {
+        super::turn_give();
+        std::thread::sleep(Duration::from_millis(1));
+        super::turn_take();
+    }
+}
+
 fn get_message(c: &mut Cpu) -> u32 {
     let (p, min, max) = (arg(c, 0), arg(c, 2), arg(c, 3));
     loop {

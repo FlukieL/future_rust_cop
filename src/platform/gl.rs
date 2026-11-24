@@ -33,6 +33,8 @@ pub struct Gl {
     /// what is shown: a texture, its size, whether its pixels are 0RGB/ARGB words (2D frames:
     /// the bytes are B G R A), and the gamma to show it with
     pub shown: (glow::Texture, u32, u32, bool, f32),
+    /// V-Sync is on (the swap interval set last)
+    vsync: bool,
 }
 
 thread_local! {
@@ -165,7 +167,7 @@ impl Gl {
         upload(&gl, frame, &vec![0; 640 * 480], 640, 480);
         let overlay = texture(&gl, true);
         let video = texture(&gl, true);
-        let g = Gl { gl, surface, context, blit, vao, frame, overlay, has_overlay: false, stats: None, video, video_size: None, shown: (frame, 640, 480, true, 1.0) };
+        let g = Gl { gl, surface, context, blit, vao, frame, overlay, has_overlay: false, stats: None, video, video_size: None, shown: (frame, 640, 480, true, 1.0), vsync };
         (win, g)
     }
 
@@ -191,7 +193,8 @@ impl Gl {
     }
 
     /// V-Sync: the swap waits for the screen's next refresh.
-    pub fn set_vsync(&self, on: bool) {
+    pub fn set_vsync(&mut self, on: bool) {
+        self.vsync = on;
         if let Err(e) = self.surface.set_swap_interval(&self.context, swap_interval(on)) {
             super::log!("warn: V-Sync {}: {e}", if on { "on" } else { "off" });
         }
@@ -286,6 +289,12 @@ impl Gl {
             self.draw_stats(new, w, h);
         }
         let _ = self.surface.swap_buffers(&self.context);
+        // 2D frames (menus, videos) with V-Sync: wait for the swap. The driver may queue several
+        // swaps ahead of the screen, and the menu's highlight then followed the mouse that many
+        // refreshes late (issue #57). 3D pictures are paced by `fps.rs` and left alone.
+        if self.vsync && words {
+            unsafe { self.gl.finish() };
+        }
         out
     }
 
