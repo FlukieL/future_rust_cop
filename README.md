@@ -48,21 +48,19 @@ using [iced-x86] and [Cranelift]. Everything the game expects from Windows and D
 ### Installation
 
 1. **Download** the latest version from the [releases] page and unpack it:
-   `fcop-...-windows-x64.zip` for Windows, `fcop-...-linux-x64.tar.gz` for Linux,
-   `fcop-...-macos-arm64.tar.gz` for macOS.
+   `fcop-...-windows-x64.zip` for Windows, `fcop-...-linux-x64.tar.gz` for Linux.
+   On macOS, see [macOS](#macos) below.
 2. **Add the game.**
 
    Choose **one** of these ways:
 
    | Option | What you have | What to do |
    | --- | --- | --- |
-   | A | an image of your CD (`.iso` or `.bin`) | put it next to `fcop.exe` (Linux, macOS: `fcop`) or into `game_files` |
+   | A | an image of your CD (`.iso` or `.bin`) | put it next to `fcop.exe` (Linux: `fcop`) or into `game_files` |
    | B | the CD itself | copy everything on it into `game_files` |
    | C | the game installed on your PC | copy the game's folder into `game_files` |
 
-3. **Start** `fcop.exe` (Linux, macOS: run `./fcop` in its folder).
-   On macOS the download is not signed. If macOS blocks fcop, run
-   `xattr -dr com.apple.quarantine .` in its folder once.
+3. **Start** `fcop.exe` (Linux: run `./fcop` in its folder).
 
 On the first start fcop finds the game, checks it and sorts out what it needs:
 
@@ -75,6 +73,21 @@ Everything else in `game_files` is moved to the recycle bin (on Linux and macOS 
 
 The first start takes a second or two longer, because fcop compiles the game once. After that
 it starts right away.
+
+### macOS
+
+fcop for macOS (Apple Silicon) is an app.
+
+1. **Download** `fcop-...-macos-arm64.zip` from the [releases] page and double-click it. This
+   unpacks `fcop.app`. You can move it to your Applications folder.
+2. **Start** fcop. The app is not signed with a developer certificate, so macOS blocks the
+   first start. Open **System Settings > Privacy & Security** and click **Open Anyway**.
+3. **Add the game.** The window says that the game files were not found. Click **Open
+   Folder**, put your CD image (or a copy of the CD, or your installed game folder) into it,
+   and start fcop again.
+
+The app keeps its files in `~/Library/Application Support/fcop`: the game and your settings in
+`game_files`, the log in `fcop.log`.
 
 ### Where your files are
 
@@ -295,15 +308,11 @@ Without a path, fcop uses the `game_files` folder as described above. The tests
 ### macOS app
 
 `tools/macos-app.sh` builds `target/fcop.app` and packs it into one file to share:
-`target/fcop-<version>-macos.zip`.
+`target/fcop-<version>-macos.zip`. How players use it: [macOS](#macos).
 
-- The app keeps its files in `~/Library/Application Support/fcop`: the game in `game_files`,
-  the log in `fcop.log`.
-- If the game files are not there, the window names the `game_files` folder. Click **Open
-  Folder** to show it in Finder, put the CD image (or a copy of the CD) into it and start the
-  app again.
-- The app is not signed with a developer certificate. On the first start, macOS blocks it.
-  Open **System Settings > Privacy & Security** and click **Open Anyway**.
+GitHub also builds the app at every push. To get the app of a commit, open **Actions >
+macOS app**, then the run of that commit, and download it under **Artifacts** (you must be
+signed in to GitHub). The download is a zip that holds the app's zip.
 
 How fcop works inside and what is still open: `CLAUDE.md` and `PLAN.md`.
 

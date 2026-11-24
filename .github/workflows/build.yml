@@ -68,19 +68,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --release
-      - name: Build
-        run: cargo build --release
-      - name: Package
+      - name: Build the app
         run: |
-          name="fcop-$VERSION-macos-arm64"
-          mkdir "$name"
-          cp target/release/fcop README.md LICENSE "$name"
-          cp -r dist/game_files "$name"
-          tar czf "$name.tar.gz" "$name"
+          ./tools/macos-app.sh
+          mv target/fcop-*-macos.zip "fcop-$VERSION-macos-arm64.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: fcop-*.tar.gz
+          path: fcop-*.zip
 
   release:
     if: github.ref_type == 'tag'
