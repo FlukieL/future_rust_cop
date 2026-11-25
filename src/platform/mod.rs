@@ -8,12 +8,15 @@
 
 pub mod advapi32;
 pub mod ao;
+pub mod autosave;
 pub mod camera;
 pub mod bloom;
 pub mod cheats;
 pub mod ddraw;
 pub mod dialog;
 pub mod dinput;
+#[cfg(windows)]
+pub mod dualsense_win;
 pub mod display;
 pub mod dplay;
 pub mod dshow;
@@ -786,6 +789,10 @@ pub const HOOKS: &[(crate::ver::Us, crate::rt::Hook)] = &[
     (dinput::PROFILE_APPLY, dinput::profile_apply),
     (gamepad::BINDING_DOWN, gamepad::binding_down),
     (gamepad::SAVE_CONTROLS, gamepad::save_controls),
+    (autosave::RESET_PROGRESS, autosave::reset_progress),
+    (autosave::MISSION_PROGRESS, autosave::mission_progress),
+    (dshow::VIDEO_PLAY, dshow::video_play),
+    (dialog::HELP, dialog::help),
     (rumble::ROBOT_DAMAGE, rumble::robot_damage),
     (dsound::SET_VOLUME, dsound::set_volume),
     (user32::PUMP_MESSAGES, user32::pump_messages),

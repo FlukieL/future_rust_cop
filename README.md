@@ -97,6 +97,7 @@ The app keeps its files in `~/Library/Application Support/fcop`: the game and yo
 | Settings | `game_files/FCopLAPD/registry.txt` |
 | Key bindings | `game_files/FCopLAPD/controls.txt` |
 | Gamepad bindings | `game_files/FCopLAPD/gamepad.txt` |
+| Secondary gamepad bindings | `game_files/FCopLAPD/gamepad-secondary.txt` |
 | Saved games | `game_files/FCopLAPD/save.cfg` |
 | Log (if something goes wrong) | `fcop.log` next to `fcop.exe` on Windows, the terminal on Linux and macOS |
 
@@ -140,6 +141,9 @@ opens them too, and changes show right away.
 - [Modern graphics effects](#modern-graphics-effects): shadows, lighting and more
 - [Network play](#network-play) over the local network or the internet
 - [Sounds export](#sounds-export): all sounds and music as WAV files
+- Autosave: your menu progress is saved automatically after each mission to `game_files/FCopLAPD/autosave.cfg`, separate from the manual saves in `save.cfg`. It is loaded when the game starts; loading a manual save overrides it.
+- **Skip Intro Videos** in Preferences (off by default) skips the logo and intro videos at startup.
+- **Help** in the menu offers the help video, the credits video or the PlayStation manual (opens in your browser). The credits no longer play when you quit.
 
 ## Modern graphics effects
 
@@ -175,11 +179,12 @@ Up to two gamepads are supported, and you can plug them in while the game is run
 work alongside the keyboard. You change their buttons with "Gamepad" in Preferences or in the
 pause menu.
 
-The default layout (Xbox controller):
+The default **Console (modern)** layout (Xbox controller):
 
 | Button | Action |
 | --- | --- |
-| Left stick / D-pad | move and turn |
+| Left stick | move forward/back and strafe left/right |
+| Right stick / D-pad left/right | turn left/right |
 | X | gun |
 | A | heavy weapon |
 | B | special |
@@ -192,14 +197,22 @@ The default layout (Xbox controller):
 | Start | pause |
 
 The left stick is analog: push it a little and the robot moves slowly. (Not in network games.)
-This layout matches the PlayStation button positions for the actions available in the PC game;
-the PlayStation transform, crouch, and short-jink button combinations are not implemented.
+The **Console (classic)** profile instead turns with the left stick or D-pad and strafes
+with LT/RT. The PlayStation transform, crouch, and short-jink button combinations are
+not implemented.
 
-Existing `gamepad.txt` bindings are preserved. To use the new layout with existing bindings,
-open **Gamepad**, choose the default profile, and select **Xbox Controller**. The dropdown
-under each player in the **Gamepad** dialog selects a connected controller without changing
-that player's bindings. **Automatic** uses the connection order. Explicit selections last
-for the current session; select them again after restarting.
+Existing `gamepad.txt` bindings are preserved. To apply either layout, open **Gamepad**,
+choose the default profile, and select **Console (modern)** or **Console (classic)**.
+Saving the dialog also replaces that player's secondary bindings with the chosen profile's
+defaults. Open **Gamepad** and choose **Secondary bindings...**
+to edit alternate bindings. Save changes with OK before switching binding pages.
+Both bindings work alongside the keyboard. The dropdown under each player in the
+**Gamepad** dialog selects a connected controller without changing
+that player's bindings. **Automatic** uses the connection order, and **Disabled** turns off
+controller input for that player. Selections last for the current session; select them
+again after restarting. The glyph style selector in the Gamepad dialog offers **Auto**,
+**Xbox**, and **PlayStation**; Auto uses PlayStation glyphs for recognized Sony controllers
+and Xbox glyphs for other controllers.
 
 In menus and dialogs, the D-pad or left stick moves, A selects and B goes back.
 Holding a direction repeats; stick hysteresis helps prevent accidental changes near diagonals.
@@ -207,8 +220,10 @@ Holding a direction repeats; stick hysteresis helps prevent accidental changes n
 When your robot takes damage or changes mode, compatible controllers can vibrate on Windows
 and Linux. Turn off **Vibration** in the **Gamepad** dialog to disable it. `FCOP_RUMBLE=0`
 also starts the game with vibration off. The current macOS gamepad backend does not support
-vibration. Standard controller input depends on the operating system and gilrs mappings;
-DualSense adaptive triggers and advanced haptics are not currently supported.
+vibration. Standard controller input depends on the operating system and gilrs mappings.
+On Windows, Bluetooth DualSense controllers can also use the Windows joystick fallback when
+gilrs does not detect them. This fallback provides input only: DualSense vibration, adaptive
+triggers and advanced haptics are not supported through it.
 
 ## Network play
 

@@ -5,6 +5,7 @@
 //! `extend` can change a dialog before it is built and add our own controls (ids from
 //! `FIRST_OURS`), which we handle ourselves: the game's procedure never sees them.
 
+pub mod controller_glyphs;
 pub mod draw;
 pub mod extend;
 pub mod font;
@@ -13,7 +14,8 @@ pub mod template;
 use super::menupad::PadEvent;
 use super::user32::{self, Msg};
 use super::{Import, ResId, arg, cstr, guest_call, log, mem, put_cstr, resource};
-use crate::rt::Cpu;
+use crate::rt::{call_original, Cpu, ESP};
+use crate::ver::Us;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use template::{Class, Item, Template};
@@ -969,9 +971,17 @@ fn run(c: &mut Cpu, mut d: Dialog, param: u32) -> u32 {
             }
             Some(extend::After::Gamepad) => {
                 use crate::platform::gamepad;
-                gamepad::begin(c);
-                open(c, ResId::Id(gamepad::CONTROLLER), gamepad::CONTROLLER_PROC.at(), 0);
-                gamepad::end();
+                let mut secondary = false;
+                loop {
+                    gamepad::select_secondary(secondary);
+                    gamepad::begin(c);
+                    let result = open(c, ResId::Id(gamepad::CONTROLLER), gamepad::CONTROLLER_PROC.at(), 0);
+                    gamepad::end();
+                    if result != extend::GAMEPAD_SECONDARY {
+                        break;
+                    }
+                    secondary = !secondary;
+                }
             }
             None => {}
         }
@@ -1127,6 +1137,77 @@ fn open(c: &mut Cpu, id: ResId, proc_: u32, param: u32) -> u32 {
     }
     extend::adjust(tid, &mut t);
     show(c, tid, t, proc_, param)
+}
+
+/// Ask which Help resource to open. Returned IDs 10-12 select a resource; 2 cancels.
+pub fn help_choices(c: &mut Cpu) -> u32 {
+    let button = |id, text: &str, y| Item {
+        class: Class::Button,
+        id,
+        text: text.into(),
+        style: WS_VISIBLE | 0x0001_0000,
+        ex_style: 0,
+        rect: [10, y, 160, 14],
+    };
+    let t = Template {
+        style: WS_CAPTION,
+        title: "Help".into(),
+        rect: [0, 0, 180, 86],
+        font: None,
+        items: vec![
+            button(10, "Help Video", 7),
+            button(11, "Credits Video", 25),
+            button(12, "PS1 Manual", 43),
+            button(2, "Cancel", 61),
+        ],
+    };
+    show(c, 0, t, 0, 0)
+}
+
+/// The game's menu Help callback (plays the mode's rules video when its second argument is 0).
+pub const HELP: Us = Us(0x409bf0);
+const VIDEO_PLAY: Us = Us(0x408800);
+const CREDITS_NAME: Us = Us(0x48c8ec);
+const VIDEO_MODE: Us = Us(0x48c894);
+const FULLSCREEN_FLAG: Us = Us(0x4a0060);
+const MANUAL_URL: &str = "https://oldgamesdownload.com/wp-content/uploads/manuals/future-cop-lapd_ps1_manual_en_af1.pdf";
+
+fn open_manual() {
+    use std::process::Command;
+    let r = if cfg!(windows) {
+        Command::new("cmd").args(["/C", "start", "", MANUAL_URL]).spawn()
+    } else {
+        Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(MANUAL_URL).spawn()
+    };
+    if let Err(e) = r {
+        log!("warn: cannot open the manual: {e}");
+    }
+}
+
+/// Hook of the Help callback: choose between the help video, the credits and the PS1 manual.
+pub fn help(c: &mut Cpu) {
+    if mem().rd32(c.r[ESP] + 8) != 0 || user32::main_window() == 0 {
+        call_original(c, HELP.at());
+        return;
+    }
+    match help_choices(c) {
+        10 => call_original(c, HELP.at()),
+        choice => {
+            match choice {
+                11 => {
+                    // as the game's own help video call: same window arguments, credits.mpg
+                    let m = mem();
+                    m.wr32(VIDEO_MODE.at(), 0xffff_ffff);
+                    let flag = if m.rd8(FULLSCREEN_FLAG.at()) != 0 { 0x3c } else { 0x40 };
+                    guest_call(c, VIDEO_PLAY.at(), &[CREDITS_NAME.at(), 0, flag, 0x1e, 0x200, 0x120]);
+                }
+                12 => open_manual(),
+                _ => {}
+            }
+            // the original is not called: emulate its ret
+            c.r[ESP] += 4;
+        }
+    }
 }
 
 /// Build a dialog from template `t` (resource id or one of ours: `tid`) and run it.

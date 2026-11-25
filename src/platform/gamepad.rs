@@ -31,6 +31,14 @@ const ACTIONS: u32 = 14;
 /// The default profiles the Controller dialog's OK sets (two dwords).
 const PROFILE_CHOICES: Us = Us(0x4a01b0);
 const FILE: &str = "gamepad.txt";
+const SECONDARY_FILE: &str = "gamepad-secondary.txt";
+const CONSOLE_SECONDARY: [(u32, u32); 14] = [
+    (0, 0), (0, 0), (1, 14), (1, 13), (0, 0), (0, 0), (0, 0),
+    (0, 0), (0, 0), (0, 0), (1, 0x12), (1, 0x13), (0, 0), (0, 0),
+];
+static SECONDARY_EDIT: AtomicBool = AtomicBool::new(false);
+/// Profile changes are staged until the controller dialog is confirmed.
+static PENDING_PROFILES: Mutex<[Option<bool>; 2]> = Mutex::new([None, None]);
 
 /// Our bindings in guest memory (both players, `SIZE` apart); 0 until loaded.
 static TABLES: Mutex<u32> = Mutex::new(0);
@@ -49,54 +57,104 @@ fn tables(c: &mut Cpu) -> u32 {
         return *t;
     }
     let m = mem();
-    let a = alloc(2 * SIZE);
-    m.slice(a, 2 * SIZE as usize).fill(0);
+    let a = alloc(4 * SIZE);
+    m.slice(a, 4 * SIZE as usize).fill(0);
     let xbox = dinput::xbox_profile();
     for p in 0..2 {
         for i in 0..ACTIONS * 2 {
             m.wr32(a + SIZE * p + 4 * i, m.rd32(xbox + 4 * i));
         }
     }
+    if !game_dir().join(FILE).exists() {
+        for p in 0..2 {
+            write_secondary_defaults(a, p);
+        }
+    }
     *t = a;
     drop(t);
-    load(c, a);
+    load(c, a, FILE);
+    load(c, a + 2 * SIZE, SECONDARY_FILE);
     a
 }
 
-fn path() -> std::path::PathBuf {
-    game_dir().join(FILE)
+fn write_secondary_defaults(table: u32, player: u32) {
+    let m = mem();
+    for (action, (device, key)) in CONSOLE_SECONDARY.into_iter().enumerate() {
+        let b = table + 2 * SIZE + player * SIZE + 8 * action as u32;
+        m.wr32(b, device);
+        m.wr32(b + 4, key);
+    }
+}
+
+pub fn reset_secondary_profile(player: u32, modern: bool) {
+    if !secondary_editing() && player < 2 {
+        PENDING_PROFILES.lock().unwrap()[player as usize] = Some(modern);
+    }
+}
+
+pub fn secondary_editing() -> bool {
+    SECONDARY_EDIT.load(Ordering::Relaxed)
+}
+
+/// Select which binding set the next Gamepad dialog edits.
+pub fn select_secondary(secondary: bool) {
+    SECONDARY_EDIT.store(secondary, Ordering::Relaxed);
 }
 
 /// Read gamepad.txt into `table` (lines the game cannot read keep the default).
-fn load(c: &mut Cpu, table: u32) {
-    let Ok(text) = std::fs::read_to_string(path()) else { return };
+fn load(c: &mut Cpu, table: u32, file: &str) {
+    let Ok(text) = std::fs::read_to_string(game_dir().join(file)) else { return };
     let buf = alloc(0x80);
     for (k, line) in text.lines().take(2 * ACTIONS as usize).enumerate() {
         let (p, i) = (k as u32 / ACTIONS, k as u32 % ACTIONS);
-        put_cstr(buf, line.trim(), 0x80);
-        guest_call(c, dinput::BINDING_PARSE.at(), &[buf, table + SIZE * p + 8 * i]);
+        let entry = table + SIZE * p + 8 * i;
+        if line.trim().eq_ignore_ascii_case("Unbound") {
+            mem().wr32(entry, 0);
+            mem().wr32(entry + 4, 0);
+        } else {
+            put_cstr(buf, line.trim(), 0x80);
+            guest_call(c, dinput::BINDING_PARSE.at(), &[buf, entry]);
+        }
     }
     free(buf);
 }
 
 /// Write `table` to gamepad.txt as the game writes controls.txt.
-fn save(c: &mut Cpu, table: u32) {
+fn save(c: &mut Cpu, table: u32, file: &str) {
     let mut out = String::new();
     for p in 0..2 {
         for i in 0..ACTIONS {
-            let name = guest_call(c, dinput::BINDING_NAME.at(), &[table + SIZE * p + 8 * i]);
-            out += &cstr(name);
+            let b = table + SIZE * p + 8 * i;
+            if mem().rd32(b) == 0 && mem().rd32(b + 4) == 0 {
+                out += "Unbound";
+            } else {
+                let name = guest_call(c, dinput::BINDING_NAME.at(), &[b]);
+                out += &cstr(name);
+            }
             out += "\r\n";
         }
     }
-    if let Err(e) = std::fs::write(path(), out) {
-        log!("warn: cannot save {FILE}: {e}");
+    if let Err(e) = std::fs::write(game_dir().join(file), out) {
+        log!("warn: cannot save {file}: {e}");
     }
 }
 
 /// The amounts of player p's actions at their last read (`dinput::analog_for`).
 pub fn amounts(p: u32) -> [Option<f32>; ACTIONS as usize] {
     AMOUNTS.lock().unwrap()[p.min(1) as usize]
+}
+
+/// Evaluate the two controller bindings for an action and retain analog travel unless a
+/// digital input is also held.
+fn pad_action(pad: Option<dinput::Pad>, bindings: [(u32, u32); 2], fallback_down: bool) -> (bool, Option<f32>) {
+    let inputs = bindings.map(|binding| {
+        let down = binding.0 == 1 && pad.is_some_and(|p| dinput::key_down(&p, binding.1));
+        let amount = pad.and_then(|p| dinput::binding_amount(p.stick, binding));
+        (down, amount)
+    });
+    let digital = fallback_down || inputs.iter().any(|(down, amount)| *down && amount.is_none());
+    let amount = inputs.iter().filter_map(|(down, amount)| if *down { *amount } else { None }).reduce(f32::max);
+    (fallback_down || inputs.iter().any(|(down, _)| *down), if digital { None } else { amount })
 }
 
 /// binding_down hook: the game's binding or ours.
@@ -111,7 +169,15 @@ pub fn binding_down(c: &mut Cpu) {
     if player > 1 || binding < BINDINGS.at() + SIZE * player || action >= ACTIONS || EDITING.load(Ordering::Relaxed) {
         return;
     }
-    let ours = read(tables(c) + SIZE * player + 8 * action);
+    // Parsing saved bindings invokes guest code on the first read. Do not let those
+    // calls replace the original input result or the registers returned to its caller.
+    let registers = c.r;
+    let flags = (c.cf, c.pf, c.zf, c.sf, c.of, c.df);
+    let base = tables(c);
+    c.r = registers;
+    (c.cf, c.pf, c.zf, c.sf, c.of, c.df) = flags;
+    let ours = read(base + SIZE * player + 8 * action);
+    let secondary = read(base + 2 * SIZE + SIZE * player + 8 * action);
     let game_down = c.r[EAX] & 0xff != 0;
     let game_amount = dinput::binding_amount(dinput::current_pad(player).stick, game);
     let pad = dinput::player_pad(player);
@@ -122,13 +188,12 @@ pub fn binding_down(c: &mut Cpu) {
         (3, (1, 0x12)) => Some(13),
         _ => None,
     };
-    let table = tables(c) + SIZE * player;
     let dpad = fallback.is_some_and(|button| {
-        !(0..ACTIONS).any(|i| i != action && read(table + 8 * i) == (1, button))
-            && pad.is_some_and(|p| dinput::dpad_axis_down(&p, ours.1))
+        !(0..2).any(|slot| (0..ACTIONS).any(|i| {
+            i != action && read(base + slot * 2 * SIZE + SIZE * player + 8 * i) == (1, button)
+        })) && pad.is_some_and(|p| dinput::dpad_axis_down(&p, ours.1))
     });
-    let our_down = ours.0 == 1 && (dpad || pad.is_some_and(|p| dinput::key_down(&p, ours.1)));
-    let our_amount = if dpad { None } else { pad.and_then(|p| dinput::binding_amount(p.stick, ours)) };
+    let (our_down, our_amount) = pad_action(pad, [ours, secondary], dpad);
     let digital = game_down && game_amount.is_none() || our_down && our_amount.is_none();
     let amount = [(game_down, game_amount), (our_down, our_amount)]
         .into_iter()
@@ -143,7 +208,19 @@ pub fn binding_down(c: &mut Cpu) {
 /// Saving controls.txt (the Controller dialog's OK): gamepad.txt while it shows ours.
 pub fn save_controls(c: &mut Cpu) {
     if editing() {
-        save(c, BINDINGS.at());
+        let table = *TABLES.lock().unwrap();
+        let offset = if secondary_editing() { 2 * SIZE } else { 0 };
+        mem().slice(table + offset, 2 * SIZE as usize).copy_from_slice(&mem().slice(BINDINGS.at(), 2 * SIZE as usize).to_vec());
+        let pending = std::mem::replace(&mut *PENDING_PROFILES.lock().unwrap(), [None, None]);
+        for (player, profile) in pending.into_iter().enumerate() {
+            match profile {
+                Some(true) => write_secondary_defaults(table, player as u32),
+                Some(false) => mem().slice(table + 2 * SIZE + player as u32 * SIZE, SIZE as usize).fill(0),
+                None => {}
+            }
+        }
+        save(c, table, FILE);
+        save(c, table + 2 * SIZE, SECONDARY_FILE);
         // The original is not called on this path, so emulate its ret.
         c.r[ESP] += 4;
     } else {
@@ -158,11 +235,13 @@ pub fn editing() -> bool {
 
 /// Before the Controller dialog opens for the pad: ours where the game keeps its bindings.
 pub fn begin(c: &mut Cpu) {
+    *PENDING_PROFILES.lock().unwrap() = [None, None];
     let t = tables(c);
+    let secondary = secondary_editing();
     let m = mem();
     let kept = m.slice(BINDINGS.at(), 2 * SIZE as usize).to_vec();
     *KEPT.lock().unwrap() = Some((kept, [m.rd32(PROFILE_CHOICES.at()), m.rd32(PROFILE_CHOICES.at() + 4)]));
-    let ours = m.slice(t, 2 * SIZE as usize).to_vec();
+    let ours = m.slice(t + if secondary { 2 * SIZE } else { 0 }, 2 * SIZE as usize).to_vec();
     m.slice(BINDINGS.at(), ours.len()).copy_from_slice(&ours);
     EDITING.store(true, Ordering::Relaxed);
 }
@@ -171,10 +250,54 @@ pub fn begin(c: &mut Cpu) {
 pub fn end() {
     let Some((kept, choices)) = KEPT.lock().unwrap().take() else { return };
     let m = mem();
-    let edited = m.slice(BINDINGS.at(), 2 * SIZE as usize).to_vec();
-    m.slice(*TABLES.lock().unwrap(), edited.len()).copy_from_slice(&edited);
+    // save_controls commits edits only on OK; Cancel must leave both tables unchanged.
     m.slice(BINDINGS.at(), kept.len()).copy_from_slice(&kept);
     m.wr32(PROFILE_CHOICES.at(), choices[0]);
     m.wr32(PROFILE_CHOICES.at() + 4, choices[1]);
     EDITING.store(false, Ordering::Relaxed);
+    SECONDARY_EDIT.store(false, Ordering::Relaxed);
+    *PENDING_PROFILES.lock().unwrap() = [None, None];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CONSOLE_SECONDARY, pad_action};
+    use crate::platform::dinput::Pad;
+
+    #[test]
+    fn secondary_defaults_map_dpad_and_left_stick() {
+        assert_eq!(CONSOLE_SECONDARY[2], (1, 14));
+        assert_eq!(CONSOLE_SECONDARY[3], (1, 13));
+        assert_eq!(CONSOLE_SECONDARY[10], (1, 0x12));
+        assert_eq!(CONSOLE_SECONDARY[11], (1, 0x13));
+    }
+
+    #[test]
+    fn either_slot_can_activate_and_digital_overrides_analog() {
+        let bindings = [(1, 1), (1, 0x12)];
+        let pad = Pad { stick: [-0.625, 0.0, 0.0, 0.0], ..Pad::default() };
+        let (down, amount) = pad_action(Some(pad), bindings, false);
+        assert!(down);
+        assert!((amount.unwrap() - 0.5).abs() < 1e-6);
+        let pad = Pad { buttons: 1 << 1, ..pad };
+        assert_eq!(pad_action(Some(pad), bindings, false), (true, None));
+        assert_eq!(pad_action(None, bindings, false), (false, None));
+        assert_eq!(pad_action(Some(Pad::default()), bindings, false), (false, None));
+    }
+
+    #[test]
+    fn primary_buttons_work_when_secondary_is_unbound() {
+        let pad = Pad { buttons: 1 << 3, ..Pad::default() };
+        assert_eq!(pad_action(Some(pad), [(1, 3), (0, 0)], false), (true, None));
+        assert_eq!(pad_action(Some(Pad::default()), [(1, 3), (0, 0)], false), (false, None));
+    }
+
+    #[test]
+    fn dpad_and_right_stick_both_turn() {
+        let bindings = [(1, 0x17), CONSOLE_SECONDARY[2]];
+        let stick = Pad { stick: [0.0, 0.0, 1.0, 0.0], ..Pad::default() };
+        assert_eq!(pad_action(Some(stick), bindings, false), (true, Some(1.0)));
+        let dpad = Pad { buttons: 1 << 14, ..Pad::default() };
+        assert_eq!(pad_action(Some(dpad), bindings, false), (true, None));
+    }
 }

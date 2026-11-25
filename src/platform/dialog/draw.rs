@@ -43,6 +43,23 @@ impl Canvas {
         }
     }
 
+    fn controller_icon(&mut self, cell: usize, playstation: bool, x: i32, y: i32, size: i32) {
+        let Some(atlas) = super::controller_glyphs::atlas(playstation) else { return };
+        if size <= 0 || cell >= 20 { return; }
+        let (sx, sy) = ((cell % 4) * 128, (cell / 4) * 128);
+        for dy in 0..size {
+            for dx in 0..size {
+                let px = sx + (dx as usize * 128 / size as usize);
+                let py = sy + (dy as usize * 128 / size as usize);
+                let i = (py * 512 + px) * 4;
+                let [r, g, b, a] = [atlas[i], atlas[i + 1], atlas[i + 2], atlas[i + 3]];
+                if a != 0 {
+                    self.put(x + dx, y + dy, (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | b as u32);
+                }
+            }
+        }
+    }
+
     fn frame(&mut self, r: [i32; 4], c: u32) {
         self.fill([r[0], r[1], r[2], r[1] + 1], c);
         self.fill([r[0], r[3] - 1, r[2], r[3]], c);
@@ -215,6 +232,19 @@ fn control(cv: &mut Canvas, d: &Dialog, k: usize) {
                 _ => 0,
             };
             let fg = if c.inverted { WELL } else { fg };
+            if boxed && d.template == crate::platform::gamepad::CONTROLLER && crate::platform::gamepad::editing() {
+                if let Some(cell) = super::controller_glyphs::cell(&text) {
+                    let player = ((r[0] + r[2]) / 2 >= (d.rect[0] + d.rect[2]) / 2) as usize;
+                    let playstation = match super::controller_glyphs::style() {
+                        1 => false,
+                        2 => true,
+                        _ => crate::platform::dinput::player_is_sony(player),
+                    };
+                    let size = (r[3] - r[1] - 2).clamp(1, 22);
+                    cv.controller_icon(cell, playstation, t[0], (r[1] + r[3] - size) / 2, size);
+                    t[0] += size + 3;
+                }
+            }
             if c.style & 0x200 != 0 || boxed {
                 cv.label(t, &text, fg, align);
             } else {

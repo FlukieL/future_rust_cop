@@ -27,7 +27,7 @@ const TEXTURES: &str = "Textures";
 /// the PlayStation version's menu music (`ps1`)
 pub const PS1: &str = "PS1";
 /// what stays in the game folder: the game's files and ours
-const GAME_FILES: [&str; 9] = ["FCopLAPD.exe", "febmp.bin", "missions", "registry.txt", "controls.txt", "gamepad.txt", "save.cfg", COMPILED, SAVESTATE];
+const GAME_FILES: [&str; 12] = ["FCopLAPD.exe", "febmp.bin", "missions", "registry.txt", "controls.txt", "gamepad.txt", "gamepad-secondary.txt", "save.cfg", "autosave.cfg", "autosave.tmp", COMPILED, SAVESTATE];
 /// our savestate (`platform::savestate`)
 pub const SAVESTATE: &str = "savestate.bin";
 /// the game's compiled code, kept for the next start (`jit::compile_cached`)

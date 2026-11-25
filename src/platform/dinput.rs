@@ -82,8 +82,19 @@ macro_rules! pad_log {
 #[derive(Clone, Copy, Default, PartialEq)]
 pub struct Pad {
     pub stick: [f32; 4],
-    buttons: u32,
-    start: bool,
+    pub(crate) buttons: u32,
+    pub(crate) start: bool,
+}
+
+impl Pad {
+    /// Mapped button mask, for controller diagnostics.
+    pub fn buttons(&self) -> u32 {
+        self.buttons
+    }
+
+    pub fn start_pressed(&self) -> bool {
+        self.start
+    }
 }
 
 /// A connected pad: its state, the buttons pressed since the game last read it (a short press
@@ -94,6 +105,7 @@ struct Entry {
     pressed: u32,
     id: Option<usize>,
     name: String,
+    sony: bool,
 }
 
 /// The connected pads (the scripted one first).
@@ -103,7 +115,8 @@ static START: Mutex<Option<bool>> = Mutex::new(None);
 /// The scripted pad, once FCOP_INPUT has a `pad@` item.
 static SCRIPTED: Mutex<Option<Pad>> = Mutex::new(None);
 
-/// Explicit gilrs IDs, or automatic assignment. IDs are valid for this session only.
+/// Explicit device IDs, automatic assignment, or the disabled sentinel.
+pub const DISABLED_DEVICE: usize = (u32::MAX - 1) as usize;
 static PLAYER_DEVICES: Mutex<[Option<usize>; 2]> = Mutex::new([None, None]);
 
 pub fn controller_choices() -> (Vec<(String, u32)>, [Option<usize>; 2]) {
@@ -111,7 +124,8 @@ pub fn controller_choices() -> (Vec<(String, u32)>, [Option<usize>; 2]) {
     let choices = pads.iter().filter_map(|p| {
         let id = p.id?;
         let value = u32::try_from(id).ok()?.checked_add(1)?;
-        Some((format!("{} ({})", p.name, id + 1), value))
+        let display_id = if id >= 0x4000_0000 { id - 0x4000_0000 + 1 } else { id + 1 };
+        Some((format!("{} ({})", p.name, display_id), value))
     }).collect();
     (choices, *PLAYER_DEVICES.lock().unwrap())
 }
@@ -123,14 +137,17 @@ pub fn set_player_devices(devices: [Option<usize>; 2]) {
 /// Explicit devices never fall back to another controller when disconnected.
 fn assigned(pads: &[Entry], player: usize, choices: [Option<usize>; 2], share_single: bool) -> Option<usize> {
     if let Some(id) = choices[player] {
+        if id == DISABLED_DEVICE {
+            return None;
+        }
         return pads.iter().position(|p| p.id == Some(id));
     }
     if share_single && pads.len() == 1 && choices[1 - player].is_none() {
         return Some(0);
     }
-    let reserved = choices[1 - player];
+    let reserved = choices[1 - player].filter(|&id| id != DISABLED_DEVICE);
     pads.iter().enumerate().filter(|(_, p)| p.id.is_none() || p.id != reserved)
-        .nth(if reserved.is_some() { 0 } else { player })
+        .nth(if reserved.is_some() || choices[1 - player] == Some(DISABLED_DEVICE) { 0 } else { player })
         .map(|(index, _)| index)
 }
 
@@ -267,9 +284,10 @@ fn update() {
     let mut pads = PADS.lock().unwrap();
     let pressed_before = |id| pads.iter().find(|e| e.id == id).map_or(0, |e| e.pressed);
     let mut now: Vec<Entry> = scripted
-        .map(|pad| Entry { pad, pressed: pressed_before(None) | pad.buttons, id: None, name: "Scripted pad".to_string() })
+        .map(|pad| Entry { pad, pressed: pressed_before(None) | pad.buttons, id: None, name: "Scripted pad".to_string(), sony: false })
         .into_iter()
         .collect();
+    let mut has_dualsense = false;
     GILRS.with(|g| {
         let mut g = g.borrow_mut();
         let Some(g) = g.get_or_insert_with(new_gilrs) else { return };
@@ -288,16 +306,33 @@ fn update() {
                 }
             }
         }
+        #[cfg(windows)]
+        { has_dualsense = g.gamepads().any(|(_, p)| {
+            p.vendor_id() == Some(0x054c) && matches!(p.product_id(), Some(0x0ce6 | 0x0df2))
+        }); }
         now.extend(g.gamepads().map(|(id, p)| {
             let id: usize = id.into();
             let pad = read(&p);
             let new = pressed.iter().filter(|e| e.0 == id).fold(0, |a, e| a | e.1);
-            Entry { pad, pressed: pressed_before(Some(id)) | new | pad.buttons, id: Some(id), name: p.name().to_string() }
+            Entry { pad, pressed: pressed_before(Some(id)) | new | pad.buttons, id: Some(id), name: p.name().to_string(), sony: p.vendor_id() == Some(0x054c) }
         }));
-        swap_controllers(&mut now, controllers_swapped());
-        let choices = *PLAYER_DEVICES.lock().unwrap();
-        let ids = std::array::from_fn(|p| assigned(&now, p, choices, false).and_then(|k| now[k].id));
-        super::rumble::service(g, ids);
+    });
+    #[cfg(windows)]
+    if !has_dualsense {
+        now.extend(super::dualsense_win::poll().into_iter().map(|(id, pad)| Entry {
+            pad, pressed: pressed_before(Some(id)) | pad.buttons, id: Some(id),
+            name: "DualSense (Windows joystick)".to_string(), sony: true,
+        }));
+    }
+    #[cfg(not(windows))]
+    let _ = has_dualsense;
+    swap_controllers(&mut now, controllers_swapped());
+    let choices = *PLAYER_DEVICES.lock().unwrap();
+    let ids = std::array::from_fn(|p| assigned(&now, p, choices, false).and_then(|k| now[k].id));
+    GILRS.with(|g| {
+        if let Some(Some(g)) = g.borrow_mut().as_mut() {
+            super::rumble::service(g, ids);
+        }
     });
     if super::record::on() {
         // the first real pad (with a press between two reads held for one)
@@ -692,18 +727,16 @@ fn mouse_key_from_text(text: &str) -> Option<u32> {
     named_key_from_text(text, "Keyboard", &MOUSE_KEYS)
 }
 
+/// Capturing a binding requires a deliberate deflection, not the smaller gameplay dead zone.
 fn right_stick_key(p: &Pad) -> Option<u32> {
+    const CAPTURE_THRESHOLD: f32 = 0.65;
     let [x, y] = [p.stick[2], p.stick[3]];
-    if x < -AXIS_DEAD_ZONE {
-        Some(RIGHT_LEFT)
-    } else if x > AXIS_DEAD_ZONE {
-        Some(RIGHT_RIGHT)
-    } else if y < -AXIS_DEAD_ZONE {
-        Some(RIGHT_UP)
-    } else if y > AXIS_DEAD_ZONE {
-        Some(RIGHT_DOWN)
-    } else {
+    if x.abs().max(y.abs()) < CAPTURE_THRESHOLD {
         None
+    } else if x.abs() > y.abs() {
+        Some(if x < 0.0 { RIGHT_LEFT } else { RIGHT_RIGHT })
+    } else {
+        Some(if y < 0.0 { RIGHT_UP } else { RIGHT_DOWN })
     }
 }
 
@@ -728,6 +761,29 @@ pub fn current_pad(n: u32) -> Pad {
 pub fn player_pad(p: u32) -> Option<Pad> {
     let pads = PADS.lock().unwrap();
     assigned(&pads, p.min(1) as usize, *PLAYER_DEVICES.lock().unwrap(), false).map(|k| pads[k].pad)
+}
+
+/// Whether the currently assigned controller has a PlayStation-style name.
+pub fn player_is_sony(player: usize) -> bool {
+    if player >= 2 {
+        return false;
+    }
+    let pads = PADS.lock().unwrap();
+    assigned(&pads, player, *PLAYER_DEVICES.lock().unwrap(), false)
+        .is_some_and(|k| {
+            let name = pads[k].name.to_ascii_lowercase();
+            pads[k].sony || ["sony", "playstation", "dualshock", "dualsense", "ps5 controller", "ps4 controller"]
+                .iter().any(|part| name.contains(part))
+        })
+}
+
+/// Physical device currently assigned to this player's own gamepad bindings.
+pub fn player_device(player: usize) -> Option<usize> {
+    if player >= 2 {
+        return None;
+    }
+    let pads = PADS.lock().unwrap();
+    assigned(&pads, player, *PLAYER_DEVICES.lock().unwrap(), false).and_then(|k| pads[k].id)
 }
 
 /// D-pad alternative for a left-stick direction binding.
@@ -809,42 +865,74 @@ pub const PROFILE_CHOICE: Us = Us(0x486290);
 pub const PROFILE_SHOW: Us = Us(0x4037d0);
 pub const PROFILE_APPLY: Us = Us(0x403380);
 pub const XBOX_CHOICE: u32 = 3;
+pub const CLASSIC_CHOICE: u32 = 4;
 const PROFILES: [Us; 2] = [Us(0x48afb8), Us(0x48b120)];
 const PROFILE_SIZE: u32 = 0x78;
 
 /// Xbox equivalents of the PlayStation controls, in controls.txt action order.
 const PLAYSTATION_PROFILE: [u32; 14] = [
-    0x14, 0x15, 0x13, 0x12, // left stick: forward, back, turn right, turn left
+    0x14, 0x15, RIGHT_RIGHT, RIGHT_LEFT, // left stick: forward/back; right stick: turn
     4, 6, 2, 5,             // X gun, LB action, B special, Y jump
     8, 9, 1, 0,             // Back map, R3 camera, LT/RT jink
     3, 7,                    // A heavy weapon, RB change target
 ];
 
-/// The Xbox profile in guest memory. Existing gamepad.txt bindings remain unchanged.
+/// Classic keeps the original left-stick turning and trigger strafing.
+const CLASSIC_PROFILE: [u32; 14] = [
+    0x14, 0x15, 0x13, 0x12,
+    4, 6, 2, 5,
+    8, 9, 1, 0,
+    3, 7,
+];
+
+/// Build a game-compatible profile in guest memory.
+fn make_profile(keys: [u32; 14]) -> u32 {
+    let m = mem();
+    let t = alloc(PROFILE_SIZE);
+    for i in 0..PROFILE_SIZE / 4 {
+        m.wr32(t + 4 * i, m.rd32(PROFILES[0].at() + PROFILE_SIZE + 4 * i));
+    }
+    for (action, key) in keys.into_iter().enumerate() {
+        m.wr32(t + 8 * action as u32, 1);
+        m.wr32(t + 8 * action as u32 + 4, key);
+    }
+    t
+}
+
+/// Modern console profile. Existing gamepad.txt bindings remain unchanged.
 pub fn xbox_profile() -> u32 {
     static T: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *T.get_or_init(|| {
-        let m = mem();
-        let t = alloc(PROFILE_SIZE);
-        for i in 0..PROFILE_SIZE / 4 {
-            m.wr32(t + 4 * i, m.rd32(PROFILES[0].at() + PROFILE_SIZE + 4 * i));
-        }
-        for (action, key) in PLAYSTATION_PROFILE.into_iter().enumerate() {
-            m.wr32(t + 8 * action as u32, 1);
-            m.wr32(t + 8 * action as u32 + 4, key);
-        }
-        t
+    *T.get_or_init(|| make_profile(PLAYSTATION_PROFILE))
+}
+
+/// Classic console profile, with the left stick turning instead of strafing.
+pub fn classic_profile() -> u32 {
+    static T: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *T.get_or_init(|| make_profile(CLASSIC_PROFILE))
+}
+
+/// The custom profile choice for the table pointer calculated by the game.
+fn console_choice(player: u32, table: u32, profiles: [u32; 2]) -> Option<u32> {
+    let base = *profiles.get(player as usize)?;
+    [XBOX_CHOICE, CLASSIC_CHOICE].into_iter().find(|&choice| {
+        table == base + choice * PROFILE_SIZE
     })
 }
 
-/// `PROFILE_APPLY` hook: choice 3 points past the game's tables; apply ours instead.
+/// Replace the game's out-of-range profile tables with our own.
 pub fn profile_apply(c: &mut Cpu) {
     let m = mem();
     let (player, table) = (m.rd32(c.r[ESP] + 8), c.r[ESP] + 12);
-    if m.rd32(PROFILE_CHOICE.at()) == XBOX_CHOICE && player < 2 && m.rd32(table) == PROFILES[player as usize].at() + XBOX_CHOICE * PROFILE_SIZE {
-        m.wr32(table, xbox_profile());
+    // Each player can choose a different profile. The global PROFILE_CHOICE is only the
+    // most recently previewed choice, so identify the profile from this player's table.
+    let choice = console_choice(player, m.rd32(table), PROFILES.map(|p| p.at()));
+    if let Some(choice) = choice {
+        m.wr32(table, if choice == CLASSIC_CHOICE { classic_profile() } else { xbox_profile() });
     }
     call_original(c, PROFILE_APPLY.at());
+    if let Some(choice) = choice.filter(|_| super::gamepad::editing()) {
+        super::gamepad::reset_secondary_profile(player, choice == XBOX_CHOICE);
+    }
 }
 
 /// controls.txt parsing and display. The game's fixed name tables do not contain mouse buttons
@@ -857,7 +945,8 @@ pub fn binding_parse(c: &mut Cpu) {
     let m = mem();
     let (text, binding) = (m.rd32(c.r[ESP] + 4), m.rd32(c.r[ESP] + 8));
     let text = cstr(text);
-    let custom = mouse_key_from_text(&text).map(|key| (0, key))
+    let custom = (super::gamepad::editing() && text.trim().eq_ignore_ascii_case("Unbound")).then_some((0, 0))
+        .or_else(|| mouse_key_from_text(&text).map(|key| (0, key)))
         .or_else(|| right_key_from_text(&text).map(|key| (1, key)))
         .or_else(|| named_key_from_text(&text, "Joystick", &PAD_KEYS).map(|key| (1, key)));
     if let Some((device, key)) = custom {
@@ -882,6 +971,12 @@ pub fn binding_name(c: &mut Cpu) {
     let binding = mem().rd32(c.r[ESP] + 4);
     let device = mem().rd32(binding);
     let key = mem().rd32(binding + 4);
+    if super::gamepad::editing() && device == 0 && key == 0 {
+        put_cstr(BINDING_NAME_BUF.at(), "Unbound", 64);
+        c.r[EAX] = BINDING_NAME_BUF.at();
+        c.r[ESP] += 4;
+        return;
+    }
     let custom = match device {
         0 => MOUSE_KEYS.iter().find(|e| e.1 == key).map(|e| ("Keyboard", e.0)),
         1 => RIGHT_KEYS.iter().chain(PAD_KEYS.iter()).find(|e| e.1 == key).map(|e| ("Joystick", e.0)),
@@ -1089,7 +1184,7 @@ mod analog_tests {
     #[test]
     fn player_device_selection_handles_automatic_and_disconnects() {
         let entry = |id| super::Entry {
-            pad: Pad::default(), pressed: 0, id: Some(id), name: String::new(),
+            pad: Pad::default(), pressed: 0, id: Some(id), name: String::new(), sony: false,
         };
         let pads = [entry(4), entry(7), entry(9)];
         assert_eq!(super::assigned(&pads, 0, [None, None], false), Some(0));
@@ -1100,6 +1195,10 @@ mod analog_tests {
         assert_eq!(super::assigned(&pads, 1, [Some(99), None], false), Some(0));
         assert_eq!(super::assigned(&pads[..1], 1, [None, None], true), Some(0));
         assert_eq!(super::assigned(&pads[..1], 1, [None, None], false), None);
+        assert_eq!(super::assigned(&pads, 0, [Some(super::DISABLED_DEVICE), None], false), None);
+        assert_eq!(super::assigned(&pads, 1, [Some(super::DISABLED_DEVICE), None], false), Some(0));
+        assert_eq!(super::assigned(&pads[..1], 1, [Some(super::DISABLED_DEVICE), None], false), Some(0));
+        assert_eq!(super::assigned(&pads, 0, [None, Some(super::DISABLED_DEVICE)], false), Some(0));
     }
 
     #[test]
@@ -1130,13 +1229,35 @@ mod analog_tests {
     #[test]
     fn playstation_profile_maps_requested_buttons() {
         let keys = super::PLAYSTATION_PROFILE;
-        assert_eq!(&keys[..4], &[0x14, 0x15, 0x13, 0x12]);
+        assert_eq!(&keys[..4], &[0x14, 0x15, RIGHT_RIGHT, RIGHT_LEFT]);
         assert_eq!(&keys[4..8], &[4, 6, 2, 5]);
         assert_eq!(&keys[10..], &[1, 0, 3, 7]);
         let pad = Pad { buttons: 1 << 11 | 1 << 14, ..Pad::default() };
         assert!(super::dpad_axis_down(&pad, 0x14));
         assert!(super::dpad_axis_down(&pad, 0x13));
         assert!(!super::dpad_axis_down(&pad, 0x12));
+    }
+
+    #[test]
+    fn console_profiles_are_identified_per_player() {
+        let profiles = [0x1000, 0x2000];
+        for player in 0..2 {
+            for choice in [super::XBOX_CHOICE, super::CLASSIC_CHOICE] {
+                let table = profiles[player as usize] + choice * super::PROFILE_SIZE;
+                assert_eq!(super::console_choice(player, table, profiles), Some(choice));
+            }
+        }
+        assert_eq!(super::console_choice(0, profiles[0], profiles), None);
+        assert_eq!(super::console_choice(2, 0, profiles), None);
+    }
+
+    #[test]
+    fn classic_profile_keeps_left_stick_turning_and_triggers_for_strafing() {
+        let classic = super::CLASSIC_PROFILE;
+        let modern = super::PLAYSTATION_PROFILE;
+        assert_eq!(&classic[..4], &[0x14, 0x15, 0x13, 0x12]);
+        assert_eq!(&classic[4..], &modern[4..]);
+        assert_eq!(&classic[10..12], &[1, 0]);
     }
 
     #[test]
@@ -1210,6 +1331,8 @@ mod analog_tests {
         assert_eq!(right_stick_key(&pad(0.0, -1.0)), Some(RIGHT_UP));
         assert_eq!(right_stick_key(&pad(0.0, 1.0)), Some(RIGHT_DOWN));
         assert_eq!(right_stick_key(&pad(0.2, -0.2)), None);
+        assert_eq!(right_stick_key(&pad(-0.5, 0.0)), None);
+        assert_eq!(right_stick_key(&pad(-0.7, 0.9)), Some(RIGHT_DOWN));
         let diagonal = pad(0.8, -0.8);
         assert!(right_stick_down(&diagonal, RIGHT_RIGHT));
         assert!(right_stick_down(&diagonal, RIGHT_UP));

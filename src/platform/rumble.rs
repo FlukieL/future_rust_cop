@@ -3,7 +3,7 @@
 //! Hooks can run on guest threads; gilrs is owned by the main thread. Requests are bounded and
 //! coalesced per player, then consumed by `dinput::update`. Effects must stay alive while playing.
 
-use super::mem;
+use super::{dinput, log, mem};
 use crate::rt::{call_original, Cpu, ESP};
 use crate::ver::Us;
 use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Repeat, Replay, Ticks};
@@ -20,6 +20,7 @@ const NET: Us = Us(0x511fa0);
 struct Pulse {
     strength: u16,
     when: Instant,
+    device: usize,
 }
 
 static PENDING: Mutex<[Option<Pulse>; 2]> = Mutex::new([None, None]);
@@ -51,10 +52,14 @@ fn request(player: usize, magnitude: u16) {
     if !enabled() {
         return;
     }
+    let Some(device) = dinput::player_device(player) else { return };
+    if std::env::var_os("FCOP_PAD_LOG").is_some_and(|v| v != "0") {
+        log!("rumble: player {} device {} strength {}", player + 1, device, magnitude);
+    }
     let mut pending = PENDING.lock().unwrap();
     let slot = &mut pending[player];
-    let value = slot.map_or(magnitude, |p| p.strength.max(magnitude));
-    *slot = Some(Pulse { strength: value, when: Instant::now() });
+    let value = slot.filter(|p| p.device == device).map_or(magnitude, |p| p.strength.max(magnitude));
+    *slot = Some(Pulse { strength: value, when: Instant::now(), device });
 }
 
 /// Find the local pad slot for a player actor.
@@ -113,7 +118,7 @@ pub fn service(g: &mut Gilrs, ids: [Option<usize>; 2]) {
             if now.duration_since(pulse.when) > Duration::from_millis(250) {
                 continue;
             }
-            let Some(wanted) = ids[player] else { continue };
+            let Some(wanted) = ids[player].filter(|&id| id == pulse.device) else { continue };
             // Do not stack a stream of hits into an excessively strong vibration.
             if active.iter().any(|(id, _, _)| *id == wanted) {
                 continue;

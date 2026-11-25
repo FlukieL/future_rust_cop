@@ -10,7 +10,8 @@
 
 use super::{Import, arg, com_new, host_path, log, mem, window};
 use crate::mpeg;
-use crate::rt::Cpu;
+use crate::rt::{call_original, Cpu, EAX, ESP};
+use crate::ver::Us;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -52,6 +53,7 @@ struct Graph {
     /// basic audio
     objects: [u32; 5],
     movie: Option<Arc<mpeg::Streams>>,
+    skip: bool,
     /// the video's size and its window's place in the owner's client area: x, y, w, h
     size: (i32, i32),
     rect: [i32; 4],
@@ -71,6 +73,32 @@ struct Player {
 }
 
 static GRAPH: Mutex<Option<Graph>> = Mutex::new(None);
+
+static SKIP_INTRO: super::light::Setting = super::light::Setting::with_default("SkipIntro", "FCOP_SKIP_INTRO", false);
+
+pub fn skip_intro() -> bool {
+    SKIP_INTRO.get()
+}
+
+pub fn set_skip_intro(on: bool) {
+    SKIP_INTRO.set(on);
+}
+
+/// Calls made by the game's startup sequence and its quit sequence respectively.
+pub const VIDEO_PLAY: Us = Us(0x408800);
+const STARTUP_VIDEO_RETURNS: [Us; 2] = [Us(0x45af12), Us(0x45af4b)];
+/// The quit sequence's credits.mpg call: always skipped (credits are offered from Help).
+const QUIT_CREDITS_RETURN: Us = Us(0x45ac27);
+
+pub fn video_play(c: &mut Cpu) {
+    let caller = mem().rd32(c.r[ESP]);
+    if caller == QUIT_CREDITS_RETURN.at() || (skip_intro() && STARTUP_VIDEO_RETURNS.iter().any(|a| a.at() == caller)) {
+        c.r[EAX] = 0;
+        c.r[ESP] += 4;
+    } else {
+        call_original(c, VIDEO_PLAY.at());
+    }
+}
 
 fn graph() -> MutexGuard<'static, Option<Graph>> {
     GRAPH.lock().unwrap_or_else(|e| e.into_inner())
@@ -125,6 +153,7 @@ fn co_create_instance(c: &mut Cpu) -> u32 {
         refs: 0,
         objects,
         movie: None,
+        skip: false,
         size: (0, 0),
         rect: [0; 4],
         visible: true,
@@ -222,6 +251,7 @@ fn render_file(c: &mut Cpu) -> u32 {
     stop_player();
     let mut g = graph();
     let Some(g) = g.as_mut() else { return E_FAIL };
+    g.skip = false;
     g.size = size;
     g.rect = [0, 0, size.0, size.1];
     g.movie = Some(Arc::new(streams));
@@ -256,6 +286,10 @@ fn run(_: &mut Cpu) -> u32 {
     let Some(g) = g.as_mut() else { return E_FAIL };
     if let Some(p) = &g.player {
         p.paused.store(false, Ordering::Relaxed);
+        return OK;
+    }
+    if g.skip {
+        complete(g);
         return OK;
     }
     let Some(movie) = g.movie.clone() else { return E_FAIL };

@@ -91,6 +91,7 @@ const DISPLAY: u32 = FIRST_OURS + 13;
 const PROFILE: u32 = 165;
 const GRAVIS: u32 = 1132;
 const XBOX: u32 = FIRST_OURS + 14;
+const CLASSIC: u32 = FIRST_OURS + 41;
 /// Its Keyboard button (hidden while the Controller dialog binds the gamepad).
 const KEYBOARD_PROFILE: u32 = 1130;
 /// Its Sidewinder and Gravis buttons (hidden while the Controller dialog binds keys).
@@ -133,6 +134,9 @@ const DEPTH_BUFFER: u32 = FIRST_OURS + 34;
 /// Controller vibration, available in Preferences and the pause menu.
 const VIBRATION: u32 = FIRST_OURS + 35;
 const PLAYER_DEVICES: [u32; 2] = [FIRST_OURS + 36, FIRST_OURS + 37];
+const GLYPH_STYLE: u32 = FIRST_OURS + 38;
+const SKIP_INTRO: u32 = FIRST_OURS + 39;
+pub const GAMEPAD_SECONDARY: u32 = FIRST_OURS + 40;
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -223,19 +227,27 @@ fn renderer() -> String {
 pub fn adjust(template: u32, t: &mut Template) {
     let pad = crate::platform::gamepad::editing();
     if template == crate::platform::gamepad::CONTROLLER && pad {
-        let y = 18;
+        let y = 43;
         for i in &mut t.items {
             if !PLAYER_TITLES.contains(&i.id) {
                 i.rect[1] += y;
             }
+            if crate::platform::gamepad::secondary_editing() && [1135, 1136].contains(&i.id) {
+                i.style &= !VISIBLE;
+            }
         }
         t.rect[3] += y;
+        let text = if crate::platform::gamepad::secondary_editing() { "Primary bindings..." } else { "Secondary bindings..." };
+        t.items.push(Item { class: Class::Button, id: GAMEPAD_SECONDARY, text: text.into(), style: VISIBLE | TABSTOP, ex_style: 0, rect: [t.rect[2] / 2 - 60, 30, 120, 14] });
+        t.items.push(Item { class: Class::Static, id: u32::MAX, text: "Save changes with OK before switching".into(), style: VISIBLE | 1, ex_style: 0, rect: [t.rect[2] / 2 - 80, 45, 160, 8] });
         t.items.push(Item { class: Class::Button, id: VIBRATION, text: "Vibration".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [t.rect[2] / 2 - 35, 5, 70, 9] });
         let width = t.rect[2] * 28 / 100;
         for (index, id) in PLAYER_DEVICES.into_iter().enumerate() {
             let x = if index == 0 { t.rect[2] * 135 / 1000 } else { t.rect[2] * 600 / 1000 };
             t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, 14, width, 80] });
         }
+        let width = t.rect[2] * 16 / 100;
+        t.items.push(Item { class: Class::ComboBox, id: GLYPH_STYLE, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [(t.rect[2] - width) / 2, 14, width, 65] });
     }
     if template == PROFILE {
         // the keyboard's profile for the keyboard's bindings, the pads' for the pad's
@@ -245,10 +257,14 @@ pub fn adjust(template: u32, t: &mut Template) {
         }
     }
     if template == PROFILE && pad {
-        // as far below Gravis as Gravis is below Sidewinder (30 units), same size and style
-        let Some(g) = t.items.iter().find(|i| i.id == GRAVIS) else { return };
-        let item = Item { class: Class::Button, id: XBOX, text: "Xbox Controller".into(), style: g.style, ex_style: 0, rect: [g.rect[0], g.rect[1] + 30, g.rect[2], g.rect[3]] };
-        t.items.push(item);
+        // The keyboard row is hidden. Place both console profiles above the legacy profiles.
+        let Some(rect) = t.items.iter().find(|i| i.id == KEYBOARD_PROFILE).map(|i| i.rect) else { return };
+        let Some(first) = t.items.iter().find(|i| i.id == PAD_PROFILES[0]).cloned() else { return };
+        for item in t.items.iter_mut().filter(|i| PAD_PROFILES.contains(&i.id)) {
+            item.rect[1] += 30;
+        }
+        t.items.push(Item { class: Class::Button, id: XBOX, text: "Console (modern)".into(), style: first.style, ex_style: 0, rect });
+        t.items.push(Item { class: Class::Button, id: CLASSIC, text: "Console (classic)".into(), style: first.style, ex_style: 0, rect: first.rect });
     }
     if template == JOIN {
         let Some(g) = t.items.iter().find(|i| i.id == JOIN_STATUS).map(|i| i.rect) else { return };
@@ -327,7 +343,7 @@ pub fn adjust(template: u32, t: &mut Template) {
             // square sits centred in it), left-aligned with Filtering below it
             let x = filtering.map_or(r[0], |f| f[0]);
             let y = display_mode.map_or(r[1], |m| m[1]);
-            t.items.push(Item { class: Class::Button, id: FULLSCREEN, text: "Fullscreen".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, y, r[2], r[3] - 1] });
+            t.items.push(Item { class: Class::Button, id: FULLSCREEN, text: "Fullscreen".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, y, 56, r[3] - 1] });
             // on the same row, where Widescreen is below Filtering
             let x = filtering.map_or(x + 58, |f| f[0] + 58);
             t.items.push(Item { class: Class::Button, id: SHOW_FPS, text: "Show FPS".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, y, 70, r[3] - 1] });
@@ -385,6 +401,13 @@ pub fn adjust(template: u32, t: &mut Template) {
                 t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: c });
             }
         }
+        if let Some(y) = t.items.iter().find(|i| i.id == OK).map(|i| i.rect[1]) {
+            for item in t.items.iter_mut().filter(|i| i.id == OK || i.id == CANCEL) {
+                item.rect[1] += 15;
+            }
+            t.rect[3] += 15;
+            t.items.push(Item { class: Class::Button, id: SKIP_INTRO, text: "Skip Intro Videos".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [7, y + 2, 120, 9] });
+        }
     }
 }
 
@@ -397,7 +420,12 @@ pub fn init(d: &mut Dialog) {
     }
     // the game names the columns at WM_INITDIALOG
     if d.template == crate::platform::gamepad::CONTROLLER && crate::platform::gamepad::editing() {
-        for (id, text) in PLAYER_TITLES.into_iter().zip(["Gamepad 1", "Gamepad 2"]) {
+        let titles = if crate::platform::gamepad::secondary_editing() {
+            ["Pad 1 Alt", "Pad 2 Alt"]
+        } else {
+            ["Gamepad 1", "Gamepad 2"]
+        };
+        for (id, text) in PLAYER_TITLES.into_iter().zip(titles) {
             if let Some(c) = d.control(id) {
                 c.text = text.into();
             }
@@ -405,11 +433,18 @@ pub fn init(d: &mut Dialog) {
         if let Some(c) = d.control(VIBRATION) {
             c.check = crate::platform::rumble::enabled() as u32;
         }
+        if let Some(c) = d.control(GLYPH_STYLE) {
+            if let Kind::Combo { items, sel, .. } = &mut c.kind {
+                *items = vec![("Glyphs: Auto".into(), 0), ("Glyphs: Xbox".into(), 1), ("Glyphs: PS".into(), 2)];
+                *sel = super::controller_glyphs::style() as i32;
+            }
+        }
         let (choices, selected) = crate::platform::dinput::controller_choices();
         for (player, id) in PLAYER_DEVICES.into_iter().enumerate() {
             if let Some(c) = d.control(id) {
                 if let Kind::Combo { items, sel, .. } = &mut c.kind {
                     items.push(("Automatic".into(), 0));
+                    items.push(("Disabled".into(), u32::MAX));
                     items.extend(choices.iter().cloned());
                     if let Some(device) = selected[player] {
                         let value = u32::try_from(device).ok().and_then(|id| id.checked_add(1));
@@ -522,6 +557,9 @@ pub fn init(d: &mut Dialog) {
         if let Some(c) = d.control(SHOW_FPS) {
             c.check = crate::platform::stats::enabled() as u32;
         }
+        if let Some(c) = d.control(SKIP_INTRO) {
+            c.check = crate::platform::dshow::skip_intro() as u32;
+        }
         let fps = crate::platform::fps::chosen();
         if let Some(c) = d.control(FRAME_RATE) {
             if let Kind::Combo { items, sel, .. } = &mut c.kind {
@@ -600,11 +638,22 @@ pub fn command(d: &mut Dialog, id: u32) -> Option<After> {
     match id {
         DISPLAY => Some(After::Open(PREFERENCES, PREFERENCES_PROC.at())),
         ADVANCED_BUTTON => Some(After::Ours(ADVANCED)),
-        GAMEPAD => Some(After::Gamepad),
-        XBOX => {
-            // as the game's profile buttons: show its bindings, remember the choice
-            mem().wr32(dinput::PROFILE_CHOICE.at(), dinput::XBOX_CHOICE);
-            Some(After::Call(dinput::PROFILE_SHOW.at(), vec![d.hwnd, dinput::xbox_profile(), 14]))
+        GAMEPAD => {
+            crate::platform::gamepad::select_secondary(false);
+            Some(After::Gamepad)
+        }
+        GAMEPAD_SECONDARY if d.template == crate::platform::gamepad::CONTROLLER && crate::platform::gamepad::editing() => {
+            d.result = Some(GAMEPAD_SECONDARY);
+            None
+        }
+        XBOX | CLASSIC => {
+            let (choice, table) = if id == CLASSIC {
+                (dinput::CLASSIC_CHOICE, dinput::classic_profile())
+            } else {
+                (dinput::XBOX_CHOICE, dinput::xbox_profile())
+            };
+            mem().wr32(dinput::PROFILE_CHOICE.at(), choice);
+            Some(After::Call(dinput::PROFILE_SHOW.at(), vec![d.hwnd, table, 14]))
         }
         _ => None,
     }
@@ -639,6 +688,12 @@ pub fn ok(d: &mut Dialog) {
             });
         }
         crate::platform::dinput::set_player_devices(devices);
+        if let Some(value) = d.control(GLYPH_STYLE).and_then(|c| match &c.kind {
+            Kind::Combo { items, sel, .. } => items.get(*sel as usize).map(|item| item.1),
+            _ => None,
+        }) {
+            super::controller_glyphs::set_style(value);
+        }
     }
     if d.template == PREFERENCES {
         let chosen = d.control(RENDERER).and_then(|c| match &c.kind {
@@ -669,6 +724,9 @@ pub fn ok(d: &mut Dialog) {
         }
         if let Some(on) = d.control(SHOW_FPS).map(|c| c.check != 0) {
             crate::platform::stats::set_enabled(on);
+        }
+        if let Some(on) = d.control(SKIP_INTRO).map(|c| c.check != 0) {
+            crate::platform::dshow::set_skip_intro(on);
         }
         if let Some(on) = d.control(VSYNC).map(|c| c.check != 0) {
             crate::platform::fps::set_vsync(on);
