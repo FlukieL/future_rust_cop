@@ -1,5 +1,7 @@
 #!/bin/sh
-# Builds fcop.app and packs it into one file to share: target/fcop-<version>-macos.zip.
+# Builds fcop.app and packs it into one file to share: target/fcop-<version>-macos.dmg
+# (the app beside a shortcut to Applications: players drag it there, it does not run from
+# Downloads).
 # The app keeps the game files in ~/Library/Application Support/fcop (setup::app_folder).
 set -e
 cd "$(dirname "$0")/.."
@@ -40,7 +42,11 @@ cat > "$app/Contents/Info.plist" <<EOF
 EOF
 # no developer certificate: an ad-hoc signature, which seals Info.plist with the program
 codesign --force --sign - "$app"
-zip="target/fcop-$version-macos.zip"
-rm -f "$zip"
-ditto -c -k --keepParent "$app" "$zip"
-echo "$zip"
+dmg="target/fcop-$version-macos.dmg"
+stage=target/dmg
+rm -rf "$stage" "$dmg"
+mkdir "$stage"
+cp -R "$app" "$stage/"
+ln -s /Applications "$stage/Applications"
+hdiutil create -volname fcop -srcfolder "$stage" -format UDZO -ov "$dmg" >/dev/null
+echo "$dmg"

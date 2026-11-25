@@ -748,14 +748,14 @@ distributions; ALSA and libudev headers from apt) and macos-latest (Apple Silico
 hand: `gh workflow run build.yml`), not at every push (the macOS release file is the app,
 `tools/macos-app.sh`); `.github/workflows/macos-app.yml` builds the app when started by hand
 (`gh workflow run macos-app.yml --ref <branch>`), not at every push, kept as the run's artifact `fcop-macos-app-<sha>`; a tag also makes a GitHub release with `fcop-<tag>-windows-x64.zip` and
-`fcop-<tag>-linux-x64.tar.gz`, `fcop-<tag>-macos-arm64.zip` (the app) (the program, README, LICENSE, `game_files/README.txt`).
+`fcop-<tag>-linux-x64.tar.gz`, `fcop-<tag>-macos-arm64.dmg` (the app beside a link to /Applications: from Downloads it is translocated and macOS never starts it) (the program, README, LICENSE, `game_files/README.txt`).
 Version in Cargo.toml.
 macOS (Apple Silicon, first built 2026-11-24): windows only on the main thread, so the game runs
 there (main.rs), its 256 MB stack from `build.rs` (`-stack_size`); 16 KB pages (`Memory::map`
 rounds to them); the guest space cannot be below 4 GB (__PAGEZERO), so its base is read at run
 time; the splash is the Linux one (second process, no Dock icon of its own); no fault reports
 (`catch_faults`). `tools/macos-app.sh` builds fcop.app (ad-hoc signed; its icon drawn by `examples/icon.rs`,
-a star on a shield, made an .icns with sips and iconutil) and its zip; inside an
+a star on a shield, made an .icns with sips and iconutil) and its .dmg (hdiutil); inside an
 app (`setup::app_folder`: the program in Contents/MacOS) the player's folder is
 ~/Library/Application Support/fcop (game_files, CD images, fcop.log for stdout/stderr). The
 error window has an Open Folder button (Linux too: `xdg-open`; the child process finds the

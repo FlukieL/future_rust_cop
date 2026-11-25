@@ -78,8 +78,9 @@ it starts right away.
 
 fcop for macOS (Apple Silicon) is an app.
 
-1. **Download** `fcop-...-macos-arm64.zip` from the [releases] page and double-click it. This
-   unpacks `fcop.app`. You can move it to your Applications folder.
+1. **Download** `fcop-...-macos-arm64.dmg` from the [releases] page and double-click it. A
+   window opens with `fcop.app` and your Applications folder: **drag fcop onto Applications**.
+   Start it from there (started from the Downloads folder, macOS does not run it).
 2. **Start** fcop. The app is not signed with a developer certificate, so macOS blocks the
    first start. Open **System Settings > Privacy & Security** and click **Open Anyway**.
 3. **Add the game.** The window says that the game files were not found. Click **Open
@@ -308,7 +309,7 @@ Without a path, fcop uses the `game_files` folder as described above. The tests
 ### macOS app
 
 `tools/macos-app.sh` builds `target/fcop.app` and packs it into one file to share:
-`target/fcop-<version>-macos.zip`. How players use it: [macOS](#macos).
+`target/fcop-<version>-macos.dmg`. How players use it: [macOS](#macos).
 
 GitHub builds the app of a branch when the workflow **macOS app** is started by hand
 (`gh workflow run macos-app.yml --ref <branch>`). To get it, open **Actions > macOS app**, then
