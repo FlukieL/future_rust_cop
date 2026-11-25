@@ -71,11 +71,11 @@ jobs:
       - name: Build the app
         run: |
           ./tools/macos-app.sh
-          mv target/fcop-*-macos.zip "fcop-$VERSION-macos-arm64.zip"
+          mv target/fcop-*-macos.dmg "fcop-$VERSION-macos-arm64.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: fcop-*.zip
+          path: fcop-*.dmg
 
   release:
     if: github.ref_type == 'tag'
@@ -90,4 +90,5 @@ jobs:
           files: |
             fcop-*.zip
             fcop-*.tar.gz
+            fcop-*.dmg
           generate_release_notes: true
