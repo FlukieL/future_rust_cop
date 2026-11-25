@@ -43,10 +43,11 @@ const LEFT: u32 = 1 << 13;
 const RIGHT: u32 = 1 << 14;
 
 /// A held direction moves again after this, then every `REPEAT`.
-const FIRST_REPEAT: Duration = Duration::from_millis(400);
-const REPEAT: Duration = Duration::from_millis(160);
-/// how far the stick must go for a direction
+const FIRST_REPEAT: Duration = Duration::from_millis(300);
+const REPEAT: Duration = Duration::from_millis(120);
+/// Separate engage and release thresholds prevent jitter around the stick threshold.
 const STICK: f32 = 0.5;
+const STICK_RELEASE: f32 = 0.35;
 
 fn trace() -> bool {
     static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -194,7 +195,7 @@ pub fn nearest(rects: &[Rect], cur: Option<usize>, came: Came, from: (i32, i32),
         .map(|e| e.1)
 }
 
-fn direction(buttons: u32, stick: [f32; 2]) -> Option<(i32, i32)> {
+fn direction(buttons: u32, stick: [f32; 2], previous: Option<(i32, i32)>) -> Option<(i32, i32)> {
     let d = if buttons & UP != 0 {
         (0, -1)
     } else if buttons & DOWN != 0 {
@@ -203,6 +204,12 @@ fn direction(buttons: u32, stick: [f32; 2]) -> Option<(i32, i32)> {
         (-1, 0)
     } else if buttons & RIGHT != 0 {
         (1, 0)
+    } else if let Some((x, y)) = previous.filter(|&(x, y)| {
+        let along = stick[0] * x as f32 + stick[1] * y as f32;
+        let across = (stick[0] * y as f32 - stick[1] * x as f32).abs();
+        along >= STICK_RELEASE && across < along + 0.15
+    }) {
+        (x, y)
     } else if stick[0].abs().max(stick[1].abs()) < STICK {
         return None;
     } else if stick[0].abs() > stick[1].abs() {
@@ -243,7 +250,8 @@ pub fn step(input: &mut VecDeque<Input>) -> Step {
     let pressed = buttons & !s.buttons;
     let released = s.buttons & !buttons;
     s.buttons = buttons;
-    if pressed != 0 || direction(buttons, stick).is_some() {
+    let d = direction(buttons, stick, s.dir.map(|(d, _)| d));
+    if pressed != 0 || d.is_some() && d != s.dir.map(|(d, _)| d) {
         s.pad_last = true;
     }
     // a release ends what its press began, wherever the game is now
@@ -268,7 +276,7 @@ pub fn step(input: &mut VecDeque<Input>) -> Step {
         s.drawn = None;
         s.focus = None;
         let mut ev = DIALOG.lock().unwrap();
-        if let Some(d) = repeat(&mut s, direction(buttons, stick), now) {
+        if let Some(d) = repeat(&mut s, d, now) {
             ev.push_back(PadEvent::Dir(d));
         }
         if pressed & A != 0 {
@@ -295,7 +303,7 @@ pub fn step(input: &mut VecDeque<Input>) -> Step {
         s.focus = None;
     }
     if !items.is_empty() {
-        if let Some(d) = repeat(&mut s, direction(buttons, stick), now) {
+        if let Some(d) = repeat(&mut s, d, now) {
             let from = s.focus.map_or((m.rd32(MOUSE.at()) as i32, m.rd32(MOUSE.at() + 4) as i32), |f| centre(&f));
             let cur = s.focus.and_then(|f| items.iter().position(|&r| r == f));
             let came = s.came.and_then(|(r, way)| Some((items.iter().position(|&q| q == r)?, way)));
@@ -310,9 +318,23 @@ pub fn step(input: &mut VecDeque<Input>) -> Step {
             }
         }
         if pressed & A != 0 && !s.clicked {
+            if s.focus.is_none() {
+                let from = (m.rd32(MOUSE.at()) as i32, m.rd32(MOUSE.at() + 4) as i32);
+                let r = items.iter().copied().find(|r| {
+                    from.0 >= r.0 && from.0 < r.0 + r.2 && from.1 >= r.1 && from.1 < r.1 + r.3
+                }).or_else(|| nearest(&items, None, None, from, (0, 1)).map(|k| items[k]));
+                if let Some(r) = r {
+                    let (x, y) = centre(&r);
+                    input.push_back(Input::Move(x, y));
+                    s.focus = Some(r);
+                }
+            }
             s.clicked = true;
             input.push_back(Input::Button(0, true));
         }
+    } else {
+        s.dir = None;
+        s.came = None;
     }
     let overlay = (s.drawn != s.focus).then(|| s.focus.map(frame_around));
     s.drawn = s.focus;
@@ -387,5 +409,42 @@ fn space(down: bool) -> Input {
         scan: 0x39,
         down,
         repeat: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> State {
+        State {
+            buttons: 0, dir: None, clicked: false, space: false,
+            focus: None, drawn: None, pad_last: false, came: None,
+        }
+    }
+
+    #[test]
+    fn stick_hysteresis_and_direction_changes() {
+        let right = Some((1, 0));
+        assert_eq!(direction(0, [0.49, 0.0], None), None);
+        assert_eq!(direction(0, [0.6, 0.0], None), right);
+        assert_eq!(direction(0, [0.4, 0.0], right), right);
+        assert_eq!(direction(0, [0.3, 0.0], right), None);
+        assert_eq!(direction(0, [0.5, 0.54], right), right);
+        assert_eq!(direction(0, [0.2, 0.8], right), Some((0, 1)));
+        assert_eq!(direction(LEFT, [0.8, 0.0], right), Some((-1, 0)));
+    }
+
+    #[test]
+    fn repeat_is_immediate_then_delayed_and_resets() {
+        let mut s = state();
+        let now = Instant::now();
+        let right = Some((1, 0));
+        assert_eq!(repeat(&mut s, right, now), right);
+        assert_eq!(repeat(&mut s, right, now + FIRST_REPEAT - Duration::from_millis(1)), None);
+        assert_eq!(repeat(&mut s, right, now + FIRST_REPEAT), right);
+        assert_eq!(repeat(&mut s, right, now + FIRST_REPEAT + REPEAT), right);
+        assert_eq!(repeat(&mut s, None, now + FIRST_REPEAT + REPEAT), None);
+        assert_eq!(repeat(&mut s, right, now + FIRST_REPEAT + REPEAT), right);
     }
 }

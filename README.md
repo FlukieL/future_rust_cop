@@ -196,6 +196,12 @@ The default layout (Xbox controller):
 The sticks are analog: push them a little and the robot moves slowly. (Not in network games.)
 
 In menus and dialogs, the D-pad or left stick moves, A selects and B goes back.
+Holding a direction repeats; stick hysteresis helps prevent accidental changes near diagonals.
+
+When your robot takes damage, compatible controllers vibrate on Windows and Linux.
+Turn off **Controller Vibration** in Preferences (or Display in the pause menu) to
+disable it. `FCOP_RUMBLE=0` also starts the game with vibration off. The current macOS
+gamepad backend does not support vibration.
 
 ## Network play
 

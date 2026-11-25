@@ -130,6 +130,8 @@ const VSYNC: u32 = FIRST_OURS + 32;
 const SHOW_FPS: u32 = FIRST_OURS + 33;
 /// Advanced Graphics: the 3D picture's depth test (`zbuffer.rs`).
 const DEPTH_BUFFER: u32 = FIRST_OURS + 34;
+/// Controller vibration, available in Preferences and the pause menu.
+const VIBRATION: u32 = FIRST_OURS + 35;
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -367,6 +369,14 @@ pub fn adjust(template: u32, t: &mut Template) {
                 t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: c });
             }
         }
+        // Put vibration in its own row, independent of renderer and pause-menu layout.
+        if let Some(y) = t.items.iter().find(|i| i.id == OK).map(|i| i.rect[1]) {
+            for i in t.items.iter_mut().filter(|i| i.id == OK || i.id == CANCEL) {
+                i.rect[1] += 15;
+            }
+            t.rect[3] += 15;
+            t.items.push(Item { class: Class::Button, id: VIBRATION, text: "Controller Vibration".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [7, y + 2, 120, 9] });
+        }
     }
 }
 
@@ -479,6 +489,9 @@ pub fn init(d: &mut Dialog) {
         }
         if let Some(c) = d.control(SHOW_FPS) {
             c.check = crate::platform::stats::enabled() as u32;
+        }
+        if let Some(c) = d.control(VIBRATION) {
+            c.check = crate::platform::rumble::enabled() as u32;
         }
         let fps = crate::platform::fps::chosen();
         if let Some(c) = d.control(FRAME_RATE) {
@@ -614,6 +627,9 @@ pub fn ok(d: &mut Dialog) {
         }
         if let Some(on) = d.control(SHOW_FPS).map(|c| c.check != 0) {
             crate::platform::stats::set_enabled(on);
+        }
+        if let Some(on) = d.control(VIBRATION).map(|c| c.check != 0) {
+            crate::platform::rumble::set_enabled(on);
         }
         if let Some(on) = d.control(VSYNC).map(|c| c.check != 0) {
             crate::platform::fps::set_vsync(on);

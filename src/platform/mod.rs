@@ -34,6 +34,7 @@ pub mod menumusic;
 pub mod menupad;
 pub mod misc;
 pub mod record;
+pub mod rumble;
 pub mod sample;
 pub mod savestate;
 pub mod shadows;
@@ -785,6 +786,7 @@ pub const HOOKS: &[(crate::ver::Us, crate::rt::Hook)] = &[
     (dinput::PROFILE_APPLY, dinput::profile_apply),
     (gamepad::BINDING_DOWN, gamepad::binding_down),
     (gamepad::SAVE_CONTROLS, gamepad::save_controls),
+    (rumble::ROBOT_DAMAGE, rumble::robot_damage),
     (dsound::SET_VOLUME, dsound::set_volume),
     (user32::PUMP_MESSAGES, user32::pump_messages),
 ];

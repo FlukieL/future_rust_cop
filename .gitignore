@@ -10,3 +10,8 @@ shot/
 /*.cue
 game_files_us/
 .DS_Store
+
+# graphify-axet
+.graphify/
+.gitignore
+.graphifyignore

@@ -135,6 +135,17 @@ pub fn post(hwnd: u32, msg: u32, wp: u32, lp: u32) {
     st().queue.push_back(Msg { hwnd, msg, wp, lp });
 }
 
+/// Keep the latest unbuttoned mouse position, without reordering clicks or drag motion.
+fn queue_mouse_move(queue: &mut VecDeque<Msg>, message: Msg) {
+    if message.wp == 0 && queue.back().is_some_and(|last| {
+        last.msg == WM_MOUSEMOVE && last.hwnd == message.hwnd && last.wp == 0
+    }) {
+        *queue.back_mut().unwrap() = message;
+    } else {
+        queue.push_back(message);
+    }
+}
+
 /// Turn window-system input into messages and key state; due timers post WM_TIMER.
 fn poll(wait: Duration) {
     super::ddraw::show_pending();
@@ -165,7 +176,7 @@ fn poll(wait: Duration) {
             Input::Char(ch) => s.queue.push_back(m(WM_CHAR, ch as u32, 1)),
             Input::Move(x, y) => {
                 s.mouse = (x, y);
-                s.queue.push_back(m(WM_MOUSEMOVE, buttons(&s.keys), (x as u32 & 0xffff) | (y as u32) << 16));
+                queue_mouse_move(&mut s.queue, m(WM_MOUSEMOVE, buttons(&s.keys), (x as u32 & 0xffff) | (y as u32) << 16));
             }
             Input::Button(b, down) => {
                 let vk = [1u8, 2, 4, 5, 6][b as usize];
@@ -927,7 +938,25 @@ pub fn single_player_keys() {
 
 #[cfg(test)]
 mod tests {
-    use super::{WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, is_keyboard_hook_message};
+    use super::{Msg, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_MOUSEMOVE, WM_SYSKEYDOWN, WM_SYSKEYUP, is_keyboard_hook_message, queue_mouse_move};
+    use std::collections::VecDeque;
+
+    #[test]
+    fn mouse_moves_are_coalesced_without_crossing_clicks_or_drags() {
+        let mut q = VecDeque::new();
+        let event = |msg, wp, lp| Msg { hwnd: 1, msg, wp, lp };
+        queue_mouse_move(&mut q, event(WM_MOUSEMOVE, 0, 1));
+        queue_mouse_move(&mut q, event(WM_MOUSEMOVE, 0, 2));
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].lp, 2);
+        q.push_back(event(0x201, 1, 2));
+        queue_mouse_move(&mut q, event(WM_MOUSEMOVE, 1, 3));
+        queue_mouse_move(&mut q, event(WM_MOUSEMOVE, 1, 4));
+        q.push_back(event(0x202, 0, 4));
+        queue_mouse_move(&mut q, event(WM_MOUSEMOVE, 0, 5));
+        queue_mouse_move(&mut q, event(WM_MOUSEMOVE, 0, 6));
+        assert_eq!(q.iter().map(|m| m.lp).collect::<Vec<_>>(), [2, 2, 3, 4, 4, 6]);
+    }
 
     #[test]
     fn keyboard_hooks_do_not_receive_character_messages() {

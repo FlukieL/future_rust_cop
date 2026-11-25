@@ -246,6 +246,8 @@ fn update() {
             let new = pressed.iter().filter(|e| e.0 == id).fold(0, |a, e| a | e.1);
             Entry { pad, pressed: pressed_before(Some(id)) | new | pad.buttons, id: Some(id), name: p.name().to_string() }
         }));
+        let ids = [now.first().and_then(|e| e.id), now.get(1).and_then(|e| e.id)];
+        super::rumble::service(g, ids);
     });
     if super::record::on() {
         // the first real pad (with a press between two reads held for one)
