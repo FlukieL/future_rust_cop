@@ -179,29 +179,36 @@ The default layout (Xbox controller):
 
 | Button | Action |
 | --- | --- |
-| Left stick | move |
-| Right stick | turn |
-| RT | gun |
-| LT | heavy weapon |
-| A | jump |
+| Left stick / D-pad | move and turn |
+| X | gun |
+| A | heavy weapon |
 | B | special |
-| X | action |
-| Y | change target |
-| LB / RB | jink |
+| Y | jump |
+| LB | action |
+| RB | change target |
+| LT / RT | jink left / right |
 | Back | map |
 | R3 | camera |
 | Start | pause |
-| D-pad | free to use |
 
-The sticks are analog: push them a little and the robot moves slowly. (Not in network games.)
+The left stick is analog: push it a little and the robot moves slowly. (Not in network games.)
+This layout matches the PlayStation button positions for the actions available in the PC game;
+the PlayStation transform, crouch, and short-jink button combinations are not implemented.
+
+Existing `gamepad.txt` bindings are preserved. To use the new layout with existing bindings,
+open **Gamepad**, choose the default profile, and select **Xbox Controller**. The dropdown
+under each player in the **Gamepad** dialog selects a connected controller without changing
+that player's bindings. **Automatic** uses the connection order. Explicit selections last
+for the current session; select them again after restarting.
 
 In menus and dialogs, the D-pad or left stick moves, A selects and B goes back.
 Holding a direction repeats; stick hysteresis helps prevent accidental changes near diagonals.
 
-When your robot takes damage, compatible controllers vibrate on Windows and Linux.
-Turn off **Controller Vibration** in Preferences (or Display in the pause menu) to
-disable it. `FCOP_RUMBLE=0` also starts the game with vibration off. The current macOS
-gamepad backend does not support vibration.
+When your robot takes damage or changes mode, compatible controllers can vibrate on Windows
+and Linux. Turn off **Vibration** in the **Gamepad** dialog to disable it. `FCOP_RUMBLE=0`
+also starts the game with vibration off. The current macOS gamepad backend does not support
+vibration. Standard controller input depends on the operating system and gilrs mappings;
+DualSense adaptive triggers and advanced haptics are not currently supported.
 
 ## Network play
 

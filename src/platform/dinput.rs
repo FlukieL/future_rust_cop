@@ -15,10 +15,10 @@
 //! for proportional translation, turning, and sidestepping in local games while keeping its
 //! direction handling, collisions, and gravity.
 //!
-//! Our button order makes the game's own joystick profile 1 a modern layout: 0 RT gun, 1 LT
-//! heavy weapon, 2 B special, 3 A jump, 4 X action, 5 Y change target, 6 LB / 7 RB jink, 8 Back
-//! map, 9 R3 camera, 10 L3, 11...14 D-pad up, down, left, right (free to bind). The left stick
-//! gives lX/lY. Start is the Escape key (pause). The Controller dialog takes left-stick
+//! Our button numbers are 0 RT, 1 LT, 2 B, 3 A, 4 X, 5 Y, 6 LB, 7 RB, 8 Back,
+//! 9 R3, 10 L3, 11...14 D-pad up, down, left, right. The Xbox profile maps the
+//! PC game's actions to PlayStation-style positions (`PLAYSTATION_PROFILE`); existing saved
+//! bindings are kept. Start is the Escape key (pause). The Controller dialog takes left-stick
 //! directions and buttons 0...9 only (joy_capture 0x412c10): hooked for 10...16 and the right
 //! stick. Right-stick directions use our binding keys 0x16...0x19; joy_key and controls.txt
 //! parsing/formatting are hooked too, so those assignments work and persist.
@@ -102,6 +102,54 @@ static PADS: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 static START: Mutex<Option<bool>> = Mutex::new(None);
 /// The scripted pad, once FCOP_INPUT has a `pad@` item.
 static SCRIPTED: Mutex<Option<Pad>> = Mutex::new(None);
+
+/// Explicit gilrs IDs, or automatic assignment. IDs are valid for this session only.
+static PLAYER_DEVICES: Mutex<[Option<usize>; 2]> = Mutex::new([None, None]);
+
+pub fn controller_choices() -> (Vec<(String, u32)>, [Option<usize>; 2]) {
+    let pads = PADS.lock().unwrap();
+    let choices = pads.iter().filter_map(|p| {
+        let id = p.id?;
+        let value = u32::try_from(id).ok()?.checked_add(1)?;
+        Some((format!("{} ({})", p.name, id + 1), value))
+    }).collect();
+    (choices, *PLAYER_DEVICES.lock().unwrap())
+}
+
+pub fn set_player_devices(devices: [Option<usize>; 2]) {
+    *PLAYER_DEVICES.lock().unwrap() = devices;
+}
+
+/// Explicit devices never fall back to another controller when disconnected.
+fn assigned(pads: &[Entry], player: usize, choices: [Option<usize>; 2], share_single: bool) -> Option<usize> {
+    if let Some(id) = choices[player] {
+        return pads.iter().position(|p| p.id == Some(id));
+    }
+    if share_single && pads.len() == 1 && choices[1 - player].is_none() {
+        return Some(0);
+    }
+    let reserved = choices[1 - player];
+    pads.iter().enumerate().filter(|(_, p)| p.id.is_none() || p.id != reserved)
+        .nth(if reserved.is_some() { 0 } else { player })
+        .map(|(index, _)| index)
+}
+
+/// Swap the first two connected controllers for both players, without changing their bindings.
+static SWAP_PADS: super::light::Setting = super::light::Setting::with_default("SwapControllers", "FCOP_SWAP_PADS", false);
+
+pub fn controllers_swapped() -> bool {
+    SWAP_PADS.get()
+}
+
+pub fn set_controllers_swapped(swapped: bool) {
+    SWAP_PADS.set(swapped);
+}
+
+fn swap_controllers<T>(pads: &mut [T], swapped: bool) {
+    if swapped && pads.len() >= 2 {
+        pads.swap(0, 1);
+    }
+}
 
 // Analog movement in the current robot-physics call. The original game turns the stick
 // into four bits; the movement-vector hooks below put its magnitude back.
@@ -246,7 +294,9 @@ fn update() {
             let new = pressed.iter().filter(|e| e.0 == id).fold(0, |a, e| a | e.1);
             Entry { pad, pressed: pressed_before(Some(id)) | new | pad.buttons, id: Some(id), name: p.name().to_string() }
         }));
-        let ids = [now.first().and_then(|e| e.id), now.get(1).and_then(|e| e.id)];
+        swap_controllers(&mut now, controllers_swapped());
+        let choices = *PLAYER_DEVICES.lock().unwrap();
+        let ids = std::array::from_fn(|p| assigned(&now, p, choices, false).and_then(|k| now[k].id));
         super::rumble::service(g, ids);
     });
     if super::record::on() {
@@ -262,8 +312,9 @@ fn update() {
         v[16..].copy_from_slice(&[p.stick[0], -p.stick[1], p.stick[2], -p.stick[3]]);
         super::record::pad(&v);
     }
-    let was = pads.first().is_some_and(|e| e.pad.start);
-    let start = now.first().is_some_and(|e| e.pad.start);
+    let choices = *PLAYER_DEVICES.lock().unwrap();
+    let was = assigned(&pads, 0, choices, false).is_some_and(|k| pads[k].pad.start);
+    let start = assigned(&now, 0, choices, false).is_some_and(|k| now[k].pad.start);
     *pads = now;
     if was != start {
         *START.lock().unwrap() = Some(start);
@@ -294,11 +345,7 @@ pub fn forget_presses() {
 /// so pads plugged in later work: with two connected pad i is pad i, one serves both (as the
 /// game shares a single pad), none reads as centred and released.
 fn connected(pads: &[Entry], n: u32) -> Option<usize> {
-    match pads.len() {
-        0 => None,
-        1 => Some(0),
-        _ => Some(n.min(1) as usize),
-    }
+    assigned(pads, n.min(1) as usize, *PLAYER_DEVICES.lock().unwrap(), true)
 }
 
 /// Pad n as the game reads it: its buttons held or pressed since the last read.
@@ -617,6 +664,12 @@ const RIGHT_KEYS: [(&str, u32); 4] = [
     ("RStick U", RIGHT_UP),
     ("RStick D", RIGHT_DOWN),
 ];
+const PAD_KEYS: [(&str, u32); 15] = [
+    ("Pad RT", 0), ("Pad LT", 1), ("Pad B", 2), ("Pad A", 3),
+    ("Pad X", 4), ("Pad Y", 5), ("Pad LB", 6), ("Pad RB", 7),
+    ("Pad Back", 8), ("Pad R3", 9), ("Pad L3", 10), ("Pad Up", 11),
+    ("Pad Down", 12), ("Pad Left", 13), ("Pad Right", 14),
+];
 const MOUSE_KEYS: [(&str, u32); 5] =
     [("Mouse L", 0x01), ("Mouse R", 0x02), ("Mouse M", 0x04), ("Mouse X1", 0x05), ("Mouse X2", 0x06)];
 const AXIS_DEAD_ZONE: f32 = 0.25;
@@ -673,7 +726,17 @@ pub fn current_pad(n: u32) -> Pad {
 /// Player p's own pad for the gamepad bindings (`gamepad.rs`): pad p only (with one pad,
 /// player 2 has none).
 pub fn player_pad(p: u32) -> Option<Pad> {
-    PADS.lock().unwrap().get(p as usize).map(|e| e.pad)
+    let pads = PADS.lock().unwrap();
+    assigned(&pads, p.min(1) as usize, *PLAYER_DEVICES.lock().unwrap(), false).map(|k| pads[k].pad)
+}
+
+/// D-pad alternative for a left-stick direction binding.
+pub fn dpad_axis_down(p: &Pad, key: u32) -> bool {
+    let button = match key {
+        0x12 => 13, 0x13 => 14, 0x14 => 11, 0x15 => 12,
+        _ => return false,
+    };
+    p.buttons & (1 << button) != 0
 }
 
 /// Whether a joystick binding's key (`joy_key`'s numbers) is down on `p`: buttons 0...16, the
@@ -708,10 +771,13 @@ const JOY_STATES: Us = Us(0x49fd98);
 pub fn joy_capture(c: &mut Cpu) {
     let m = mem();
     let (pad, binding) = (m.rd32(c.r[ESP] + 4), m.rd32(c.r[ESP] + 8));
+    let old = (m.rd32(binding), m.rd32(binding + 4));
     call_original(c, JOY_CAPTURE.at());
     // a pad choosing in the dialog does not bind (`dialog::pad_capture`); the pad's bindings
     // are made in its own dialog (`gamepad.rs`), the game's binds the keyboard
     if !super::dialog::pad_capture() || !super::gamepad::editing() {
+        m.wr32(binding, old.0);
+        m.wr32(binding + 4, old.1);
         c.r[EAX] &= !0xff;
         return;
     }
@@ -746,8 +812,15 @@ pub const XBOX_CHOICE: u32 = 3;
 const PROFILES: [Us; 2] = [Us(0x48afb8), Us(0x48b120)];
 const PROFILE_SIZE: u32 = 0x78;
 
-/// The Xbox profile in guest memory: the Sidewinder profile (1) with turning on the right
-/// stick and jinking on the left stick's left and right.
+/// Xbox equivalents of the PlayStation controls, in controls.txt action order.
+const PLAYSTATION_PROFILE: [u32; 14] = [
+    0x14, 0x15, 0x13, 0x12, // left stick: forward, back, turn right, turn left
+    4, 6, 2, 5,             // X gun, LB action, B special, Y jump
+    8, 9, 1, 0,             // Back map, R3 camera, LT/RT jink
+    3, 7,                    // A heavy weapon, RB change target
+];
+
+/// The Xbox profile in guest memory. Existing gamepad.txt bindings remain unchanged.
 pub fn xbox_profile() -> u32 {
     static T: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *T.get_or_init(|| {
@@ -756,10 +829,9 @@ pub fn xbox_profile() -> u32 {
         for i in 0..PROFILE_SIZE / 4 {
             m.wr32(t + 4 * i, m.rd32(PROFILES[0].at() + PROFILE_SIZE + 4 * i));
         }
-        // turn right, turn left, jink left, jink right (the order of controls.txt)
-        for (action, key) in [(2, RIGHT_RIGHT), (3, RIGHT_LEFT), (10, 0x12), (11, 0x13)] {
-            m.wr32(t + 8 * action, 1);
-            m.wr32(t + 8 * action + 4, key);
+        for (action, key) in PLAYSTATION_PROFILE.into_iter().enumerate() {
+            m.wr32(t + 8 * action as u32, 1);
+            m.wr32(t + 8 * action as u32 + 4, key);
         }
         t
     })
@@ -785,7 +857,9 @@ pub fn binding_parse(c: &mut Cpu) {
     let m = mem();
     let (text, binding) = (m.rd32(c.r[ESP] + 4), m.rd32(c.r[ESP] + 8));
     let text = cstr(text);
-    let custom = mouse_key_from_text(&text).map(|key| (0, key)).or_else(|| right_key_from_text(&text).map(|key| (1, key)));
+    let custom = mouse_key_from_text(&text).map(|key| (0, key))
+        .or_else(|| right_key_from_text(&text).map(|key| (1, key)))
+        .or_else(|| named_key_from_text(&text, "Joystick", &PAD_KEYS).map(|key| (1, key)));
     if let Some((device, key)) = custom {
         m.wr32(binding, device);
         m.wr32(binding + 4, key);
@@ -810,7 +884,7 @@ pub fn binding_name(c: &mut Cpu) {
     let key = mem().rd32(binding + 4);
     let custom = match device {
         0 => MOUSE_KEYS.iter().find(|e| e.1 == key).map(|e| ("Keyboard", e.0)),
-        1 => RIGHT_KEYS.iter().find(|e| e.1 == key).map(|e| ("Joystick", e.0)),
+        1 => RIGHT_KEYS.iter().chain(PAD_KEYS.iter()).find(|e| e.1 == key).map(|e| ("Joystick", e.0)),
         _ => None,
     };
     if let Some((device, name)) = custom {
@@ -981,12 +1055,16 @@ pub fn robot_physics(c: &mut Cpu) {
     let m = mem();
     let actor = m.rd32(c.r[ESP] + 4);
     let data = m.rd32(actor + ROBOT_DATA);
+    let was_hover = m.rd8(data + 0xad) == 1;
     let controls = m.rd32(data + CONTROLS_BITS);
     let analog = (controls & MOVE_BITS != 0).then(|| analog_for(actor, controls)).flatten();
     let before = m.rd16(actor + HEADING) as i32 & 0xfff;
     let previous = ANALOG_MOVE.replace(analog);
     call_original(c, ROBOT_PHYSICS.at());
     ANALOG_MOVE.set(previous);
+    if was_hover != (m.rd8(data + 0xad) == 1) {
+        super::rumble::transformed(actor);
+    }
 
     let Some(amount) = analog.and_then(|a| a.turn) else { return };
     debug_assert!(controls & TURN_BITS != 0);
@@ -1006,6 +1084,59 @@ mod analog_tests {
 
     fn analog_amounts(stick: [f32; 4], bindings: [(u32, u32); 14], controls: u32) -> AnalogMove {
         super::analog_amounts(bindings.map(|b| binding_amount(stick, b)), controls)
+    }
+
+    #[test]
+    fn player_device_selection_handles_automatic_and_disconnects() {
+        let entry = |id| super::Entry {
+            pad: Pad::default(), pressed: 0, id: Some(id), name: String::new(),
+        };
+        let pads = [entry(4), entry(7), entry(9)];
+        assert_eq!(super::assigned(&pads, 0, [None, None], false), Some(0));
+        assert_eq!(super::assigned(&pads, 1, [None, None], false), Some(1));
+        assert_eq!(super::assigned(&pads, 0, [Some(9), None], false), Some(2));
+        assert_eq!(super::assigned(&pads, 1, [Some(9), None], false), Some(0));
+        assert_eq!(super::assigned(&pads, 0, [Some(99), None], false), None);
+        assert_eq!(super::assigned(&pads, 1, [Some(99), None], false), Some(0));
+        assert_eq!(super::assigned(&pads[..1], 1, [None, None], true), Some(0));
+        assert_eq!(super::assigned(&pads[..1], 1, [None, None], false), None);
+    }
+
+    #[test]
+    fn controller_swap_handles_zero_one_and_multiple_pads() {
+        let mut empty: [u8; 0] = [];
+        super::swap_controllers(&mut empty, true);
+        let mut one = [1];
+        super::swap_controllers(&mut one, true);
+        assert_eq!(one, [1]);
+        let mut two = [1, 2, 3];
+        super::swap_controllers(&mut two, true);
+        assert_eq!(two, [2, 1, 3]);
+        super::swap_controllers(&mut two, true);
+        assert_eq!(two, [1, 2, 3]);
+        super::swap_controllers(&mut two, false);
+        assert_eq!(two, [1, 2, 3]);
+    }
+
+    #[test]
+    fn xbox_button_names_round_trip_within_dialog_limit() {
+        for (name, key) in super::PAD_KEYS {
+            let text = format!("Joystick: {name}");
+            assert!(text.len() < 20, "{text}");
+            assert_eq!(super::named_key_from_text(&text, "Joystick", &super::PAD_KEYS), Some(key));
+        }
+    }
+
+    #[test]
+    fn playstation_profile_maps_requested_buttons() {
+        let keys = super::PLAYSTATION_PROFILE;
+        assert_eq!(&keys[..4], &[0x14, 0x15, 0x13, 0x12]);
+        assert_eq!(&keys[4..8], &[4, 6, 2, 5]);
+        assert_eq!(&keys[10..], &[1, 0, 3, 7]);
+        let pad = Pad { buttons: 1 << 11 | 1 << 14, ..Pad::default() };
+        assert!(super::dpad_axis_down(&pad, 0x14));
+        assert!(super::dpad_axis_down(&pad, 0x13));
+        assert!(!super::dpad_axis_down(&pad, 0x12));
     }
 
     #[test]

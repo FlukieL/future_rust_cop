@@ -115,8 +115,20 @@ pub fn binding_down(c: &mut Cpu) {
     let game_down = c.r[EAX] & 0xff != 0;
     let game_amount = dinput::binding_amount(dinput::current_pad(player).stick, game);
     let pad = dinput::player_pad(player);
-    let our_down = ours.0 == 1 && pad.is_some_and(|p| dinput::key_down(&p, ours.1));
-    let our_amount = pad.and_then(|p| dinput::binding_amount(p.stick, ours));
+    let fallback = match (action, ours) {
+        (0, (1, 0x14)) => Some(11),
+        (1, (1, 0x15)) => Some(12),
+        (2, (1, 0x13)) => Some(14),
+        (3, (1, 0x12)) => Some(13),
+        _ => None,
+    };
+    let table = tables(c) + SIZE * player;
+    let dpad = fallback.is_some_and(|button| {
+        !(0..ACTIONS).any(|i| i != action && read(table + 8 * i) == (1, button))
+            && pad.is_some_and(|p| dinput::dpad_axis_down(&p, ours.1))
+    });
+    let our_down = ours.0 == 1 && (dpad || pad.is_some_and(|p| dinput::key_down(&p, ours.1)));
+    let our_amount = if dpad { None } else { pad.and_then(|p| dinput::binding_amount(p.stick, ours)) };
     let digital = game_down && game_amount.is_none() || our_down && our_amount.is_none();
     let amount = [(game_down, game_amount), (our_down, our_amount)]
         .into_iter()

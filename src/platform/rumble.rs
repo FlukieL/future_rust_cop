@@ -57,19 +57,32 @@ fn request(player: usize, magnitude: u16) {
     *slot = Some(Pulse { strength: value, when: Instant::now() });
 }
 
-/// The player actor's health before and after the original function determines actual damage.
-pub fn robot_damage(c: &mut Cpu) {
+/// Find the local pad slot for a player actor.
+fn local_player(actor: u32) -> Option<usize> {
     let m = mem();
-    let actor = m.rd32(c.r[ESP] + 4);
     let net = m.rd32(NET.at()) as i32;
-    let player = if actor == 0 {
+    if actor == 0 {
         None
     } else if net >= 0 {
         let local = (net as u32 & 0xf) as usize;
         (local < 2 && m.rd32(PLAYERS.at() + 4 * local as u32) == actor).then_some(0)
     } else {
         (0..2).find(|&p| m.rd32(PLAYERS.at() + 4 * p as u32) == actor)
-    };
+    }
+}
+
+/// A player actually changed between walker and hover mode.
+pub fn transformed(actor: u32) {
+    if let Some(player) = local_player(actor) {
+        request(player, 24000);
+    }
+}
+
+/// The player actor's health before and after the original function determines actual damage.
+pub fn robot_damage(c: &mut Cpu) {
+    let m = mem();
+    let actor = m.rd32(c.r[ESP] + 4);
+    let player = local_player(actor);
     let before = player.map(|_| (m.rd16(actor + 0x1c), m.rd16(actor + 0x1e)));
     call_original(c, ROBOT_DAMAGE.at());
     if let (Some(player), Some((health, maximum))) = (player, before) {

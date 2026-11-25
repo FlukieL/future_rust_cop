@@ -132,6 +132,7 @@ const SHOW_FPS: u32 = FIRST_OURS + 33;
 const DEPTH_BUFFER: u32 = FIRST_OURS + 34;
 /// Controller vibration, available in Preferences and the pause menu.
 const VIBRATION: u32 = FIRST_OURS + 35;
+const PLAYER_DEVICES: [u32; 2] = [FIRST_OURS + 36, FIRST_OURS + 37];
 /// The Controller dialog's "Player1" / "Player2 " titles.
 const PLAYER_TITLES: [u32; 2] = [1025, 1154];
 
@@ -221,6 +222,21 @@ fn renderer() -> String {
 
 pub fn adjust(template: u32, t: &mut Template) {
     let pad = crate::platform::gamepad::editing();
+    if template == crate::platform::gamepad::CONTROLLER && pad {
+        let y = 18;
+        for i in &mut t.items {
+            if !PLAYER_TITLES.contains(&i.id) {
+                i.rect[1] += y;
+            }
+        }
+        t.rect[3] += y;
+        t.items.push(Item { class: Class::Button, id: VIBRATION, text: "Vibration".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [t.rect[2] / 2 - 35, 5, 70, 9] });
+        let width = t.rect[2] * 28 / 100;
+        for (index, id) in PLAYER_DEVICES.into_iter().enumerate() {
+            let x = if index == 0 { t.rect[2] * 135 / 1000 } else { t.rect[2] * 600 / 1000 };
+            t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, 14, width, 80] });
+        }
+    }
     if template == PROFILE {
         // the keyboard's profile for the keyboard's bindings, the pads' for the pad's
         let hidden = if pad { [KEYBOARD_PROFILE].as_slice() } else { PAD_PROFILES.as_slice() };
@@ -369,14 +385,6 @@ pub fn adjust(template: u32, t: &mut Template) {
                 t.items.push(Item { class: Class::ComboBox, id, text: String::new(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: c });
             }
         }
-        // Put vibration in its own row, independent of renderer and pause-menu layout.
-        if let Some(y) = t.items.iter().find(|i| i.id == OK).map(|i| i.rect[1]) {
-            for i in t.items.iter_mut().filter(|i| i.id == OK || i.id == CANCEL) {
-                i.rect[1] += 15;
-            }
-            t.rect[3] += 15;
-            t.items.push(Item { class: Class::Button, id: VIBRATION, text: "Controller Vibration".into(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [7, y + 2, 120, 9] });
-        }
     }
 }
 
@@ -392,6 +400,30 @@ pub fn init(d: &mut Dialog) {
         for (id, text) in PLAYER_TITLES.into_iter().zip(["Gamepad 1", "Gamepad 2"]) {
             if let Some(c) = d.control(id) {
                 c.text = text.into();
+            }
+        }
+        if let Some(c) = d.control(VIBRATION) {
+            c.check = crate::platform::rumble::enabled() as u32;
+        }
+        let (choices, selected) = crate::platform::dinput::controller_choices();
+        for (player, id) in PLAYER_DEVICES.into_iter().enumerate() {
+            if let Some(c) = d.control(id) {
+                if let Kind::Combo { items, sel, .. } = &mut c.kind {
+                    items.push(("Automatic".into(), 0));
+                    items.extend(choices.iter().cloned());
+                    if let Some(device) = selected[player] {
+                        let value = u32::try_from(device).ok().and_then(|id| id.checked_add(1));
+                        if let Some(value) = value {
+                            if !items.iter().any(|item| item.1 == value) {
+                                items.push(("Disconnected".into(), value));
+                            }
+                            *sel = items.iter().position(|item| item.1 == value).unwrap_or(0) as i32;
+                        }
+                    } else {
+                        *sel = 0;
+                    }
+                    c.text = items[*sel as usize].0.clone();
+                }
             }
         }
     }
@@ -489,9 +521,6 @@ pub fn init(d: &mut Dialog) {
         }
         if let Some(c) = d.control(SHOW_FPS) {
             c.check = crate::platform::stats::enabled() as u32;
-        }
-        if let Some(c) = d.control(VIBRATION) {
-            c.check = crate::platform::rumble::enabled() as u32;
         }
         let fps = crate::platform::fps::chosen();
         if let Some(c) = d.control(FRAME_RATE) {
@@ -598,6 +627,19 @@ pub fn join_address() -> String {
 }
 
 pub fn ok(d: &mut Dialog) {
+    if d.template == crate::platform::gamepad::CONTROLLER && crate::platform::gamepad::editing() {
+        if let Some(on) = d.control(VIBRATION).map(|c| c.check != 0) {
+            crate::platform::rumble::set_enabled(on);
+        }
+        let mut devices = [None; 2];
+        for (player, id) in PLAYER_DEVICES.into_iter().enumerate() {
+            devices[player] = d.control(id).and_then(|c| match &c.kind {
+                Kind::Combo { items, sel, .. } => items.get(*sel as usize).and_then(|item| item.1.checked_sub(1)).map(|id| id as usize),
+                _ => None,
+            });
+        }
+        crate::platform::dinput::set_player_devices(devices);
+    }
     if d.template == PREFERENCES {
         let chosen = d.control(RENDERER).and_then(|c| match &c.kind {
             Kind::Combo { items, sel, .. } => items.get(*sel as usize).map(|i| i.0.clone()),
@@ -627,9 +669,6 @@ pub fn ok(d: &mut Dialog) {
         }
         if let Some(on) = d.control(SHOW_FPS).map(|c| c.check != 0) {
             crate::platform::stats::set_enabled(on);
-        }
-        if let Some(on) = d.control(VIBRATION).map(|c| c.check != 0) {
-            crate::platform::rumble::set_enabled(on);
         }
         if let Some(on) = d.control(VSYNC).map(|c| c.check != 0) {
             crate::platform::fps::set_vsync(on);
