@@ -38,6 +38,13 @@ const DISPLAY_MODE_LABEL: u32 = 1155;
 const WINDOW_NOTE: u32 = 1110;
 const CONTROLLER_BUTTON: u32 = 1099;
 const AUDIO_BUTTON: u32 = 1100;
+/// Audio Controls and its OK/Cancel buttons.
+const AUDIO: u32 = 152;
+const AUDIO_OK: u32 = 1104;
+const AUDIO_CANCEL: u32 = 1105;
+/// Track checkbox IDs fit within the dialog's reserved range for our controls.
+const MENU_MUSIC_FIRST: u32 = FIRST_OURS + 42;
+const MENU_MUSIC_LIMIT: usize = (FIRST_OURS + 0x100 - MENU_MUSIC_FIRST) as usize;
 /// Its gamma slider (shown with Glide); the game reads it only when Glide starts.
 const GAMMA: u32 = 1118;
 /// The game's gamma: slider position * [GAMMA_SCALE] - [GAMMA_BASE] (doubles, as 0x43a540).
@@ -226,6 +233,26 @@ fn renderer() -> String {
 
 pub fn adjust(template: u32, t: &mut Template) {
     let pad = crate::platform::gamepad::editing();
+    if template == AUDIO {
+        let choices = crate::platform::menumusic::choices();
+        let count = choices.len().min(MENU_MUSIC_LIMIT);
+        let rows = ((count + 1) / 2).max(1) as i32;
+        let height = 20 + rows * 12;
+        let y = t.items.iter().find(|i| i.id == AUDIO_OK).map_or(137, |i| i.rect[1]);
+        for i in t.items.iter_mut().filter(|i| i.id == AUDIO_OK || i.id == AUDIO_CANCEL) {
+            i.rect[1] += height;
+        }
+        t.rect[3] += height;
+        t.items.push(Item { class: Class::Button, id: u32::MAX, text: "Menu music (random)".into(), style: VISIBLE | 7, ex_style: 0, rect: [7, y, t.rect[2] - 14, height - 4] });
+        for (index, (name, _)) in choices.iter().take(count).enumerate() {
+            let x = 14 + (index % 2) as i32 * ((t.rect[2] - 28) / 2);
+            let row = (index / 2) as i32;
+            t.items.push(Item { class: Class::Button, id: MENU_MUSIC_FIRST + index as u32, text: name.clone(), style: VISIBLE | TABSTOP | 3, ex_style: 0, rect: [x, y + 12 + row * 12, (t.rect[2] - 28) / 2, 9] });
+        }
+        if count == 0 {
+            t.items.push(Item { class: Class::Static, id: u32::MAX, text: "No tracks found".into(), style: VISIBLE, ex_style: 0, rect: [14, y + 12, t.rect[2] - 28, 9] });
+        }
+    }
     if template == crate::platform::gamepad::CONTROLLER && pad {
         let y = 43;
         for i in &mut t.items {
@@ -412,6 +439,13 @@ pub fn adjust(template: u32, t: &mut Template) {
 }
 
 pub fn init(d: &mut Dialog) {
+    if d.template == AUDIO {
+        for (i, (_, on)) in crate::platform::menumusic::choices().into_iter().take(MENU_MUSIC_LIMIT).enumerate() {
+            if let Some(c) = d.control(MENU_MUSIC_FIRST + i as u32) {
+                c.check = on as u32;
+            }
+        }
+    }
     // the Controller dialog binds the keyboard now, Gamepad the pad
     if d.template == PAUSE {
         if let Some(c) = d.control(PAUSE_BUTTONS[3]) {
@@ -676,6 +710,17 @@ pub fn join_address() -> String {
 }
 
 pub fn ok(d: &mut Dialog) {
+    if d.template == AUDIO {
+        let choices = crate::platform::menumusic::choices();
+        let enabled: Vec<_> = choices.iter().enumerate().map(|(i, (_, on))| {
+            if i < MENU_MUSIC_LIMIT {
+                d.control(MENU_MUSIC_FIRST + i as u32).map_or(*on, |c| c.check != 0)
+            } else {
+                *on
+            }
+        }).collect();
+        crate::platform::menumusic::set_choices(&enabled);
+    }
     if d.template == crate::platform::gamepad::CONTROLLER && crate::platform::gamepad::editing() {
         if let Some(on) = d.control(VIBRATION).map(|c| c.check != 0) {
             crate::platform::rumble::set_enabled(on);

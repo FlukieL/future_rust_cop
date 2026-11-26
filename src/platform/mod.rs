@@ -791,6 +791,8 @@ pub const HOOKS: &[(crate::ver::Us, crate::rt::Hook)] = &[
     (gamepad::SAVE_CONTROLS, gamepad::save_controls),
     (autosave::RESET_PROGRESS, autosave::reset_progress),
     (autosave::MISSION_PROGRESS, autosave::mission_progress),
+    (autosave::LOAD_PROGRESS, autosave::load_progress),
+    (autosave::QUIT_MENU, autosave::quit_menu),
     (dshow::VIDEO_PLAY, dshow::video_play),
     (dialog::HELP, dialog::help),
     (rumble::ROBOT_DAMAGE, rumble::robot_damage),

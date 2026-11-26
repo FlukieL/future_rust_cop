@@ -19,6 +19,8 @@ pub struct Settings {
     pub music_path: String,
     pub modern_ui: bool,
     pub pad_log: bool,
+    /// Last normal launcher position in screen coordinates.
+    pub window_position: Option<(i32, i32)>,
     /// anti-aliasing samples (0, 2, 4, 8)
     pub msaa: Option<u32>,
     /// texture filtering (0, 1, 2, 4, 8, 16)
@@ -55,6 +57,7 @@ impl Settings {
                 "music_path" => r.music_path = v.to_string(),
                 "modern_ui" => r.modern_ui = flag(v).unwrap_or(false),
                 "pad_log" => r.pad_log = flag(v).unwrap_or(false),
+                "window_position" => r.window_position = v.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))),
                 "msaa" => r.msaa = v.parse().ok().filter(|n| crate::platform::glide::MSAA_CHOICES.contains(n)),
                 "filtering" => r.filtering = v.parse().ok().filter(|n| crate::platform::glide::FILTER_CHOICES.contains(n)),
                 "vsync" => r.vsync = flag(v),
@@ -83,6 +86,7 @@ impl Settings {
                 out.push_str(&format!("{k}={v}\n"));
             }
         };
+        opt("window_position", self.window_position.map(|(x, y)| format!("{x},{y}")));
         opt("msaa", self.msaa.map(|n| n.to_string()));
         opt("filtering", self.filtering.map(|n| n.to_string()));
         opt("vsync", text(self.vsync).map(String::from));
@@ -122,6 +126,12 @@ impl Settings {
 
 /// Read DWORD values from the game's own root registry key without modifying it.
 pub fn game_registry(game: &Path) -> std::io::Result<std::collections::BTreeMap<String, u32>> {
+    game_registry_section(game, "")
+}
+
+/// Read DWORDs from a subkey of the game's registry.
+pub fn game_registry_section(game: &Path, subkey: &str) -> std::io::Result<std::collections::BTreeMap<String, u32>> {
+    let key = if subkey.is_empty() { crate::platform::advapi32::FCOP_KEY.to_string() } else { format!("{}\\{subkey}", crate::platform::advapi32::FCOP_KEY) };
     let path = game.join("registry.txt");
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -132,7 +142,7 @@ pub fn game_registry(game: &Path) -> std::io::Result<std::collections::BTreeMap<
     let mut values = std::collections::BTreeMap::new();
     for line in text.lines().map(str::trim) {
         if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            in_key = section.eq_ignore_ascii_case(crate::platform::advapi32::FCOP_KEY);
+            in_key = section.eq_ignore_ascii_case(&key);
         } else if in_key {
             if let Some((name, value)) = line.split_once('=') {
                 if let Some(hex) = value.trim().strip_prefix("dword:") {
@@ -149,6 +159,12 @@ pub fn game_registry(game: &Path) -> std::io::Result<std::collections::BTreeMap<
 /// Update selected DWORDs in the game's root registry key, preserving unrelated lines and keys.
 /// The game must be closed before calling this: it keeps its own in-memory copy.
 pub fn write_game_settings(game: &Path, updates: &[(&str, u32)]) -> std::io::Result<()> {
+    write_game_settings_section(game, "", updates)
+}
+
+/// Update DWORDs in a game registry subkey, preserving other sections and values.
+pub fn write_game_settings_section(game: &Path, subkey: &str, updates: &[(&str, u32)]) -> std::io::Result<()> {
+    let key = if subkey.is_empty() { crate::platform::advapi32::FCOP_KEY.to_string() } else { format!("{}\\{subkey}", crate::platform::advapi32::FCOP_KEY) };
     if !game.is_dir() {
         return Err(io_err(std::io::ErrorKind::NotFound, "game folder not found"));
     }
@@ -163,7 +179,7 @@ pub fn write_game_settings(game: &Path, updates: &[(&str, u32)]) -> std::io::Res
     let mut inserted = false;
     for line in input.lines() {
         if let Some(section) = line.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            in_root = section.eq_ignore_ascii_case(crate::platform::advapi32::FCOP_KEY);
+            in_root = section.eq_ignore_ascii_case(&key);
             out.push_str(line);
             out.push('\n');
             if in_root && !inserted {
@@ -183,7 +199,7 @@ pub fn write_game_settings(game: &Path, updates: &[(&str, u32)]) -> std::io::Res
         }
     }
     if !inserted {
-        out.push_str(&format!("\n[{}]\n", crate::platform::advapi32::FCOP_KEY));
+        out.push_str(&format!("\n[{key}]\n"));
         for &(key, value) in updates {
             out.push_str(&format!("{key} = dword:{value:08x}\n"));
         }
@@ -415,6 +431,24 @@ mod tests {
     }
 
     #[test]
+    fn audio_volumes_round_trip_without_changing_other_settings() {
+        let dir = temp("audio");
+        let key = crate::platform::advapi32::FCOP_KEY;
+        let before = format!("[{key}]\nMenuMusic_JOKE_music = dword:00000001\n[{key}\\Settings]\nMusicVolume = dword:0000000f\nResolution = dword:00000009\n");
+        std::fs::write(dir.join("registry.txt"), before).unwrap();
+        write_game_settings_section(&dir, "settings", &[("SfxVolume", 0), ("MusicVolume", 63), ("MovieVolume", 127)]).unwrap();
+        let audio = game_registry_section(&dir, "Settings").unwrap();
+        assert_eq!(audio.get("sfxvolume"), Some(&0));
+        assert_eq!(audio.get("musicvolume"), Some(&63));
+        assert_eq!(audio.get("movievolume"), Some(&127));
+        assert_eq!(audio.get("resolution"), Some(&9));
+        assert_eq!(game_registry(&dir).unwrap().get("menumusic_joke_music"), Some(&1));
+        let text = std::fs::read_to_string(dir.join("registry.txt")).unwrap();
+        assert_eq!(text.lines().filter(|line| line.starts_with("MusicVolume =")).count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn settings_survive_a_save_and_load() {
         let dir = temp("settings");
         let s = Settings {
@@ -423,6 +457,7 @@ mod tests {
             music_path: "FE.MIS".into(),
             modern_ui: true,
             pad_log: true,
+            window_position: Some((-800, 150)),
             msaa: Some(8),
             filtering: Some(4),
             vsync: Some(false),
@@ -443,8 +478,21 @@ mod tests {
     fn missing_or_bad_settings_give_defaults() {
         let dir = temp("defaults");
         assert_eq!(Settings::load(&dir), Settings::default());
-        let s = Settings::parse("msaa=3\nfiltering=x\nvsync=maybe\nmodern_ui=2\nnonsense\nunknown=1\n");
+        let s = Settings::parse("msaa=3\nfiltering=x\nvsync=maybe\nmodern_ui=2\nwindow_position=broken,42\nnonsense\nunknown=1\n");
         assert_eq!(s, Settings::default());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn playlist_settings_share_registry_keys_with_game() {
+        let dir = temp("playlist");
+        let name = crate::platform::menumusic::key("JOKE_music");
+        write_game_settings(&dir, &[(&name, 1), ("MenuMusic_LEVEL_music", 0)]).unwrap();
+        let values = game_registry(&dir).unwrap();
+        assert_eq!(values.get(&name.to_ascii_lowercase()), Some(&1));
+        assert_eq!(values.get("menumusic_level_music"), Some(&0));
+        write_game_settings(&dir, &[("FrameRate", 60)]).unwrap();
+        assert_eq!(game_registry(&dir).unwrap().get(&name.to_ascii_lowercase()), Some(&1));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

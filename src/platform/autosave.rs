@@ -1,14 +1,21 @@
 //! Separate automatic menu-progress save. Manual save.cfg slots are untouched.
-use super::{game_dir, log, mem};
+use super::{arg, game_dir, log, mem};
 use crate::rt::{call_original, Cpu, ESP};
 use crate::ver::Us;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const RESET_PROGRESS: Us = Us(0x409a20);
 pub const MISSION_PROGRESS: Us = Us(0x409630);
+/// The game's manual load dialog, which copies a saved progress block.
+pub const LOAD_PROGRESS: Us = Us(0x404050);
+/// Main-menu quit button callback (asks for confirmation).
+pub const QUIT_MENU: Us = Us(0x409c60);
+const MENU_RESULT: Us = Us(0x499aa8);
 const STARTUP_CALL_RETURN: Us = Us(0x40ae8e);
 const PROGRESS: Us = Us(0x511e00);
 const SIZE: usize = 0x44;
+/// Sound effects, music, and movie volume in the shared progress structure.
+const AUDIO: std::ops::Range<usize> = 0x25..0x28;
 const MAGIC: &[u8; 8] = b"FCOPA001";
 static RESTORED: AtomicBool = AtomicBool::new(false);
 
@@ -25,12 +32,17 @@ fn decode(data: &[u8]) -> Option<&[u8]> {
     (checksum(payload) == stored).then_some(payload)
 }
 
+fn restore_progress(progress: &mut [u8], payload: &[u8]) {
+    progress[..AUDIO.start].copy_from_slice(&payload[..AUDIO.start]);
+    progress[AUDIO.end..].copy_from_slice(&payload[AUDIO.end..]);
+}
+
 fn restore() {
     let path = game_dir().join("autosave.cfg");
     match std::fs::read(&path) {
         Ok(data) => {
             if let Some(payload) = decode(&data) {
-                mem().slice(PROGRESS.at(), SIZE).copy_from_slice(payload);
+                restore_progress(mem().slice(PROGRESS.at(), SIZE), payload);
                 log!("autosave: restored {} (crime {}, precinct {:?})", path.display(), payload[2], &payload[7..13]);
             } else {
                 log!("warn: autosave.cfg is invalid; keeping initialized progress");
@@ -64,6 +76,30 @@ pub fn reset_progress(c: &mut Cpu) {
     }
 }
 
+/// Loading a manual slot also copies the progress block, including its old volume settings.
+pub fn load_progress(c: &mut Cpu) {
+    let progress = arg(c, 0) == PROGRESS.at();
+    let audio = progress.then(|| mem().slice(PROGRESS.at() + AUDIO.start as u32, AUDIO.len()).to_vec());
+    call_original(c, LOAD_PROGRESS.at());
+    if let Some(audio) = audio {
+        mem().slice(PROGRESS.at() + AUDIO.start as u32, AUDIO.len()).copy_from_slice(&audio);
+    }
+}
+
+fn confirmed_exit(initialized: bool, previous: u32, current: u32, action: u32) -> bool {
+    initialized && action == 0 && previous != 5 && current == 5
+}
+
+/// Save menu progress only after the quit prompt was accepted.
+pub fn quit_menu(c: &mut Cpu) {
+    let action = arg(c, 1);
+    let previous = mem().rd32(MENU_RESULT.at());
+    call_original(c, QUIT_MENU.at());
+    if confirmed_exit(RESTORED.load(Ordering::Relaxed), previous, mem().rd32(MENU_RESULT.at()), action) {
+        save();
+    }
+}
+
 /// Save after the game has updated its mission progress.
 pub fn mission_progress(c: &mut Cpu) {
     let m = mem();
@@ -86,6 +122,26 @@ pub fn mission_progress(c: &mut Cpu) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exit_autosave_requires_initialized_progress_and_confirmation() {
+        assert!(confirmed_exit(true, 0, 5, 0));
+        assert!(!confirmed_exit(true, 0, 0, 0));
+        assert!(!confirmed_exit(false, 0, 5, 0));
+        assert!(!confirmed_exit(true, 5, 5, 0));
+        assert!(!confirmed_exit(true, 0, 5, 1));
+    }
+
+    #[test]
+    fn restore_keeps_current_audio_settings() {
+        let mut progress = [3u8; SIZE];
+        progress[AUDIO].copy_from_slice(&[10, 20, 30]);
+        let payload = [99u8; SIZE];
+        restore_progress(&mut progress, &payload);
+        assert_eq!(&progress[AUDIO], &[10, 20, 30]);
+        assert!(progress[..0x25].iter().all(|&b| b == 99));
+        assert!(progress[0x28..].iter().all(|&b| b == 99));
+    }
+
     #[test]
     fn validates_length_and_checksum() {
         let payload = [42; SIZE];

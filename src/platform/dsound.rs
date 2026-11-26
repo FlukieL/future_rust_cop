@@ -4,7 +4,7 @@
 //! from the audio thread. Play positions advance in real time with the output, so the music,
 //! which the game streams into a looping buffer behind the play cursor, keeps going. Without
 //! an audio device a timer thread advances them instead. A stream of host samples (`stream_*`)
-//! carries the videos' sound; a looping one (`music_*`) the PlayStation menu music (`menumusic`).
+//! carries the videos' sound; another (`music_*`) carries the menu playlist (`menumusic`).
 
 use crate::ver::Us;
 use super::{Import, ResId, alloc, arg, com_new, cstr, free, guest_call, host_path, log, mem, new_cstr, resource};
@@ -183,7 +183,7 @@ impl Stream {
     }
 }
 
-/// Host samples played in a loop (the menu music), faded in and out as it is switched.
+/// Host samples played once (the menu music), faded in and out as it is switched.
 struct Music {
     frames: std::sync::Arc<Vec<[i16; 2]>>,
     rate: u32,
@@ -199,7 +199,7 @@ const MUSIC_FADE: f32 = 0.25;
 impl Music {
     fn mix(&mut self, out: &mut [[f32; 2]], out_rate: u32) {
         let n = self.frames.len();
-        if n == 0 || self.gain == 0.0 && self.target == 0.0 {
+        if n == 0 || self.pos >= n as f64 || self.gain == 0.0 && self.target == 0.0 {
             return;
         }
         let step = self.rate as f64 / out_rate as f64;
@@ -207,14 +207,14 @@ impl Music {
         for o in out.iter_mut() {
             self.gain = if self.gain < self.target { (self.gain + fade).min(self.target) } else { (self.gain - fade).max(self.target) };
             let i = self.pos as usize;
-            let (a, b) = (self.frames[i], self.frames[(i + 1) % n]);
+            let (a, b) = (self.frames[i], self.frames[(i + 1).min(n - 1)]);
             let f = (self.pos - i as f64) as f32;
             let g = self.gain / 32768.0;
             o[0] += (a[0] as f32 + (b[0] as f32 - a[0] as f32) * f) * g;
             o[1] += (a[1] as f32 + (b[1] as f32 - a[1] as f32) * f) * g;
             self.pos += step;
             if self.pos >= n as f64 {
-                self.pos -= n as f64;
+                break;
             }
             if self.gain == 0.0 && self.target == 0.0 {
                 break;
@@ -223,9 +223,33 @@ impl Music {
     }
 }
 
-/// The music to loop (silent until `music_volume`).
+#[cfg(test)]
+mod music_tests {
+    use super::*;
+
+    #[test]
+    fn music_pauses_and_stops_at_end() {
+        let mut music = Music { frames: std::sync::Arc::new(vec![[1000, 1000]; 3]), rate: 4, pos: 0.0, gain: 0.0, target: 0.0 };
+        let mut out = [[0.0; 2]; 5];
+        music.mix(&mut out, 4);
+        assert_eq!(music.pos, 0.0);
+        music.target = 1.0;
+        music.mix(&mut out, 4);
+        assert_eq!(music.pos, 3.0);
+        assert_eq!(out[3], [0.0; 2]);
+        music.mix(&mut out, 4);
+        assert_eq!(music.pos, 3.0);
+    }
+}
+
+/// Play one music track (silent until `music_volume`).
 pub fn music_set(frames: std::sync::Arc<Vec<[i16; 2]>>, rate: u32) {
     mixer().music = Some(Music { frames, rate: rate.max(1), pos: 0.0, gain: 0.0, target: 0.0 });
+}
+
+/// Whether the current music track has finished.
+pub fn music_finished() -> bool {
+    mixer().music.as_ref().is_some_and(|m| m.pos >= m.frames.len() as f64)
 }
 
 /// Fade the music to `gain` (amplitude, 0 silent: it stays where it is); `restart` plays it

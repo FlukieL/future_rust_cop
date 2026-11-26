@@ -12,7 +12,7 @@ mod windows {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
     use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -53,6 +53,12 @@ mod windows {
     const EXPORT_SOUNDS: i32 = 134;
     const STEAM_INPUT: i32 = 135;
     const PAD_LOG: i32 = 136;
+    const MUSIC_LIST: i32 = 137;
+    const SFX_VOLUME: i32 = 138;
+    const MUSIC_VOLUME: i32 = 139;
+    const MOVIE_VOLUME: i32 = 140;
+    /// Trackbar TBM_GETPOS is WM_USER.
+    const TBM_GETPOS: u32 = WM_USER;
     const FINISHED: u32 = WM_APP + 1;
     const DISCOVERED: u32 = WM_APP + 2;
     const PROGRESS: u32 = WM_APP + 3;
@@ -64,6 +70,7 @@ mod windows {
     static TAB: AtomicIsize = AtomicIsize::new(0);
     static INPUT_BRUSH: AtomicIsize = AtomicIsize::new(0);
     static ANIMATION: AtomicIsize = AtomicIsize::new(0);
+    static MUSIC_TRACKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     // Win32 COLORREF values are stored as 0x00bbggrr.
     const BACKGROUND: u32 = 0x00301b0b;
@@ -73,10 +80,11 @@ mod windows {
     const EDGE: u32 = 0x00cc8c3d;
     const TEXT: u32 = 0x00ffecd1;
     const MUTED: u32 = 0x00ccad80;
-    const TAB_NAMES: [&str; 5] = ["GENERAL", "VIDEO", "GAMEPAD", "SAVES", "TOOLS"];
-    const TAB_CONTROLS: [&[i32]; 5] = [
-        &[ISO, BROWSE_ISO, MUSIC, MUSIC_PATH, BROWSE_MUSIC, MODERN, SKIP_INTRO, 200],
+    const TAB_NAMES: [&str; 6] = ["GENERAL", "VIDEO", "AUDIO", "GAMEPAD", "SAVES", "TOOLS"];
+    const TAB_CONTROLS: [&[i32]; 6] = [
+        &[ISO, BROWSE_ISO, MODERN, SKIP_INTRO, 200],
         &[RESOLUTION, FRAME_RATE, MSAA, FILTER, VSYNC, FPS, FULLSCREEN, 201, 202, 203, 204],
+        &[MUSIC, MUSIC_PATH, BROWSE_MUSIC, MUSIC_LIST, SFX_VOLUME, MUSIC_VOLUME, MOVIE_VOLUME, 210, 211, 212, 213, 214],
         &[RUMBLE, STEAM_INPUT, PAD_LOG, RESET_PAD, 205, 209],
         &[BACKUP, BACKUPS, RESTORE, OPEN_FOLDER, GAME_DATA, 206],
         &[EXPORT_TEXTURES, IMPORT_TEXTURES, EXPORT_SOUNDS, 207, 208],
@@ -136,6 +144,12 @@ mod windows {
                 music_path: text(GetDlgItem(hwnd, MUSIC_PATH)),
                 modern_ui: checked(hwnd, MODERN),
                 pad_log: checked(hwnd, PAD_LOG),
+                window_position: if IsIconic(hwnd) == 0 {
+                    let mut rect: RECT = std::mem::zeroed();
+                    if GetWindowRect(hwnd, &mut rect) != 0 { Some((rect.left, rect.top)) } else { None }
+                } else {
+                    Settings::load(DIR.get().unwrap()).window_position
+                },
                 ..Settings::default()
             }
         }
@@ -217,19 +231,29 @@ mod windows {
                     ShowWindow(GetDlgItem(hwnd, id), if i == tab { SW_SHOW } else { SW_HIDE });
                 }
             }
-            ShowWindow(GetDlgItem(hwnd, RELOAD), if tab >= 3 { SW_HIDE } else { SW_SHOW });
+            ShowWindow(GetDlgItem(hwnd, RELOAD), if tab >= 4 { SW_HIDE } else { SW_SHOW });
         }
     }
 
     unsafe fn refresh_game_settings(hwnd: HWND) {
         unsafe {
             GAME_SETTINGS_LOADED.store(false, Ordering::Release);
+            MUSIC_TRACKS.lock().unwrap().clear();
+            SendMessageW(GetDlgItem(hwnd, MUSIC_LIST), LB_RESETCONTENT, 0, 0);
             let game = DIR.get().unwrap().join("game_files").join("FCopLAPD");
             if !game.is_dir() { status(hwnd, "Install the game before editing game settings."); return; }
             let values = match launcher::game_registry(&game) {
                 Ok(v) => v,
                 Err(e) => { status(hwnd, &format!("Cannot read game settings: {e}")); return; }
             };
+            let audio = match launcher::game_registry_section(&game, "Settings") {
+                Ok(v) => v,
+                Err(e) => { status(hwnd, &format!("Cannot read audio settings: {e}")); return; }
+            };
+            for (id, key) in [(SFX_VOLUME, "sfxvolume"), (MUSIC_VOLUME, "musicvolume"), (MOVIE_VOLUME, "movievolume")] {
+                let value = audio.get(key).copied().unwrap_or(63).min(127);
+                SendMessageW(GetDlgItem(hwnd, id), TBM_SETPOS, 1, value as isize);
+            }
             let get = |key: &str, default| values.get(key).copied().unwrap_or(default);
             let size = get("rendersize", 0);
             set(GetDlgItem(hwnd, RESOLUTION), &if size == 0 { "window".into() } else { format!("{}x{}", size >> 16, size & 0xffff) });
@@ -239,6 +263,15 @@ mod windows {
             select(hwnd, FILTER, FILTER_VALUES.iter().position(|&v| v == get("texturefilter", 16)).unwrap_or(5));
             for (id, key, default) in [(VSYNC, "vsync", 1), (FPS, "showfps", 0), (RUMBLE, "controllervibration", 1), (STEAM_INPUT, "steaminputcompatibility", 0), (FULLSCREEN, "fullscreen", 0), (SKIP_INTRO, "skipintro", 0)] {
                 check(hwnd, id, get(key, default) & 0xff != 0);
+            }
+            let mut tracks = MUSIC_TRACKS.lock().unwrap();
+            for (name, default) in fcop::platform::menumusic::catalog(&game) {
+                let enabled = get(&fcop::platform::menumusic::key(&name).to_ascii_lowercase(), default as u32) != 0;
+                let index = SendMessageW(GetDlgItem(hwnd, MUSIC_LIST), LB_ADDSTRING, 0, wide(&name).as_ptr() as isize);
+                if index >= 0 {
+                    SendMessageW(GetDlgItem(hwnd, MUSIC_LIST), LB_SETSEL, enabled as usize, index);
+                    tracks.push(name);
+                }
             }
             GAME_SETTINGS_LOADED.store(true, Ordering::Release);
         }
@@ -262,7 +295,7 @@ mod windows {
                 let choice = |id, values: &[u32]| -> Result<u32, String> {
                     usize::try_from(selection(hwnd, id)).ok().and_then(|i| values.get(i)).copied().ok_or_else(|| "Select a valid video option".into())
                 };
-                Some([
+                let mut updates = vec![
                     ("SkipIntro", checked(hwnd, SKIP_INTRO) as u32),
                     ("RenderSize", size),
                     ("FrameRate", choice(FRAME_RATE, fcop::platform::fps::CHOICES)?),
@@ -273,7 +306,14 @@ mod windows {
                     ("Fullscreen", checked(hwnd, FULLSCREEN) as u32),
                     ("ControllerVibration", checked(hwnd, RUMBLE) as u32),
                     ("SteamInputCompatibility", checked(hwnd, STEAM_INPUT) as u32),
-                ])
+                ].into_iter().map(|(key, value)| (key.to_string(), value)).collect::<Vec<_>>();
+                let tracks = MUSIC_TRACKS.lock().unwrap();
+                for (index, name) in tracks.iter().enumerate() {
+                    let selected = SendMessageW(GetDlgItem(hwnd, MUSIC_LIST), LB_GETSEL, index, 0);
+                    if selected < 0 { return Err("Cannot read menu music selections.".into()); }
+                    updates.push((fcop::platform::menumusic::key(name), (selected != 0) as u32));
+                }
+                Some(updates)
             } else {
                 None
             };
@@ -281,7 +321,12 @@ mod windows {
             settings(hwnd).save(dir).map_err(|e| format!("Cannot save launcher settings: {e}"))?;
             if let Some(updates) = updates {
                 let game = dir.join("game_files").join("FCopLAPD");
+                let updates: Vec<_> = updates.iter().map(|(key, value)| (key.as_str(), *value)).collect();
                 launcher::write_game_settings(&game, &updates).map_err(|e| format!("Launcher settings saved; cannot save game settings: {e}"))?;
+                let volume = |id| SendMessageW(GetDlgItem(hwnd, id), TBM_GETPOS, 0, 0).clamp(0, 127) as u32;
+                let audio = [("SfxVolume", volume(SFX_VOLUME)), ("MusicVolume", volume(MUSIC_VOLUME)), ("MovieVolume", volume(MOVIE_VOLUME))];
+                launcher::write_game_settings_section(&game, "Settings", &audio)
+                    .map_err(|e| format!("Other settings saved; cannot save audio volumes: {e}"))?;
             } else if dir.join("game_files").join("FCopLAPD").is_dir() {
                 return Err("Launcher settings saved; game settings could not be loaded. Reload them before saving.".into());
             }
@@ -621,7 +666,7 @@ mod windows {
                 ..std::mem::zeroed()
             };
             RegisterClassW(&wc);
-            let common = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_TAB_CLASSES };
+            let common = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_TAB_CLASSES | ICC_BAR_CLASSES };
             InitCommonControlsEx(&common);
             let hwnd = CreateWindowExW(
                 0, class.as_ptr(), wide(concat!("Future Cop: L.A.P.D. - Launcher v", env!("CARGO_PKG_VERSION"))).as_ptr(),
@@ -630,6 +675,12 @@ mod windows {
                 std::ptr::null_mut(), std::ptr::null_mut(), instance, std::ptr::null(),
             );
             if hwnd.is_null() { eprintln!("Cannot create launcher window"); return; }
+            if let Some((x, y)) = saved.window_position {
+                let point = POINT { x: x.saturating_add(px(100)), y: y.saturating_add(px(12)) };
+                if !MonitorFromPoint(point, MONITOR_DEFAULTTONULL).is_null() {
+                    SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+            }
             let font = CreateFontW(-px(15), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide("Segoe UI").as_ptr());
             let title_font = CreateFontW(-px(21), 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, wide("Segoe UI Semibold").as_ptr());
             let child = |kind: &str, label: &str, style: u32, id: i32, x: i32, y: i32, w: i32, h: i32| {
@@ -647,7 +698,7 @@ mod windows {
             // SS_RIGHT is not exposed by the windows-sys bindings.
             child("STATIC", concat!("v", env!("CARGO_PKG_VERSION")), 0x0002, 0, 470, 10, 160, 22);
             let tabs = child("SysTabControl32", "", WS_TABSTOP | TCS_OWNERDRAWFIXED as u32 | TCS_FIXEDWIDTH as u32, TABS, 10, 42, 640, 34);
-            SendMessageW(tabs, TCM_SETITEMSIZE, 0, (px(126) as u32 | ((px(30) as u32) << 16)) as isize);
+            SendMessageW(tabs, TCM_SETITEMSIZE, 0, (px(104) as u32 | ((px(30) as u32) << 16)) as isize);
             for (index, title) in TAB_NAMES.iter().enumerate() {
                 let mut title = wide(title);
                 let item = TCITEMW { mask: TCIF_TEXT, pszText: title.as_mut_ptr(), ..std::mem::zeroed() };
@@ -657,11 +708,25 @@ mod windows {
             child("STATIC", "PC disc image", 0, 200, 20, 90, 200, 22);
             child("EDIT", &saved.iso, WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, ISO, 20, 115, 490, 25);
             button("Browse...", BROWSE_ISO, 520, 115, 110);
-            child("BUTTON", "Use PlayStation menu music", WS_TABSTOP | BS_AUTOCHECKBOX as u32, MUSIC, 20, 155, 380, 24);
-            child("EDIT", &saved.music_path, WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, MUSIC_PATH, 20, 185, 490, 25);
-            button("Browse...", BROWSE_MUSIC, 520, 185, 110);
-            child("BUTTON", "Modern dialogs (preview; menus remain classic)", WS_TABSTOP | BS_AUTOCHECKBOX as u32, MODERN, 20, 225, 600, 24);
-            child("BUTTON", "Skip intro videos", WS_TABSTOP | BS_AUTOCHECKBOX as u32, SKIP_INTRO, 20, 260, 250, 24);
+            child("BUTTON", "Modern dialogs (preview; menus remain classic)", WS_TABSTOP | BS_AUTOCHECKBOX as u32, MODERN, 20, 155, 600, 24);
+            child("BUTTON", "Skip intro videos", WS_TABSTOP | BS_AUTOCHECKBOX as u32, SKIP_INTRO, 20, 190, 250, 24);
+
+            for (id, label_id, label, y) in [
+                (SFX_VOLUME, 212, "Sound effects", 90),
+                (MUSIC_VOLUME, 213, "Music", 120),
+                (MOVIE_VOLUME, 214, "Movies", 150),
+            ] {
+                child("STATIC", label, 0, label_id, 20, y + 4, 160, 22);
+                let slider = child("msctls_trackbar32", "", WS_TABSTOP | TBS_NOTICKS as u32, id, 180, y, 330, 27);
+                SendMessageW(slider, TBM_SETRANGE, 1, (127 << 16) as isize);
+                SendMessageW(slider, TBM_SETPOS, 1, 63);
+            }
+            child("BUTTON", "Use PlayStation menu music", WS_TABSTOP | BS_AUTOCHECKBOX as u32, MUSIC, 20, 190, 380, 24);
+            child("EDIT", &saved.music_path, WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, MUSIC_PATH, 20, 220, 490, 25);
+            button("Browse...", BROWSE_MUSIC, 520, 220, 110);
+            child("STATIC", "Menu music tracks (click to toggle; selected tracks play randomly)", 0, 210, 20, 255, 610, 24);
+            child("LISTBOX", "", WS_BORDER | WS_TABSTOP | WS_VSCROLL | LBS_MULTIPLESEL as u32 | LBS_NOTIFY as u32, MUSIC_LIST, 20, 285, 610, 140);
+            child("STATIC", "Close the game and press Save to apply audio settings.", 0, 211, 20, 435, 610, 24);
             check(hwnd, MUSIC, saved.music_enabled);
             check(hwnd, MODERN, saved.modern_ui);
 

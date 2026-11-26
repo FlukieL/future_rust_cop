@@ -131,9 +131,11 @@ The app keeps its files in `~/Library/Application Support/fcop`: the game and yo
 
 ## Menu music
 
-The PC version has no music in the menus. You can add the music from the PlayStation version.
+The menus play a random selection of the PC mission music. All tracks are enabled by default
+except the joke music. In **Preferences → Audio**, select the tracks to include, or clear them
+all to turn menu music off. The Music Volume slider controls its volume. No sound export is needed.
 
-Choose **one** of these ways:
+You can also add the PlayStation menu track. Choose **one** of these ways:
 
 | Option | What you have | What to do |
 | --- | --- | --- |
@@ -141,7 +143,8 @@ Choose **one** of these ways:
 | B | an image of the PlayStation CD (`.bin` with `.cue`, or `.iso`) | put the image into `game_files` |
 | C | the PlayStation CD itself | copy `CW/FE.MIS` from the CD into `game_files/PS1` |
 
-The music plays at the game's Music Volume.
+If using the launcher, enable **Use PlayStation menu music** to include this optional track.
+It can also be selected or deselected in Audio preferences.
 
 ## What is new
 
@@ -169,7 +172,7 @@ opens them too, and changes show right away.
 - [Modern graphics effects](#modern-graphics-effects): shadows, lighting and more
 - [Network play](#network-play) over the local network or the internet
 - [Sounds export](#sounds-export): all sounds and music as WAV files
-- Autosave: your menu progress is saved automatically after each mission to `game_files/FCopLAPD/autosave.cfg`, separate from the manual saves in `save.cfg`. It is loaded when the game starts; loading a manual save overrides it.
+- Autosave: your menu progress is saved after each mission and when you confirm exit, to `game_files/FCopLAPD/autosave.cfg`, separate from the manual saves in `save.cfg`. It is loaded when the game starts; loading a manual save overrides it.
 - **Skip Intro Videos** in Preferences (off by default) skips the logo and intro videos at startup.
 - **Help** in the menu offers the help video, the credits video or the PlayStation manual (opens in your browser). The credits no longer play when you quit.
 
@@ -373,11 +376,14 @@ The source image is not moved or deleted. An existing installation is used witho
 overwritten; otherwise game files are installed into `game_files`.
 
 To use PlayStation menu music, enable the checkbox and select a PS1 disc image or `FE.MIS`.
-Existing imported music is not overwritten. Uncheck the box to disable music for that launch.
+Existing imported music is not overwritten. Uncheck the box to exclude the PlayStation track for that launch; PC menu music is controlled in Audio preferences.
 
-The launcher has **General**, **Video**, **Gamepad**, **Saves**, and **Tools** tabs. Disc, music and
-dialog-preview choices are saved in `fcop-launcher.cfg` beside the launcher when you press
-Play or close the window; the folder must be writable.
+The launcher has **General**, **Video**, **Audio**, **Gamepad**, **Saves**, and **Tools** tabs.
+The Audio tab controls sound effects, music and movie volume, menu music tracks and the optional
+PlayStation source. Click tracks to toggle them and press **Save** to apply audio settings;
+close the game before saving. Disc, music source, dialog-preview choices and the last window position are saved
+in `fcop-launcher.cfg` beside the launcher when you press Play or close the window; the folder
+must be writable.
 
 Game preferences are read from `game_files/FCopLAPD/registry.txt`. Close the game, then
 select **Save** beside Play to save the launcher choices and game settings from all sections.
@@ -438,4 +444,4 @@ How fcop works inside and what is still open: `CLAUDE.md` and `PLAN.md`.
 
 [iced-x86]: https://github.com/icedland/iced
 [Cranelift]: https://cranelift.dev
-[releases]: https://github.com/RadiatorTwo/future_rust_cop/releases
+[releases]: https://github.com/FlukieL/future_rust_cop/releases
