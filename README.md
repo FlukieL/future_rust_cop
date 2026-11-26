@@ -369,6 +369,13 @@ use each sound.
 
 ## Windows launcher
 
+<table>
+  <tr>
+    <td><img src="docs/screenshots/launcher1.png" alt="Windows launcher screenshot"></td>
+    <td><img src="docs/screenshots/launcher2.png" alt="Windows launcher settings screenshot"></td>
+  </tr>
+</table>
+
 Build the launcher and game together with `cargo build --release --bin fcop-launcher --bin fcop`,
 then put both executables in the same folder. Open `fcop-launcher.exe` to choose a PC
 disc image; supported ISO, BIN and IMG images beside the launcher are detected automatically.
