@@ -1014,7 +1014,12 @@ fn run(c: &mut Cpu, mut d: Dialog, param: u32) -> u32 {
             }
             None => {}
         }
-        if let Some(m) = user32::next_message(c, Duration::from_millis(10)) {
+        // every message waiting is handled before the dialog is drawn again: with V-Sync a draw
+        // waits for the screen's refresh, and one mouse move a draw left the highlight trailing
+        // behind the mouse (issue #57)
+        let mut wait = Duration::from_millis(10);
+        while let Some(m) = user32::next_message(c, wait) {
+            wait = Duration::ZERO;
             if is_input(m.msg) {
                 let mut out = Vec::new();
                 if let Some(top) = stack().dialogs.last_mut() {
@@ -1031,6 +1036,11 @@ fn run(c: &mut Cpu, mut d: Dialog, param: u32) -> u32 {
                 deliver(c, out);
             } else {
                 user32::dispatch(c, &m);
+            }
+            // the dialog ended or opens another: that goes first
+            let s = stack();
+            if s.dialogs.iter().find(|d| d.hwnd == hwnd).is_none_or(|d| d.result.is_some() || d.then.is_some()) {
+                break;
             }
         }
         let pad = super::menupad::dialog_events();
