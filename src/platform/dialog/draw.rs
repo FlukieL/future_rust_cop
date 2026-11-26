@@ -60,6 +60,21 @@ impl Canvas {
         }
     }
 
+    /// A subtle vertical gradient used by the opt-in dialog preview.
+    fn gradient(&mut self, r: [i32; 4], top: u32, bottom: u32) {
+        let height = (r[3] - r[1]).max(1) as u32;
+        for y in r[1]..r[3] {
+            let t = (y - r[1]) as u32;
+            let channel = |shift: u32| -> u32 {
+                let a = (top >> shift) & 255u32;
+                let b = (bottom >> shift) & 255u32;
+                ((a * (height - t) + b * t) / height) << shift
+            };
+            let color = channel(24) | channel(16) | channel(8) | channel(0);
+            self.fill([r[0], y, r[2], y + 1], color);
+        }
+    }
+
     fn frame(&mut self, r: [i32; 4], c: u32) {
         self.fill([r[0], r[1], r[2], r[1] + 1], c);
         self.fill([r[0], r[3] - 1, r[2], r[3]], c);
@@ -168,7 +183,7 @@ fn plain(s: &str) -> String {
     s.replace("&&", "\u{1}").replace('&', "").replace('\u{1}', "&")
 }
 
-fn control(cv: &mut Canvas, d: &Dialog, k: usize) {
+fn control(cv: &mut Canvas, d: &Dialog, k: usize, modern: bool) {
     let c: &Control = &d.controls[k];
     if !c.visible {
         return;
@@ -186,10 +201,20 @@ fn control(cv: &mut Canvas, d: &Dialog, k: usize) {
             } else {
                 FACE
             };
-            cv.fill(inset(r, 1), face);
-            cv.frame(r, if *default || hot { EDGE_HI } else { EDGE });
-            if *default {
-                cv.frame(inset(r, 1), EDGE);
+            if modern {
+                let bottom = if d.pressed == Some(k) && hot { 0xff15_407c }
+                    else if hot { 0xff19_5087 } else { 0xff0b_1c42 };
+                cv.gradient(inset(r, 1), face, bottom);
+                cv.frame(r, if hot { 0xff74_deff } else { 0xff35_6199 });
+                if hot || *default {
+                    cv.fill([r[0] + 1, r[3] - 2, r[2] - 1, r[3] - 1], 0xff48_d5ec);
+                }
+            } else {
+                cv.fill(inset(r, 1), face);
+                cv.frame(r, if *default || hot { EDGE_HI } else { EDGE });
+                if *default {
+                    cv.frame(inset(r, 1), EDGE);
+                }
             }
             cv.label(inset(r, 2), &text, fg, 1);
         }
@@ -312,26 +337,46 @@ fn rows(cv: &mut Canvas, r: [i32; 4], items: &[(String, u32)], sel: i32, top: i3
     }
 }
 
-fn dialog(cv: &mut Canvas, d: &Dialog, above: bool) {
+fn dialog(cv: &mut Canvas, d: &Dialog, above: bool, modern: bool) {
     let r = d.rect;
-    // a dialog over another one hides it completely
-    cv.fill(r, if above { PANEL | 0xff00_0000 } else { PANEL });
-    cv.frame(r, EDGE_HI);
-    cv.frame(inset(r, 1), EDGE);
+    // Keep the original geometry and hit-testing; only the opt-in presentation changes.
+    if modern {
+        cv.fill([r[0] + 4, r[1] + 5, r[2] + 4, r[3] + 5], 0x9000_0000);
+        cv.gradient(r, 0xfc12_244e, 0xfc05_0c24);
+        cv.frame(r, 0xff40_86b8);
+        cv.fill([r[0] + 1, r[1] + 1, r[2] - 1, r[1] + 3], 0xff47_d9ed);
+    } else {
+        // a dialog over another one hides it completely
+        cv.fill(r, if above { PANEL | 0xff00_0000 } else { PANEL });
+        cv.frame(r, EDGE_HI);
+        cv.frame(inset(r, 1), EDGE);
+    }
     if d.caption {
         let bar = [r[0] + 2, r[1] + 2, r[2] - 2, r[1] + 14];
         cv.fill(bar, CAPTION);
         cv.label([bar[0] + 4, bar[1], bar[2], bar[3]], &d.title, TEXT, 0);
     }
     for k in 0..d.controls.len() {
-        control(cv, d, k);
+        control(cv, d, k, modern);
+    }
+    // In the preview, also show keyboard focus when the gamepad is not selecting a control.
+    if modern && d.pad.is_none() {
+        if let Some(c) = d.focus.and_then(|k| d.controls.get(k)).filter(|c| c.interactive()) {
+            cv.frame(inset(c.face(), -2), 0xff47_d9ed);
+        }
     }
     // the control chosen by gamepad: a gold frame, as in the menu (`menupad`)
     if let Some(c) = d.pad.and_then(|k| d.controls.get(k)) {
         let f = c.face();
-        cv.frame(inset(f, -3), PAD_SOFT);
-        cv.frame(inset(f, -2), PAD);
-        cv.frame(inset(f, -1), PAD);
+        if modern {
+            cv.frame(inset(f, -3), 0x6047_d9ed);
+            cv.frame(inset(f, -2), 0xff47_d9ed);
+            cv.frame(inset(f, -1), 0xffa4_f5ff);
+        } else {
+            cv.frame(inset(f, -3), PAD_SOFT);
+            cv.frame(inset(f, -2), PAD);
+            cv.frame(inset(f, -1), PAD);
+        }
     }
     // open combo lists go over everything
     for c in &d.controls {
@@ -343,11 +388,65 @@ fn dialog(cv: &mut Canvas, d: &Dialog, above: bool) {
     }
 }
 
+pub(super) fn modern_preview() -> bool {
+    static MODERN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MODERN.get_or_init(|| std::env::var("FCOP_MODERN_UI").is_ok_and(|value| value == "1"))
+}
+
 /// All open dialogs, the topmost last, as ARGB pixels of OV_W x OV_H.
 pub fn render(dialogs: &[Dialog]) -> Vec<u32> {
     let mut cv = Canvas { px: vec![0; (OV_W * OV_H) as usize], clip: [0, 0, OV_W, OV_H] };
     for (k, d) in dialogs.iter().enumerate() {
-        dialog(&mut cv, d, k > 0);
+        dialog(&mut cv, d, k > 0, modern_preview());
     }
     cv.px
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_changes_presentation_without_changing_hit_targets() {
+        use super::super::template::{Class, Item, Template};
+
+        let template = Template {
+            style: 0,
+            title: String::new(),
+            rect: [0, 0, 100, 60],
+            font: None,
+            items: vec![Item {
+                class: Class::Button,
+                id: 1,
+                text: "OK".into(),
+                style: 0x1000_0001,
+                ex_style: 0,
+                rect: [10, 10, 60, 14],
+            }],
+        };
+        let d = Dialog::new(0x00da_0100, 0, 0, &template);
+        let target = d.controls[0].face();
+        let centre = ((target[0] + target[2]) / 2, (target[1] + target[3]) / 2);
+        let canvas = || Canvas { px: vec![0; (OV_W * OV_H) as usize], clip: [0, 0, OV_W, OV_H] };
+        let mut classic = canvas();
+        let mut modern = canvas();
+        dialog(&mut classic, &d, false, false);
+        dialog(&mut modern, &d, false, true);
+        assert_ne!(classic.px, modern.px);
+        assert_eq!(d.hit(centre.0, centre.1), Some(0));
+        assert_eq!(d.controls[0].face(), target);
+    }
+
+    #[test]
+    fn preview_gradient_stays_inside_the_canvas() {
+        let mut cv = Canvas {
+            px: vec![0; (OV_W * OV_H) as usize],
+            clip: [0, 0, OV_W, OV_H],
+        };
+        cv.gradient([-1, -1, 2, 2], 0xff00_0000, 0xffff_ffff);
+        assert_ne!(cv.px[0], 0);
+        assert_ne!(cv.px[1], 0);
+        assert_eq!(cv.px[2], 0);
+        assert_eq!(cv.px[(OV_W * 2) as usize], 0);
+    }
 }

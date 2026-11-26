@@ -67,6 +67,17 @@ pub fn compile(prog: &Program, smc: &Smc, code: &mut Code, hooks: &[(u32, Hook)]
 /// it is valid for: what made it, our program and the game's EXE). A file with another key is
 /// replaced.
 pub fn compile_cached(prog: &Program, smc: &Smc, code: &mut Code, hooks: &[(u32, Hook)], cache: Option<(&Path, [u8; 32])>) -> Compiled {
+    compile_inner(prog, smc, code, hooks, cache, false).expect("compilation is enabled")
+}
+
+/// Link cached guest functions without lifting or recompiling those functions. Runtime hook
+/// stubs and trampolines are still compiled. Returns None when the cache is missing,
+/// incompatible or disabled by instrumentation.
+pub fn load_cached_only(prog: &Program, smc: &Smc, code: &mut Code, hooks: &[(u32, Hook)], cache: (&Path, [u8; 32])) -> Option<Compiled> {
+    compile_inner(prog, smc, code, hooks, Some(cache), true)
+}
+
+fn compile_inner(prog: &Program, smc: &Smc, code: &mut Code, hooks: &[(u32, Hook)], cache: Option<(&Path, [u8; 32])>, cache_only: bool) -> Option<Compiled> {
     let mut flags = settings::builder();
     flags.set("opt_level", "speed").unwrap();
     flags.set("is_pic", "false").unwrap();
@@ -143,7 +154,21 @@ pub fn compile_cached(prog: &Program, smc: &Smc, code: &mut Code, hooks: &[(u32,
     // addresses are constants in it)
     let cache = cache.filter(|_| rt::count_file().is_none());
     let mut blobs = cache.and_then(|(path, key)| load(path, &key));
+    // A matching header alone is not enough: every lifted function must have exactly
+    // one blob for the declarations in this process. Reject incomplete or duplicate
+    // entries before asking Cranelift to link them.
+    let expected: std::collections::BTreeSet<u32> = prog.fns.keys().map(|&addr| id_of(addr).as_u32()).collect();
+    if blobs.as_ref().is_some_and(|items| {
+        let actual: std::collections::BTreeSet<u32> = items.iter().map(|item| item.id.as_u32()).collect();
+        items.len() != expected.len() || actual != expected
+            || items.iter().any(|item| item.align == 0 || !item.align.is_power_of_two())
+    }) {
+        blobs = None;
+    }
     stats.cached = blobs.is_some();
+    if cache_only && blobs.is_none() {
+        return None;
+    }
     let blobs = match blobs.take() {
         Some(b) => b,
         None => {
@@ -298,7 +323,7 @@ pub fn compile_cached(prog: &Program, smc: &Smc, code: &mut Code, hooks: &[(u32,
     // in the order of `originals`: the stubs' indices
     assert_eq!(hooks.len(), originals.len(), "a function hooked twice");
     let _ = DISPATCH.set(Dispatch { table, foreign_stub, enter, hooks });
-    Compiled { _module: module, enter, fns, stats }
+    Some(Compiled { _module: module, enter, fns, stats })
 }
 
 /// Compile the lifted functions on every core; the results in their order.
@@ -420,7 +445,7 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     fn bytes(&mut self, n: usize) -> Option<&[u8]> {
-        let b = self.data.get(self.at..self.at + n)?;
+        let b = self.data.get(self.at..self.at.checked_add(n)?)?;
         self.at += n;
         Some(b)
     }
@@ -439,6 +464,10 @@ fn load(path: &Path, key: &[u8; 32]) -> Option<Vec<Blob>> {
         return None;
     }
     let n = r.u32()?;
+    // Every entry has at least four u32 fields, even with no code or relocations.
+    if n as usize > (data.len() - r.at) / 16 {
+        return None;
+    }
     let mut blobs = Vec::with_capacity(n as usize);
     for _ in 0..n {
         let id = FuncId::from_u32(r.u32()?);
@@ -446,6 +475,10 @@ fn load(path: &Path, key: &[u8; 32]) -> Option<Vec<Blob>> {
         let len = r.u32()? as usize;
         let bytes = r.bytes(len)?.to_vec();
         let count = r.u32()?;
+        // Each serialized relocation requires five u32 fields and one i64.
+        if count as usize > (data.len() - r.at) / 28 {
+            return None;
+        }
         let mut relocs = Vec::with_capacity(count as usize);
         for _ in 0..count {
             let offset = r.u32()?;

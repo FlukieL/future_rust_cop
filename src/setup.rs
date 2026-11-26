@@ -166,6 +166,171 @@ fn ps1_music(root: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Information verified from a PC game image before installation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameImageInfo {
+    pub version: &'static str,
+    pub has_videos: bool,
+}
+
+/// Inspect a PC disc image without creating, moving, or deleting any files.
+pub fn inspect_game_image(path: &Path) -> Result<GameImageInfo, String> {
+    let mut iso = Iso::open(path).ok_or_else(|| format!("Cannot open {} as a disc image", path.display()))?;
+    let root = iso.root();
+    let (dir, exe) = iso.find(&root, "FCopLAPD.exe", 6)
+        .ok_or_else(|| format!("{} does not contain FCopLAPD.exe", path.display()))?;
+    let mut bytes = Vec::new();
+    iso.read(&exe, &mut bytes).map_err(|e| format!("Cannot read FCopLAPD.exe from {}: {e}", path.display()))?;
+    let hash = hex(&Sha256::digest(&bytes));
+    let version = crate::ver::known(&hash).ok_or_else(|| unknown(&format!("FCopLAPD.exe on {}", path.display()), &hash))?;
+    if !iso.get(&dir, "febmp.bin").is_some_and(|entry| !entry.dir)
+        || !iso.get(&dir, "missions").is_some_and(|entry| entry.dir)
+    {
+        return Err(format!("{} does not contain the required game files", path.display()));
+    }
+    Ok(GameImageInfo {
+        version: version.name,
+        has_videos: iso.find(&root, "intro.mpg", 6).is_some(),
+    })
+}
+
+/// Install a validated PC image into a managed root without overwriting an installation or
+/// deleting the source. Partial work is confined to a unique staging directory.
+pub fn install_launcher_image(image: &Path, root: &Path) -> Result<PathBuf, String> {
+    inspect_game_image(image)?;
+    let game = root.join(GAME);
+    if game.exists() {
+        return Err(format!("{} already exists; the launcher will not overwrite it", game.display()));
+    }
+    std::fs::create_dir_all(root).map_err(|e| format!("Cannot create {}: {e}", root.display()))?;
+    let mut staging = None;
+    for n in 0..1000u32 {
+        let candidate = root.join(format!(".fcop-install-{}-{n}", std::process::id()));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => { staging = Some(candidate); break; }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("Cannot create staging directory: {e}")),
+        }
+    }
+    let staging = staging.ok_or_else(|| "Cannot create a unique staging directory".to_string())?;
+    let result = (|| {
+        let mut iso = Iso::open(image).ok_or_else(|| format!("Cannot open {}", image.display()))?;
+        let top = iso.root();
+        let (dir, exe) = iso.find(&top, "FCopLAPD.exe", 6).ok_or_else(|| "Game executable not found".to_string())?;
+        let bitmap = iso.get(&dir, "febmp.bin").filter(|e| !e.dir).ok_or_else(|| "febmp.bin not found".to_string())?;
+        let missions = iso.get(&dir, "missions").filter(|e| e.dir).ok_or_else(|| "missions folder not found".to_string())?;
+        let staged_game = staging.join(GAME);
+        std::fs::create_dir(&staged_game).map_err(|e| e.to_string())?;
+        for (entry, name) in [(&exe, "FCopLAPD.exe"), (&bitmap, "febmp.bin")] {
+            let mut bytes = Vec::new();
+            iso.read(entry, &mut bytes).map_err(|e| e.to_string())?;
+            if bytes.len() != entry.size as usize {
+                return Err(format!("{name} is truncated in the image"));
+            }
+            std::fs::write(staged_game.join(name), bytes).map_err(|e| e.to_string())?;
+        }
+        // Revalidate what was extracted, not merely the earlier preflight.
+        check(&staged_game.join("FCopLAPD.exe"))?;
+        iso.extract_new(&missions, &staged_game.join("missions")).map_err(|e| format!("Cannot extract missions: {e}"))?;
+        let videos = iso.find(&top, "intro.mpg", 6).map(|(dir, _)| dir);
+        if let Some(dir) = videos.filter(|_| !root.join(VIDEO).exists()) {
+            iso.extract_new(&dir, &staging.join(VIDEO)).map_err(|e| format!("Cannot extract videos: {e}"))?;
+        }
+        // Keep a failed video publish from leaving a game that cannot be retried.
+        if staging.join(VIDEO).exists() {
+            std::fs::rename(staging.join(VIDEO), root.join(VIDEO)).map_err(|e| format!("Cannot install videos: {e}"))?;
+        }
+        std::fs::rename(&staged_game, &game).map_err(|e| format!("Cannot install game: {e}"))?;
+        Ok(game.join("FCopLAPD.exe"))
+    })();
+    if let Err(e) = std::fs::remove_dir_all(&staging) {
+        eprintln!("warn: cannot remove staging directory {}: {e}", staging.display());
+    }
+    result
+}
+
+/// Copy optional PlayStation menu music into the managed root. Existing music is never
+/// overwritten and the selected source is only read.
+pub fn install_launcher_music(source: &Path, root: &Path) -> Result<PathBuf, String> {
+    use std::io::Write;
+
+    let bytes = if source.file_name().is_some_and(|name| name.eq_ignore_ascii_case(crate::ps1::FILE)) {
+        std::fs::read(source).map_err(|e| format!("Cannot read {}: {e}", source.display()))?
+    } else {
+        let mut iso = Iso::open(source).ok_or_else(|| format!("Cannot open {} as a disc image", source.display()))?;
+        if !is_ps1(&mut iso) {
+            return Err(format!("{} does not contain PlayStation menu music", source.display()));
+        }
+        let top = iso.root();
+        let cw = iso.get(&top, "CW").ok_or_else(|| "PlayStation CW directory not found".to_string())?;
+        let entry = iso.get(&cw, crate::ps1::FILE).filter(|entry| !entry.dir)
+            .ok_or_else(|| "PlayStation FE.MIS not found".to_string())?;
+        let mut bytes = Vec::new();
+        iso.read(&entry, &mut bytes).map_err(|e| format!("Cannot read FE.MIS: {e}"))?;
+        if bytes.len() != entry.size as usize {
+            return Err("The PlayStation music file is truncated".into());
+        }
+        bytes
+    };
+    if crate::ps1::menu_music(&bytes).is_none() {
+        return Err(format!("{} does not contain playable menu music", source.display()));
+    }
+    let dir = root.join(PS1);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+    let path = dir.join(crate::ps1::FILE);
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+        .map_err(|e| format!("Cannot create {} (existing music is not overwritten): {e}", path.display()))?;
+    if let Err(e) = file.write_all(&bytes).and_then(|_| file.flush()) {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("Cannot write {}: {e}", path.display()));
+    }
+    Ok(path)
+}
+
+/// Find valid PC and PS1 images in one directory, without changing any files.
+/// When multiple images are present, the first valid filename in sorted order is used.
+pub fn discover_launcher_images(dir: &Path) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {e}", dir.display()))?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Cannot read an entry in {}: {e}", dir.display()))?;
+        let ty = entry.file_type().map_err(|e| format!("Cannot inspect {}: {e}", entry.path().display()))?;
+        if ty.is_file() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()).is_some_and(|ext| {
+                ["iso", "bin", "img"].iter().any(|candidate| ext.eq_ignore_ascii_case(candidate))
+            }) {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    let mut pc = None;
+    let mut ps1 = None;
+    for path in paths {
+        if pc.is_none() && inspect_game_image(&path).is_ok() {
+            pc = Some(path);
+        } else if ps1.is_none() && inspect_ps1_music_image(&path).is_ok() {
+            ps1 = Some(path);
+        }
+        if pc.is_some() && ps1.is_some() {
+            break;
+        }
+    }
+    Ok((pc, ps1))
+}
+
+/// Check for a PlayStation disc with the optional FE.MIS menu music, without changing it.
+pub fn inspect_ps1_music_image(path: &Path) -> Result<(), String> {
+    let mut iso = Iso::open(path).ok_or_else(|| format!("Cannot open {} as a disc image", path.display()))?;
+    if is_ps1(&mut iso) {
+        Ok(())
+    } else {
+        Err(format!("{} does not contain PlayStation menu music", path.display()))
+    }
+}
+
 /// Whether an image is the PlayStation disc (SYSTEM.CNF at the top, FE.MIS in CW).
 fn is_ps1(iso: &mut Iso) -> bool {
     let top = iso.root();

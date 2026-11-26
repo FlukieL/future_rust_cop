@@ -265,6 +265,30 @@ impl Iso {
         Ok(())
     }
 
+    /// Extract into a new directory, rejecting unsafe names and existing destinations.
+    /// The caller owns cleanup of the newly created directory after an error.
+    pub fn extract_new(&mut self, dir: &Entry, to: &Path) -> std::io::Result<()> {
+        std::fs::create_dir(to)?;
+        for e in self.list(dir)? {
+            if !safe_entry_name(&e.name) {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "unsafe disc entry name"));
+            }
+            let path = to.join(&e.name);
+            if e.dir {
+                self.extract_new(&e, &path)?;
+            } else {
+                let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+                let mut out = std::io::BufWriter::new(file);
+                self.read(&e, &mut out)?;
+                out.flush()?;
+                if out.get_ref().metadata()?.len() != e.size as u64 {
+                    return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated disc file"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Copy a folder with everything in it to `to`.
     pub fn extract(&mut self, dir: &Entry, to: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(to)?;
@@ -277,6 +301,29 @@ impl Iso {
             }
         }
         Ok(())
+    }
+}
+
+fn safe_entry_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':', '\0'])
+        && !name.ends_with(['.', ' '])
+}
+
+#[cfg(test)]
+mod safe_extract_tests {
+    use super::safe_entry_name;
+
+    #[test]
+    fn disc_entry_names_cannot_escape_the_destination() {
+        for bad in ["", ".", "..", "../file", "dir/file", r"dir\file", "C:outside", "name.", "name "] {
+            assert!(!safe_entry_name(bad), "{bad:?}");
+        }
+        for good in ["MISSIONS", "brief1.mpg", "file name.txt"] {
+            assert!(safe_entry_name(good), "{good:?}");
+        }
     }
 }
 

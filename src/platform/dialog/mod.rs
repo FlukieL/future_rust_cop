@@ -378,6 +378,27 @@ impl Dialog {
         Notify { dialog: self.hwnd, msg, wp: code | (pos as u32) << 16, lp: c.hwnd }
     }
 
+    /// Move keyboard focus among visible, enabled tab stops.
+    fn focus_next(&mut self, backwards: bool) {
+        let stops: Vec<_> = self.controls.iter().enumerate()
+            .filter(|(_, control)| control.interactive() && control.style & 0x0001_0000 != 0)
+            .map(|(i, _)| i)
+            .collect();
+        if stops.is_empty() {
+            return;
+        }
+        let next = match stops.iter().position(|i| Some(*i) == self.focus) {
+            Some(current) if backwards => (current + stops.len() - 1) % stops.len(),
+            Some(current) => (current + 1) % stops.len(),
+            None if backwards => stops.len() - 1,
+            None => 0,
+        };
+        self.focus = Some(stops[next]);
+        self.pad = None;
+        self.hot = self.focus;
+        self.pressed = None;
+    }
+
     /// Mouse and keyboard input for the topmost dialog.
     fn input(&mut self, m: &Msg, out: &mut Vec<Notify>) {
         if matches!(m.msg, 0x100 | 0x102 | 0x201) {
@@ -470,6 +491,14 @@ impl Dialog {
                 }
             }
             0x100 => match m.wp {
+                0x09 if draw::modern_preview() => {
+                    self.focus_next(user32::key_down(0x10));
+                }
+                0x20 if draw::modern_preview() => {
+                    if let Some(k) = self.focus.filter(|&k| self.controls[k].interactive() && matches!(self.controls[k].kind, Kind::Push { .. } | Kind::Check { .. } | Kind::Radio { .. })) {
+                        self.click(k, out);
+                    }
+                }
                 0x1b => {
                     if let Some(k) = self.button(false) {
                         self.click(k, out);
@@ -1307,6 +1336,45 @@ fn message_box(c: &mut Cpu) -> u32 {
     }
     let t = Template { style: if title.is_empty() { 0 } else { WS_CAPTION }, title, rect: [0, 0, width, th + 40], font: None, items };
     show(c, 0, t, 0, 0)
+}
+
+#[cfg(test)]
+mod keyboard_focus_tests {
+    use super::*;
+
+    #[test]
+    fn tab_focus_wraps_and_skips_hidden_disabled_and_non_tab_controls() {
+        let button = |id, style| Item {
+            class: Class::Button,
+            id,
+            text: id.to_string(),
+            style,
+            ex_style: 0,
+            rect: [0, id as i32 * 12, 30, 10],
+        };
+        let t = Template {
+            style: 0,
+            title: String::new(),
+            rect: [0, 0, 100, 100],
+            font: None,
+            items: vec![
+                button(1, WS_VISIBLE | 0x0001_0000),
+                button(2, WS_VISIBLE | WS_DISABLED | 0x0001_0000),
+                button(3, 0x0001_0000),
+                button(4, WS_VISIBLE),
+                button(5, WS_VISIBLE | 0x0001_0000),
+            ],
+        };
+        let mut d = Dialog::new(0x00da_0100, 0, 0, &t);
+        d.focus_next(false);
+        assert_eq!(d.focus, Some(0));
+        d.focus_next(false);
+        assert_eq!(d.focus, Some(4));
+        d.focus_next(false);
+        assert_eq!(d.focus, Some(0));
+        d.focus_next(true);
+        assert_eq!(d.focus, Some(4));
+    }
 }
 
 pub const IMPORTS: &[Import] = &[

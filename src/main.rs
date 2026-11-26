@@ -14,7 +14,7 @@
 
 use fcop::discover::{Code, Program};
 use fcop::image::{Image, load_functions};
-use fcop::jit::compile_cached;
+use fcop::jit::{compile_cached, load_cached_only};
 use fcop::setup;
 use fcop::smc::Smc;
 use fcop::splash;
@@ -59,6 +59,27 @@ fn output() {
     }
 }
 
+#[cfg(windows)]
+fn open_launcher() -> bool {
+    let Some(path) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("fcop-launcher.exe"))) else {
+        return false;
+    };
+    std::process::Command::new(path).spawn().is_ok()
+}
+
+#[cfg(windows)]
+fn load_launcher_settings() {
+    let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) else { return };
+    if !dir.join(fcop::launcher::SETTINGS_FILE).is_file() { return; }
+    let settings = fcop::launcher::Settings::load(&dir);
+    for (name, enabled) in [("FCOP_MUSIC", settings.music_enabled), ("FCOP_MODERN_UI", settings.modern_ui)] {
+        if std::env::var_os(name).is_none() {
+            // This occurs before threads are started.
+            unsafe { std::env::set_var(name, if enabled { "1" } else { "0" }); }
+        }
+    }
+}
+
 fn main() {
     #[cfg(unix)]
     if std::env::args().nth(1).as_deref() == Some("--splash") {
@@ -67,6 +88,10 @@ fn main() {
     output();
     if let Some(cmd @ ("export" | "import" | "export-sounds")) = std::env::args().nth(1).as_deref() {
         std::process::exit(tool(cmd));
+    }
+    #[cfg(windows)]
+    if !matches!(std::env::args().nth(1).as_deref(), Some("--prepare" | "--validate-cache")) {
+        load_launcher_settings();
     }
     // guest calls nest on the host stack like the original's: run on a thread with a large one
     // (macOS: windows only on the main thread, its stack made as large by build.rs)
@@ -82,22 +107,44 @@ fn run() -> u32 {
     fcop::platform::reserve_memory();
     splash::show();
     splash::status("Looking for the game...");
-    let found = match std::env::args().nth(1) {
+    let mut args = std::env::args().skip(1);
+    let first = args.next();
+    let prepare = first.as_deref() == Some("--prepare");
+    let validate = first.as_deref() == Some("--validate-cache");
+    let explicit_cache = first.as_deref() == Some("--cache-only");
+    let path = if prepare || validate || explicit_cache { args.next() } else { first };
+    let cache_only = validate || explicit_cache || (cfg!(windows) && !prepare);
+    if args.next().is_some() || ((prepare || validate || explicit_cache) && path.is_none()) {
+        splash::fail("Usage: fcop [path to FCopLAPD.exe]\n       fcop --cache-only|--prepare|--validate-cache <path to installed FCopLAPD.exe>");
+        return 2;
+    }
+    let found = match path {
         Some(p) => setup::check(Path::new(&p)).map(|_| PathBuf::from(p)),
+        None if cfg!(windows) => {
+            let exe = setup::root().join("FCopLAPD").join("FCopLAPD.exe");
+            setup::check(&exe).map(|_| exe)
+        }
         None => setup::game_exe(&setup::root()),
     };
     let exe = match found {
         Ok(e) => e,
         Err(text) => {
+            #[cfg(windows)]
+            if !prepare && !validate && !explicit_cache && open_launcher() {
+                splash::close();
+                return 0;
+            }
             splash::fail(&text);
-            std::process::exit(2);
+            return 2;
         }
     };
     // (loading it picks the version: `ver`)
     let img = Image::load(&exe).unwrap_or_else(|e| panic!("{}: {e}", exe.display()));
     let ranges = load_functions();
-    fcop::platform::dinput::start(); // gamepads are found while we compile
-    splash::status("Compiling the game...");
+    if !prepare && !validate {
+        fcop::platform::dinput::start();
+    }
+    splash::status(if cache_only { "Loading compiled game..." } else { "Compiling the game..." });
     let t = Instant::now();
     let mut code = Code::new(&img);
     let prog = Program::build(&mut code, &ranges);
@@ -107,7 +154,27 @@ fn run() -> u32 {
     let cache = exe.with_file_name(setup::COMPILED);
     let key = cache_key(&img);
     let hooks: Vec<_> = fcop::platform::HOOKS.iter().map(|&(a, h)| (a.at(), h)).collect();
-    let compiled = compile_cached(&prog, &smc, &mut code, &hooks, key.map(|k| (cache.as_path(), k)));
+    let compiled = if cache_only {
+        match key.and_then(|key| load_cached_only(&prog, &smc, &mut code, &hooks, (cache.as_path(), key))) {
+            Some(compiled) => compiled,
+            None => {
+                #[cfg(windows)]
+                if !explicit_cache && !validate && open_launcher() {
+                    splash::close();
+                    return 0;
+                }
+                splash::fail("No compatible compiled game cache was found. Open the launcher to prepare it.");
+                return 2;
+            }
+        }
+    } else {
+        compile_cached(&prog, &smc, &mut code, &hooks, key.map(|k| (cache.as_path(), k)))
+    };
+    if prepare || validate {
+        drop(compiled);
+        splash::close();
+        return 0;
+    }
     let st = &compiled.stats;
     if st.cached {
         eprintln!("compiled code of {} functions loaded in {} ms", st.functions, t.elapsed().as_millis());

@@ -8,6 +8,7 @@ pub mod export;
 pub mod image;
 pub mod iso;
 pub mod jit;
+pub mod launcher;
 pub mod lift;
 pub mod mission;
 pub mod mpeg;
