@@ -50,6 +50,30 @@ static KEPT: Mutex<Option<(Vec<u8>, [u32; 2])>> = Mutex::new(None);
 /// holds the action (or nothing does).
 static AMOUNTS: Mutex<[[Option<f32>; ACTIONS as usize]; 2]> = Mutex::new([[None; ACTIONS as usize]; 2]);
 
+/// Last reported original/mapped binding states, for opt-in input diagnostics.
+static INPUT_TRACE: Mutex<[[Option<(bool, bool)>; ACTIONS as usize]; 2]> =
+    Mutex::new([[None; ACTIONS as usize]; 2]);
+
+fn trace_binding(player: u32, action: u32, game: (u32, u32), ours: (u32, u32),
+                 secondary: (u32, u32), game_down: bool, our_down: bool, pad: Option<dinput::Pad>) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var_os("FCOP_PAD_LOG").is_some_and(|v| v != "0")) {
+        return;
+    }
+    let value = (game_down, our_down);
+    let mut previous = INPUT_TRACE.lock().unwrap();
+    let slot = &mut previous[player as usize][action as usize];
+    if *slot == Some(value) || slot.is_none() && value == (false, false) {
+        return;
+    }
+    *slot = Some(value);
+    drop(previous);
+    log!("pad input: player {} action {} original {:?}={} mapped {:?}/{:?}={} device {:?} state {:?}",
+        player + 1, action, game, game_down, ours, secondary, our_down,
+        dinput::player_device(player as usize),
+        pad.map(|p| (p.buttons(), p.stick, p.start_pressed())));
+}
+
 /// Our bindings, loaded at their first use.
 fn tables(c: &mut Cpu) -> u32 {
     let mut t = TABLES.lock().unwrap();
@@ -194,6 +218,7 @@ pub fn binding_down(c: &mut Cpu) {
         })) && pad.is_some_and(|p| dinput::dpad_axis_down(&p, ours.1))
     });
     let (our_down, our_amount) = pad_action(pad, [ours, secondary], dpad);
+    trace_binding(player, action, game, ours, secondary, game_down, our_down, pad);
     let digital = game_down && game_amount.is_none() || our_down && our_amount.is_none();
     let amount = [(game_down, game_amount), (our_down, our_amount)]
         .into_iter()

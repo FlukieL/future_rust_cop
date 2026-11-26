@@ -244,6 +244,8 @@ and Xbox glyphs for other controllers.
 
 In menus and dialogs, the D-pad or left stick moves, A selects and B goes back.
 Holding a direction repeats; stick hysteresis helps prevent accidental changes near diagonals.
+Only one controller navigates at a time: another can take over when the current controller
+releases its menu controls or disconnects. Gameplay assignments are unchanged.
 
 When your robot takes damage or changes mode, compatible controllers can vibrate on Windows
 and Linux. Turn off **Vibration** in the **Gamepad** dialog to disable it. `FCOP_RUMBLE=0`
@@ -252,6 +254,16 @@ vibration. Standard controller input depends on the operating system and gilrs m
 On Windows, Bluetooth DualSense controllers can also use the Windows joystick fallback when
 gilrs does not detect them. This fallback provides input only: DualSense vibration, adaptive
 triggers and advanced haptics are not supported through it.
+
+If Steam Input exposes both an emulated controller and the physical Sony controller, try
+**Steam Input: prefer non-Sony controllers** in the Windows launcher's **Gamepad** tab.
+Close the game, enable the option, press **Save**, and launch again. It is off by default.
+When enabled, it hides recognized Sony devices whenever any non-Sony gamepad is detected;
+this is a workaround, not automatic device pairing, and can hide a genuine second Sony
+controller. Turn it off for mixed direct-controller setups. A Sony controller remains
+available when no non-Sony gamepad is detected. `FCOP_STEAM_INPUT=1` enables the same
+filter for direct launches (`0` disables it). Steam layouts that also send keyboard or mouse
+input may still need adjustment in Steam.
 
 ## Network play
 

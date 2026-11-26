@@ -98,6 +98,12 @@ pub fn robot_damage(c: &mut Cpu) {
     }
 }
 
+fn trace(args: std::fmt::Arguments) {
+    if std::env::var_os("FCOP_PAD_LOG").is_some_and(|v| v != "0") {
+        log!("rumble: {}", args);
+    }
+}
+
 /// Service queued pulses on gilrs' owning thread. `ids` follows the gamepad binding order.
 pub fn service(g: &mut Gilrs, ids: [Option<usize>; 2]) {
     let now = Instant::now();
@@ -118,14 +124,24 @@ pub fn service(g: &mut Gilrs, ids: [Option<usize>; 2]) {
             if now.duration_since(pulse.when) > Duration::from_millis(250) {
                 continue;
             }
-            let Some(wanted) = ids[player].filter(|&id| id == pulse.device) else { continue };
+            let Some(wanted) = ids[player].filter(|&id| id == pulse.device) else {
+                trace(format_args!(
+                    "dropped: player {} pulse for device {} but the assigned pad is {:?}",
+                    player + 1, pulse.device, ids[player]
+                ));
+                continue;
+            };
             // Do not stack a stream of hits into an excessively strong vibration.
             if active.iter().any(|(id, _, _)| *id == wanted) {
                 continue;
             }
             let Some(id) = g.gamepads().find_map(|(id, pad)| {
                 (usize::from(id) == wanted && pad.is_ff_supported()).then_some(id)
-            }) else { continue };
+            }) else {
+                let state = g.gamepads().find(|(id, _)| usize::from(*id) == wanted).map(|(_, pad)| pad.is_ff_supported());
+                trace(format_args!("dropped: device {wanted} cannot rumble (connected pad found, ff supported: {state:?})"));
+                continue;
+            };
             let duration = Ticks::from_ms(150);
             let effect = EffectBuilder::new()
                 .add_effect(BaseEffect {
@@ -136,11 +152,16 @@ pub fn service(g: &mut Gilrs, ids: [Option<usize>; 2]) {
                 .repeat(Repeat::For(duration))
                 .gamepads(&[id])
                 .finish(g);
-            if let Ok(effect) = effect {
-                if effect.play().is_ok() {
-                    // Allow for the gilrs worker's 50 ms scheduling interval.
-                    active.push((wanted, now + Duration::from_millis(300), effect));
-                }
+            match effect {
+                Ok(effect) => match effect.play() {
+                    Ok(()) => {
+                        trace(format_args!("playing: device {wanted} strength {}", pulse.strength));
+                        // Allow for the gilrs worker's 50 ms scheduling interval.
+                        active.push((wanted, now + Duration::from_millis(300), effect));
+                    }
+                    Err(e) => trace(format_args!("play failed on device {wanted}: {e:?}")),
+                },
+                Err(e) => trace(format_args!("effect creation failed on device {wanted}: {e:?}")),
             }
         }
     });

@@ -235,6 +235,10 @@ pub fn pad_last() -> bool {
 
 /// What the window shows after a `step`.
 pub struct Step {
+    /// Start state from the same controller used for menu navigation.
+    pub start: bool,
+    /// Whether the main menu owns controller input, rather than gameplay.
+    pub main_menu: bool,
     /// the focus frame is shown (the window system's cursor is hidden then: it would stay
     /// elsewhere)
     pub focus: bool,
@@ -245,7 +249,9 @@ pub struct Step {
 /// After the pads were read (main thread, every pump): the menu's input from them, and the
 /// focus frame drawn around the item chosen.
 pub fn step(input: &mut VecDeque<Input>) -> Step {
-    let (buttons, stick) = super::dinput::menu_state();
+    let pad = super::dinput::menu_state();
+    let (buttons, stick) = (pad.buttons, [pad.stick[0], pad.stick[1]]);
+    let main_menu = mem().rd8(MENU_UP.at()) != 0 && mem().rd32(Us(0x511fb8).at()) == 0;
     let mut s = STATE.lock().unwrap();
     let pressed = buttons & !s.buttons;
     let released = s.buttons & !buttons;
@@ -289,6 +295,8 @@ pub fn step(input: &mut VecDeque<Input>) -> Step {
             ev.push_back(PadEvent::B);
         }
         return Step {
+            start: pad.start,
+            main_menu,
             focus: dialog::pad_shown(),
             overlay: None,
         };
@@ -339,6 +347,8 @@ pub fn step(input: &mut VecDeque<Input>) -> Step {
     let overlay = (s.drawn != s.focus).then(|| s.focus.map(frame_around));
     s.drawn = s.focus;
     Step {
+        start: pad.start,
+        main_menu,
         focus: s.focus.is_some(),
         overlay,
     }

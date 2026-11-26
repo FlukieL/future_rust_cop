@@ -31,6 +31,7 @@ fn restore() {
         Ok(data) => {
             if let Some(payload) = decode(&data) {
                 mem().slice(PROGRESS.at(), SIZE).copy_from_slice(payload);
+                log!("autosave: restored {} (crime {}, precinct {:?})", path.display(), payload[2], &payload[7..13]);
             } else {
                 log!("warn: autosave.cfg is invalid; keeping initialized progress");
             }
@@ -48,8 +49,9 @@ fn save() {
     data.extend_from_slice(&checksum(&payload).to_le_bytes());
     let temp = game_dir().join("autosave.tmp");
     let path = game_dir().join("autosave.cfg");
-    if let Err(e) = std::fs::write(&temp, data).and_then(|()| std::fs::rename(&temp, &path)) {
-        log!("warn: cannot write autosave.cfg: {e}");
+    match std::fs::write(&temp, data).and_then(|()| std::fs::rename(&temp, &path)) {
+        Ok(()) => log!("autosave: saved {}", path.display()),
+        Err(e) => log!("warn: cannot write {}: {e}", path.display()),
     }
 }
 
@@ -64,7 +66,20 @@ pub fn reset_progress(c: &mut Cpu) {
 
 /// Save after the game has updated its mission progress.
 pub fn mission_progress(c: &mut Cpu) {
+    let m = mem();
+    let before = m.slice(PROGRESS.at(), SIZE).to_vec();
+    let game = m.rd32(Us(0x511f80).at());
+    if game != 0 {
+        log!("autosave: match result: state {}, players {}, result {}, level {}",
+            m.rd32(Us(0x511fb8).at()), m.rd32(Us(0x511f50).at()),
+            m.rd32(game + 0x10), m.rd32(game + 0x4c));
+    } else {
+        log!("autosave: progress update without a game record");
+    }
     call_original(c, MISSION_PROGRESS.at());
+    let after = mem().slice(PROGRESS.at(), SIZE).to_vec();
+    log!("autosave: mode {} map {} crime {} -> {} precinct {:?} -> {:?}",
+        after[3], after[0], before[2], after[2], &before[7..13], &after[7..13]);
     save();
 }
 

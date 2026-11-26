@@ -72,6 +72,10 @@ fn load_launcher_settings() {
     let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) else { return };
     if !dir.join(fcop::launcher::SETTINGS_FILE).is_file() { return; }
     let settings = fcop::launcher::Settings::load(&dir);
+    if settings.pad_log && std::env::var_os("FCOP_PAD_LOG").is_none() {
+        // Launcher settings are applied before any threads start.
+        unsafe { std::env::set_var("FCOP_PAD_LOG", "1"); }
+    }
     for (name, enabled) in [("FCOP_MUSIC", settings.music_enabled), ("FCOP_MODERN_UI", settings.modern_ui)] {
         if std::env::var_os(name).is_none() {
             // This occurs before threads are started.

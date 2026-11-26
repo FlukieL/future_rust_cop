@@ -18,6 +18,7 @@ pub struct Settings {
     pub music_enabled: bool,
     pub music_path: String,
     pub modern_ui: bool,
+    pub pad_log: bool,
     /// anti-aliasing samples (0, 2, 4, 8)
     pub msaa: Option<u32>,
     /// texture filtering (0, 1, 2, 4, 8, 16)
@@ -53,6 +54,7 @@ impl Settings {
                 "music_enabled" => r.music_enabled = flag(v).unwrap_or(false),
                 "music_path" => r.music_path = v.to_string(),
                 "modern_ui" => r.modern_ui = flag(v).unwrap_or(false),
+                "pad_log" => r.pad_log = flag(v).unwrap_or(false),
                 "msaa" => r.msaa = v.parse().ok().filter(|n| crate::platform::glide::MSAA_CHOICES.contains(n)),
                 "filtering" => r.filtering = v.parse().ok().filter(|n| crate::platform::glide::FILTER_CHOICES.contains(n)),
                 "vsync" => r.vsync = flag(v),
@@ -69,11 +71,12 @@ impl Settings {
         // a value cannot hold a line break
         let line = |s: &str| s.replace(['\r', '\n'], " ");
         let mut out = format!(
-            "iso={}\nmusic_enabled={}\nmusic_path={}\nmodern_ui={}\n",
+            "iso={}\nmusic_enabled={}\nmusic_path={}\nmodern_ui={}\npad_log={}\n",
             line(&self.iso),
             self.music_enabled as u8,
             line(&self.music_path),
-            self.modern_ui as u8
+            self.modern_ui as u8,
+            self.pad_log as u8
         );
         let mut opt = |k: &str, v: Option<String>| {
             if let Some(v) = v {
@@ -108,6 +111,9 @@ impl Settings {
     pub fn apply_env(&self, cmd: &mut Command) {
         cmd.env("FCOP_MUSIC", if self.music_enabled { "1" } else { "0" });
         cmd.env("FCOP_MODERN_UI", if self.modern_ui { "1" } else { "0" });
+        if self.pad_log {
+            cmd.env("FCOP_PAD_LOG", "1");
+        }
         for name in ["FCOP_MSAA", "FCOP_FILTER", "FCOP_VSYNC", "FCOP_STATS", "FCOP_RUMBLE", "FCOP_SWAP_PADS", "FCOP_SKIP_INTRO", "FCOP_WINDOW"] {
             cmd.env_remove(name);
         }
@@ -416,6 +422,7 @@ mod tests {
             music_enabled: true,
             music_path: "FE.MIS".into(),
             modern_ui: true,
+            pad_log: true,
             msaa: Some(8),
             filtering: Some(4),
             vsync: Some(false),
@@ -445,6 +452,17 @@ mod tests {
     fn line_breaks_cannot_split_a_value() {
         let s = Settings { iso: "a\nmodern_ui=1".into(), ..Default::default() };
         assert!(!Settings::parse(&s.to_text()).modern_ui);
+    }
+
+    #[test]
+    fn controller_diagnostics_are_opt_in_for_launched_game() {
+        let mut enabled = Command::new("x");
+        Settings { pad_log: true, ..Default::default() }.apply_env(&mut enabled);
+        assert!(enabled.get_envs().any(|(k, v)| k == "FCOP_PAD_LOG" && v == Some(std::ffi::OsStr::new("1"))));
+
+        let mut disabled = Command::new("x");
+        Settings::default().apply_env(&mut disabled);
+        assert!(!disabled.get_envs().any(|(k, _)| k == "FCOP_PAD_LOG"));
     }
 
     #[test]

@@ -151,6 +151,44 @@ fn assigned(pads: &[Entry], player: usize, choices: [Option<usize>; 2], share_si
         .map(|(index, _)| index)
 }
 
+fn sony_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["sony", "playstation", "dualshock", "dualsense", "ps5 controller", "ps4 controller"]
+        .iter().any(|part| name.contains(part))
+}
+
+/// Opt-in workaround for Steam Input exposing a mapped device alongside a Sony device.
+#[cfg(windows)]
+static STEAM_INPUT: super::light::Setting =
+    super::light::Setting::with_default("SteamInputCompatibility", "FCOP_STEAM_INPUT", false);
+
+/// In compatibility mode prefer non-Sony mapped devices when both kinds are visible.
+/// This is deliberately opt-in: the devices may instead belong to two different players.
+#[cfg(any(windows, test))]
+fn filter_steam_duplicates(pads: &mut Vec<Entry>, enabled: bool) {
+    if enabled && pads.iter().any(|p| p.id.is_some() && !p.sony) {
+        pads.retain(|p| p.id.is_none() || !p.sony);
+    }
+}
+
+/// Log device-list changes only when controller diagnostics are enabled.
+fn trace_devices(detected: &[Entry], active: &[Entry]) {
+    if !trace() {
+        return;
+    }
+    type Devices = Vec<(Option<usize>, String, bool)>;
+    static LAST: Mutex<Option<(Devices, Devices)>> = Mutex::new(None);
+    let names = |entries: &[Entry]| entries.iter()
+        .map(|entry| (entry.id, entry.name.clone(), entry.sony))
+        .collect::<Devices>();
+    let current = (names(detected), names(active));
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_ref() != Some(&current) {
+        log!("pad devices: detected {:?}; active {:?}", current.0, current.1);
+        *last = Some(current);
+    }
+}
+
 /// Swap the first two connected controllers for both players, without changing their bindings.
 static SWAP_PADS: super::light::Setting = super::light::Setting::with_default("SwapControllers", "FCOP_SWAP_PADS", false);
 
@@ -295,11 +333,17 @@ fn update() {
         while let Some(e) = g.next_event() {
             match e.event {
                 gilrs::EventType::Connected => {
-                    let p = g.gamepad(e.id);
-                    pad_log!("connected: {} (USB {:04x}:{:04x})", p.name(), p.vendor_id().unwrap_or(0), p.product_id().unwrap_or(0))
+                    if let Some(p) = g.connected_gamepad(e.id) {
+                        pad_log!("connected: {} (USB {:04x}:{:04x})", p.name(), p.vendor_id().unwrap_or(0), p.product_id().unwrap_or(0));
+                    } else {
+                        pad_log!("connected event for unavailable controller {}", usize::from(e.id));
+                    }
                 }
-                gilrs::EventType::Disconnected => pad_log!("disconnected: {}", g.gamepad(e.id).name()),
+                gilrs::EventType::Disconnected => pad_log!("disconnected controller {}", usize::from(e.id)),
                 ref ev => {
+                    if matches!(ev, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::ButtonReleased(..)) {
+                        pad_log!("event: device {} {:?}", usize::from(e.id), ev);
+                    }
                     if let Some(b) = pressed_by(e.id.into(), ev) {
                         pressed.push((e.id.into(), 1 << b));
                     }
@@ -314,7 +358,7 @@ fn update() {
             let id: usize = id.into();
             let pad = read(&p);
             let new = pressed.iter().filter(|e| e.0 == id).fold(0, |a, e| a | e.1);
-            Entry { pad, pressed: pressed_before(Some(id)) | new | pad.buttons, id: Some(id), name: p.name().to_string(), sony: p.vendor_id() == Some(0x054c) }
+            Entry { pad, pressed: pressed_before(Some(id)) | new | pad.buttons, id: Some(id), name: p.name().to_string(), sony: p.vendor_id() == Some(0x054c) || sony_name(p.name()) }
         }));
     });
     #[cfg(windows)]
@@ -326,7 +370,56 @@ fn update() {
     }
     #[cfg(not(windows))]
     let _ = has_dualsense;
+    #[cfg(windows)]
+    {
+        if trace() {
+            let detected = now.iter().map(|entry| Entry {
+                pad: entry.pad, pressed: entry.pressed, id: entry.id,
+                name: entry.name.clone(), sony: entry.sony,
+            }).collect::<Vec<_>>();
+            filter_steam_duplicates(&mut now, STEAM_INPUT.get());
+            trace_devices(&detected, &now);
+        } else {
+            filter_steam_duplicates(&mut now, STEAM_INPUT.get());
+        }
+    }
+    #[cfg(not(windows))]
+    trace_devices(&now, &now);
     swap_controllers(&mut now, controllers_swapped());
+    if trace() {
+        // Log what each pad looks like to the game when it changes (sticks in halves).
+        type Seen = Vec<(Option<usize>, u32, bool, [i8; 4])>;
+        static SEEN: Mutex<Seen> = Mutex::new(Vec::new());
+        let current: Seen = now.iter().map(|e| {
+            (e.id, e.pad.buttons, e.pad.start, e.pad.stick.map(|v| (v * 2.0).round() as i8))
+        }).collect();
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if *seen != current {
+            for entry in &current {
+                if !seen.contains(entry) {
+                    log!("pad state: id={:?} buttons={:#06x} start={} sticks(x2)={:?}", entry.0, entry.1, entry.2, entry.3);
+                }
+            }
+            *seen = current;
+        }
+    }
+    #[cfg(windows)]
+    if trace() {
+        // Raw winmm reading of the Bluetooth DualSense fallback: logged when it changes
+        // (coarsely) and at least every 3 seconds, to show whether Windows delivers input.
+        type Raw = Option<(u32, [u32; 6], u32, u32)>;
+        static RAW: Mutex<(Raw, Option<std::time::Instant>)> = Mutex::new((None, None));
+        for e in now.iter() {
+            let Some(id) = e.id.filter(|&id| id >= 0x4000_0000) else { continue };
+            let raw: Raw = super::dualsense_win::diagnostic_raw(id).map(|(r, a, b, p)| (r, a.map(|v| v >> 12), b, p));
+            let mut last = RAW.lock().unwrap_or_else(|e| e.into_inner());
+            let due = last.1.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(3));
+            if last.0 != raw || due {
+                log!("pad raw: id={id} (result, axes>>12, buttons, pov)={raw:?}");
+                *last = (raw, Some(std::time::Instant::now()));
+            }
+        }
+    }
     let choices = *PLAYER_DEVICES.lock().unwrap();
     let ids = std::array::from_fn(|p| assigned(&now, p, choices, false).and_then(|k| now[k].id));
     GILRS.with(|g| {
@@ -356,17 +449,37 @@ fn update() {
     }
 }
 
-/// All pads together, as menus read them (`menupad`): buttons held on any pad (our numbers),
-/// the left stick of the first pad that has it out of its dead zone (y down).
-pub fn menu_state() -> (u32, [f32; 2]) {
+/// The physical controller currently owning menu navigation (including the scripted pad).
+static MENU_OWNER: Mutex<Option<Option<usize>>> = Mutex::new(None);
+const MENU_BUTTONS: u32 = (1 << 2) | (1 << 3) | (0xf << 11);
+
+/// Read exactly one controller until it releases its menu controls. A neutral frame separates
+/// owners, allowing the menu to release any click before another controller takes over.
+fn select_menu_pad(pads: &[Entry], owner: &mut Option<Option<usize>>) -> Pad {
+    let active = |p: &Pad, threshold: f32| {
+        p.start || p.buttons & MENU_BUTTONS != 0 || p.stick[0].abs().max(p.stick[1].abs()) >= threshold
+    };
+    if let Some(id) = *owner {
+        if let Some(entry) = pads.iter().find(|entry| entry.id == id) {
+            if active(&entry.pad, 0.35) {
+                return entry.pad;
+            }
+        }
+        *owner = None;
+        return Pad::default();
+    }
+    if let Some(entry) = pads.iter().find(|entry| active(&entry.pad, 0.5)) {
+        *owner = Some(entry.id);
+        return entry.pad;
+    }
+    Pad::default()
+}
+
+/// A single active controller's menu state. Buttons, stick and Start never come from
+/// different controllers.
+pub fn menu_state() -> Pad {
     let pads = PADS.lock().unwrap();
-    let buttons = pads.iter().fold(0, |a, e| a | e.pad.buttons);
-    let stick = pads
-        .iter()
-        .map(|e| [e.pad.stick[0], e.pad.stick[1]])
-        .find(|s| s[0].abs() > AXIS_DEAD_ZONE || s[1].abs() > AXIS_DEAD_ZONE)
-        .unwrap_or_default();
-    (buttons, stick)
+    select_menu_pad(&pads, &mut MENU_OWNER.lock().unwrap())
 }
 
 /// Forget the presses the game has not read yet (a dialog used them).
@@ -383,18 +496,28 @@ fn connected(pads: &[Entry], n: u32) -> Option<usize> {
     assigned(pads, n.min(1) as usize, *PLAYER_DEVICES.lock().unwrap(), true)
 }
 
-/// Pad n as the game reads it: its buttons held or pressed since the last read.
+/// Buffered presses are for the slow binding-capture dialog, not gameplay. Replaying
+/// them during normal polling can make an old press appear held after its release.
+fn read_pad_state(entry: &mut Entry, capturing: bool) -> Pad {
+    let mut pad = entry.pad;
+    let pressed = std::mem::take(&mut entry.pressed);
+    if capturing {
+        pad.buttons |= pressed;
+    }
+    pad
+}
+
+/// Pad n as the game reads it. Only binding capture replays buffered presses.
 fn pad(n: u32) -> Pad {
     // fresh on the main thread (the Controller dialog reads from there)
     if GILRS.with(|g| g.borrow().is_some()) {
         update();
     }
+    // Obtain dialog state before locking PADS: dialog handling may clear pending presses.
+    let capturing = super::gamepad::editing() && super::dialog::pad_capture();
     let mut pads = PADS.lock().unwrap();
     let Some(k) = connected(&pads, n) else { return Pad::default() };
-    let e = &mut pads[k];
-    let mut p = e.pad;
-    p.buttons |= std::mem::take(&mut e.pressed);
-    p
+    read_pad_state(&mut pads[k], capturing)
 }
 
 /// The scripted pad's controls (FCOP_INPUT `pad@A*500`, `pad@LX=-1*1000`): our buttons in
@@ -770,11 +893,7 @@ pub fn player_is_sony(player: usize) -> bool {
     }
     let pads = PADS.lock().unwrap();
     assigned(&pads, player, *PLAYER_DEVICES.lock().unwrap(), false)
-        .is_some_and(|k| {
-            let name = pads[k].name.to_ascii_lowercase();
-            pads[k].sony || ["sony", "playstation", "dualshock", "dualsense", "ps5 controller", "ps4 controller"]
-                .iter().any(|part| name.contains(part))
-        })
+        .is_some_and(|k| pads[k].sony || sony_name(&pads[k].name))
 }
 
 /// Physical device currently assigned to this player's own gamepad bindings.
@@ -1179,6 +1298,103 @@ mod analog_tests {
 
     fn analog_amounts(stick: [f32; 4], bindings: [(u32, u32); 14], controls: u32) -> AnalogMove {
         super::analog_amounts(bindings.map(|b| binding_amount(stick, b)), controls)
+    }
+
+    #[test]
+    fn gameplay_does_not_replay_released_buttons_but_capture_can() {
+        let mut entry = super::Entry {
+            pad: Pad::default(), pressed: 1 << 3, id: Some(1),
+            name: String::new(), sony: false,
+        };
+        assert_eq!(super::read_pad_state(&mut entry, false).buttons, 0);
+        assert_eq!(entry.pressed, 0);
+        entry.pad.buttons = 1 << 4;
+        entry.pressed = 1 << 3;
+        assert_eq!(super::read_pad_state(&mut entry, false).buttons, 1 << 4);
+        entry.pad.buttons = 0;
+        assert_eq!(super::read_pad_state(&mut entry, false).buttons, 0);
+        entry.pressed = 1 << 3;
+        assert_eq!(super::read_pad_state(&mut entry, true).buttons, 1 << 3);
+        assert_eq!(super::read_pad_state(&mut entry, true).buttons, 0);
+    }
+
+    #[test]
+    fn steam_compatibility_prefers_mapped_devices_only_when_enabled_and_available() {
+        let entry = |id, sony| super::Entry {
+            pad: Pad::default(), pressed: 0, id, name: String::new(), sony,
+        };
+        let mut mixed = vec![entry(Some(1), true), entry(Some(2), false), entry(None, false)];
+        super::filter_steam_duplicates(&mut mixed, false);
+        assert_eq!(mixed.len(), 3);
+        super::filter_steam_duplicates(&mut mixed, true);
+        assert_eq!(mixed.iter().map(|e| e.id).collect::<Vec<_>>(), vec![Some(2), None]);
+        let mut sony_only = vec![entry(Some(1), true)];
+        super::filter_steam_duplicates(&mut sony_only, true);
+        assert_eq!(sony_only.len(), 1);
+        assert!(super::sony_name("Wireless DualSense Controller"));
+        assert!(!super::sony_name("Xbox Controller"));
+    }
+
+    #[test]
+    fn menu_uses_one_controller_and_handoffs_after_release_or_disconnect() {
+        let entry = |id, buttons, x| super::Entry {
+            pad: Pad { buttons, stick: [x, 0.0, 0.0, 0.0], ..Pad::default() },
+            pressed: 0, id: Some(id), name: String::new(), sony: false,
+        };
+        let mut owner = None;
+        let mut pads = [entry(4, 1 << 3, 0.0), entry(7, 1 << 2, 0.9)];
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).buttons, 1 << 3);
+        pads.swap(0, 1);
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).buttons, 1 << 3);
+        pads[1].pad.buttons = 0;
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).buttons, 0);
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).buttons, 1 << 2);
+        assert_eq!(super::select_menu_pad(&pads[1..], &mut owner).buttons, 0);
+        assert_eq!(owner, None);
+    }
+
+    #[test]
+    fn menu_start_obeys_controller_ownership() {
+        let entry = |id, pad| super::Entry {
+            pad, pressed: 0, id: Some(id), name: String::new(), sony: false,
+        };
+        let mut owner = None;
+        let mut pads = [
+            entry(1, Pad { buttons: 1 << 3, ..Pad::default() }),
+            entry(2, Pad { start: true, ..Pad::default() }),
+        ];
+        let active = super::select_menu_pad(&pads, &mut owner);
+        assert_eq!(active.buttons, 1 << 3);
+        assert!(!active.start);
+        pads[0].pad.buttons = 0;
+        assert!(!super::select_menu_pad(&pads, &mut owner).start);
+        assert!(super::select_menu_pad(&pads, &mut owner).start);
+        assert_eq!(owner, Some(Some(2)));
+        pads[0].pad.buttons = 1 << 3;
+        let active = super::select_menu_pad(&pads, &mut owner);
+        assert!(active.start);
+        assert_eq!(active.buttons, 0);
+        assert!(!super::select_menu_pad(&pads[..1], &mut owner).start);
+    }
+
+    #[test]
+    fn menu_owner_keeps_stick_hysteresis_and_scripted_identity() {
+        let entry = |id, x, buttons| super::Entry {
+            pad: Pad { buttons, stick: [x, 0.0, 0.0, 0.0], ..Pad::default() },
+            pressed: 0, id, name: String::new(), sony: false,
+        };
+        let mut owner = None;
+        let mut pads = [entry(None, 0.49, 0), entry(Some(7), 0.0, 0)];
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).stick[0], 0.0);
+        pads[0].pad.stick[0] = 0.6;
+        pads[1].pad.buttons = 1 << 3;
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).stick[0], 0.6);
+        assert_eq!(owner, Some(None));
+        pads[0].pad.stick[0] = 0.4;
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).stick[0], 0.4);
+        pads[0].pad.stick[0] = 0.3;
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).buttons, 0);
+        assert_eq!(super::select_menu_pad(&pads, &mut owner).buttons, 1 << 3);
     }
 
     #[test]

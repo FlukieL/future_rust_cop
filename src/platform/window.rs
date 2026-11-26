@@ -58,6 +58,9 @@ struct App {
     cursor_hidden: bool,
     /// a gamepad chooses in the menu (its frame shows the item; the cursor is hidden)
     pad_focus: bool,
+    /// Latest player-one Start state and the state currently sent as Escape.
+    player_start: bool,
+    pad_escape: bool,
     /// where the next picture goes (a mark of FCOP_RECORD, F11)
     mark_shot: Option<String>,
 }
@@ -120,6 +123,8 @@ fn with_host<R>(f: impl FnOnce(&mut Host) -> R) -> R {
                     cursor_caught: false,
                     cursor_hidden: false,
                     pad_focus: false,
+                    player_start: false,
+                    pad_escape: false,
                     mark_shot: None,
                 },
             }
@@ -159,13 +164,19 @@ pub fn pump(wait: Duration) {
         let _ = h.event_loop.pump_app_events(Some(wait), &mut h.app);
         h.app.catch_cursor();
         scripted(&mut h.app.input);
-        // a pad's Start is the Escape key (pause)
         if let Some(down) = super::dinput::poll() {
-            let (vk, scan) = vk_of(KeyCode::Escape).unwrap();
-            h.app.input.push_back(Input::Key { vk, scan, down, repeat: false });
+            h.app.player_start = down;
         }
         super::menumusic::poll();
         let step = super::menupad::step(&mut h.app.input);
+        // In the main menu, Start must come from the same controller as navigation.
+        // During gameplay, keep the existing player-one pause behavior.
+        let start = if step.main_menu { step.start } else { h.app.player_start };
+        if start != h.app.pad_escape {
+            h.app.pad_escape = start;
+            let (vk, scan) = vk_of(KeyCode::Escape).unwrap();
+            h.app.input.push_back(Input::Key { vk, scan, down: start, repeat: false });
+        }
         h.app.pad_focus = step.focus;
         if let (Some(o), Some(gl)) = (step.overlay, &mut h.app.gl) {
             let (w, hh) = (super::dialog::OV_W as u32, super::dialog::OV_H as u32);

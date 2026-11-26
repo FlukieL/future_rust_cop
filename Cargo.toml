@@ -27,6 +27,10 @@ gilrs = "0.11.2"
 sha2 = "0.11.1"
 png = "0.18"
 
+# Preserve controller event ordering on Windows during rapid WGI hotplug.
+[patch.crates-io]
+gilrs-core = { path = "vendor/gilrs-core" }
+
 [features]
 difftest = ["dep:unicorn-engine"]
 # test-only cheats (`cheats.rs`), never in a release build: `cargo build --release --features cheats`

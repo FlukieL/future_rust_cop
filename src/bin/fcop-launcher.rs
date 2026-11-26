@@ -51,6 +51,8 @@ mod windows {
     const EXPORT_TEXTURES: i32 = 132;
     const IMPORT_TEXTURES: i32 = 133;
     const EXPORT_SOUNDS: i32 = 134;
+    const STEAM_INPUT: i32 = 135;
+    const PAD_LOG: i32 = 136;
     const FINISHED: u32 = WM_APP + 1;
     const DISCOVERED: u32 = WM_APP + 2;
     const PROGRESS: u32 = WM_APP + 3;
@@ -75,7 +77,7 @@ mod windows {
     const TAB_CONTROLS: [&[i32]; 5] = [
         &[ISO, BROWSE_ISO, MUSIC, MUSIC_PATH, BROWSE_MUSIC, MODERN, SKIP_INTRO, 200],
         &[RESOLUTION, FRAME_RATE, MSAA, FILTER, VSYNC, FPS, FULLSCREEN, 201, 202, 203, 204],
-        &[RUMBLE, RESET_PAD, 205],
+        &[RUMBLE, STEAM_INPUT, PAD_LOG, RESET_PAD, 205, 209],
         &[BACKUP, BACKUPS, RESTORE, OPEN_FOLDER, GAME_DATA, 206],
         &[EXPORT_TEXTURES, IMPORT_TEXTURES, EXPORT_SOUNDS, 207, 208],
     ];
@@ -133,6 +135,7 @@ mod windows {
                 music_enabled: checked(hwnd, MUSIC),
                 music_path: text(GetDlgItem(hwnd, MUSIC_PATH)),
                 modern_ui: checked(hwnd, MODERN),
+                pad_log: checked(hwnd, PAD_LOG),
                 ..Settings::default()
             }
         }
@@ -234,7 +237,7 @@ mod windows {
             select(hwnd, FRAME_RATE, fcop::platform::fps::CHOICES.iter().position(|&v| v == rate).unwrap_or(0));
             select(hwnd, MSAA, MSAA_VALUES.iter().position(|&v| v == get("msaa", 4)).unwrap_or(2));
             select(hwnd, FILTER, FILTER_VALUES.iter().position(|&v| v == get("texturefilter", 16)).unwrap_or(5));
-            for (id, key, default) in [(VSYNC, "vsync", 1), (FPS, "showfps", 0), (RUMBLE, "controllervibration", 1), (FULLSCREEN, "fullscreen", 0), (SKIP_INTRO, "skipintro", 0)] {
+            for (id, key, default) in [(VSYNC, "vsync", 1), (FPS, "showfps", 0), (RUMBLE, "controllervibration", 1), (STEAM_INPUT, "steaminputcompatibility", 0), (FULLSCREEN, "fullscreen", 0), (SKIP_INTRO, "skipintro", 0)] {
                 check(hwnd, id, get(key, default) & 0xff != 0);
             }
             GAME_SETTINGS_LOADED.store(true, Ordering::Release);
@@ -269,6 +272,7 @@ mod windows {
                     ("ShowFps", checked(hwnd, FPS) as u32),
                     ("Fullscreen", checked(hwnd, FULLSCREEN) as u32),
                     ("ControllerVibration", checked(hwnd, RUMBLE) as u32),
+                    ("SteamInputCompatibility", checked(hwnd, STEAM_INPUT) as u32),
                 ])
             } else {
                 None
@@ -677,8 +681,12 @@ mod windows {
             child("BUTTON", "Fullscreen", WS_TABSTOP | BS_AUTOCHECKBOX as u32, FULLSCREEN, 20, 300, 180, 24);
 
             child("BUTTON", "Controller vibration", WS_TABSTOP | BS_AUTOCHECKBOX as u32, RUMBLE, 20, 100, 300, 24);
-            button("Reset gamepad bindings...", RESET_PAD, 20, 140, 230);
-            child("STATIC", "Configure individual bindings in the game.", 0, 205, 20, 180, 400, 22);
+            child("BUTTON", "Steam Input: prefer non-Sony controllers", WS_TABSTOP | BS_AUTOCHECKBOX as u32, STEAM_INPUT, 20, 135, 500, 24);
+            child("STATIC", "When another controller is present, Sony devices are hidden. Restart the game.", 0, 209, 20, 165, 600, 42);
+            child("BUTTON", "Controller diagnostics (write to fcop.log)", WS_TABSTOP | BS_AUTOCHECKBOX as u32, PAD_LOG, 20, 215, 500, 24);
+            check(hwnd, PAD_LOG, saved.pad_log);
+            button("Reset gamepad bindings...", RESET_PAD, 20, 255, 230);
+            child("STATIC", "Configure individual bindings in the game.", 0, 205, 20, 295, 400, 22);
 
             button("Back up files", BACKUP, 20, 100, 145);
             dropdown(BACKUPS, 175, 100, 265);
