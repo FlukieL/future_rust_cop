@@ -1,5 +1,9 @@
 # future_rust_cop
 
+This project is a fork of [RadiatorTwo/future_rust_cop](https://github.com/RadiatorTwo/future_rust_cop/tree/main).
+The original project and its contributors provide the recompiler and platform work on which
+this fork is built.
+
 **Future Cop: L.A.P.D.** (1998) running natively on modern Windows, Linux and macOS, written in Rust.
 
 fcop takes the original game's program and recompiles it into native code when it starts,
@@ -25,6 +29,7 @@ using [iced-x86] and [Cranelift]. Everything the game expects from Windows and D
 
 ## Contents
 
+- [Changes in this fork](#changes-in-this-fork)
 - [How to play](#how-to-play)
 - [Menu music](#menu-music)
 - [What is new](#what-is-new)
@@ -33,7 +38,29 @@ using [iced-x86] and [Cranelift]. Everything the game expects from Windows and D
 - [Network play](#network-play)
 - [Replacement textures](#replacement-textures)
 - [Sounds export](#sounds-export)
+- [Windows launcher](#windows-launcher)
 - [Building](#building)
+
+## Changes in this fork
+
+The main additions and changes in this fork include:
+
+- **Controller input:** smoother menu navigation with directional repeat and stick
+  hysteresis; modern and classic console profiles, secondary bindings, per-player device
+  selection, and Xbox/PlayStation button glyphs.
+- **Controller vibration:** optional feedback for damage and mode changes on compatible
+  controllers on Windows and Linux. The Windows DualSense joystick fallback provides input
+  only, and the current macOS backend does not support vibration. See [Gamepads](#gamepads).
+- **Autosave and menus:** automatic menu-progress saves separate from manual slots,
+  a skip-intro preference, and updated Help and credits access.
+- **Windows launcher:** a blue, tabbed interface for installation, game settings, backups,
+  texture import/export and sound export. It prepares and validates the compiled cache
+  before starting the game. Its modern game-dialog presentation is a preview.
+- **Cache and installation safety:** cache-only startup and validation, disc-image preflight,
+  staged launcher installation, and tests for cache, installation and save-management paths.
+
+For setup and limitations, see [Windows launcher](#windows-launcher) and
+[Gamepads](#gamepads).
 
 ## How to play
 

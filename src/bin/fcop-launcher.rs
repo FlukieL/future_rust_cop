@@ -620,7 +620,7 @@ mod windows {
             let common = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_TAB_CLASSES };
             InitCommonControlsEx(&common);
             let hwnd = CreateWindowExW(
-                0, class.as_ptr(), wide("Future Cop: L.A.P.D. - Launcher").as_ptr(),
+                0, class.as_ptr(), wide(concat!("Future Cop: L.A.P.D. - Launcher v", env!("CARGO_PKG_VERSION"))).as_ptr(),
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                 CW_USEDEFAULT, CW_USEDEFAULT, px(680), px(700),
                 std::ptr::null_mut(), std::ptr::null_mut(), instance, std::ptr::null(),
@@ -638,8 +638,10 @@ mod windows {
             let button = |s: &str, id, x, y, w| child("BUTTON", s, WS_TABSTOP | BS_OWNERDRAW as u32, id, x, y, w, 26);
             let dropdown = |id, x, y, w| child("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32, id, x, y, w, 200);
 
-            let heading = child("STATIC", "FUTURE COP : L.A.P.D.", 0, 0, 20, 7, 600, 28);
+            let heading = child("STATIC", "FUTURE COP : L.A.P.D.", 0, 0, 20, 7, 420, 28);
             SendMessageW(heading, WM_SETFONT, title_font as WPARAM, 1);
+            // SS_RIGHT is not exposed by the windows-sys bindings.
+            child("STATIC", concat!("v", env!("CARGO_PKG_VERSION")), 0x0002, 0, 470, 10, 160, 22);
             let tabs = child("SysTabControl32", "", WS_TABSTOP | TCS_OWNERDRAWFIXED as u32 | TCS_FIXEDWIDTH as u32, TABS, 10, 42, 640, 34);
             SendMessageW(tabs, TCM_SETITEMSIZE, 0, (px(126) as u32 | ((px(30) as u32) << 16)) as isize);
             for (index, title) in TAB_NAMES.iter().enumerate() {
